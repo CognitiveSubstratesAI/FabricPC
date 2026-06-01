@@ -95,6 +95,6 @@ export graph,
     FeedforwardStateInit,
     initialize_graph_state
 # Training
-export get_graph_param_gradient, train_step, sgd_update
+export get_graph_param_gradient, train_step, sgd_update, predict
 
 end # module FabricPC

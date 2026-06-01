@@ -161,9 +161,17 @@ attribution).
 
 *Enzyme generic fallback — DEFERRED to when transformers/arbitrary forwards land.*
 
-**Phase E — exhibits + reach (SECONDARY/DEFER).**
-- MNIST-style PC classifier exhibit; natural-gradient optimizers; then (deferred)
-  transformer nodes / RoPE, Storkey-Hopfield, autoregressive, multi-GPU.
+**Phase E — exhibits + benchmarks. ✅ DONE (MNIST exhibit + throughput).**
+- `predict` helper (inference-only forward → output prediction) + a self-contained
+  synthetic-classifier test (CI-safe, no data dep; acc → 1.0). ✅
+- `examples/mnist_pc.jl`: real-MNIST PC classifier (784→128→10, Gaussian one-hot),
+  autodiff-free, dependency-light (IDX via `Downloads` stdlib + `gunzip`, parsed
+  directly — no MLDatasets). **5.95% → 81.65%** test acc (5k/2k, 6 epochs, ~1m45s).
+  + `examples/README.md` with committed numbers. ✅
+- `benchmark/throughput.jl` + `benchmark/results.md`: eager train_step throughput
+  (~400 samp/s plateau on the MNIST net). ✅
+- Reach still DEFERRED: natural-gradient optimizers, transformer nodes / RoPE,
+  Storkey-Hopfield, autoregressive, multi-GPU, Reactant/XLA JIT path.
 
 ## Explicit defers (do NOT port until needed, exhibit-gated)
 

@@ -87,3 +87,30 @@ function train_step(
     params = sgd_update(params, grads, lr)
     return params, energy, final_state
 end
+
+"""
+    predict(params, structure, inputs, rng; output_task = "y") -> array
+
+Inference-only forward: clamp the given input task(s) (e.g. `"x"`), relax the
+graph to convergence, and return the output task node's prediction (`z_mu`). For
+a classifier, `argmax` over the feature axis gives the predicted class. Mirrors
+the inference half of upstream `eval_step` (single-device, eager).
+"""
+function predict(
+    params::GraphParams,
+    structure::GraphStructure,
+    inputs::AbstractDict,
+    rng::AbstractRNG;
+    output_task::AbstractString="y"
+)
+    batch_size = size(first(values(inputs)), 1)
+    clamps = Dict{String, Any}()
+    for (task, value) in inputs
+        haskey(structure.task_map, task) && (clamps[structure.task_map[task]] = value)
+    end
+    init_state = initialize_graph_state(
+        structure, batch_size, rng; clamps=clamps, params=params
+    )
+    final_state = run_inference(params, init_state, clamps, structure)
+    return final_state.nodes[structure.task_map[output_task]].z_mu
+end

@@ -10,4 +10,5 @@ using Test
     include("test_mupc.jl")
     include("test_activations.jl")
     include("test_energies.jl")
+    include("test_classifier.jl")
 end
