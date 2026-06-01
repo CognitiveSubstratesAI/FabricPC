@@ -53,10 +53,14 @@ end
 # ── flat params: per position, weights aligned to in-edges + optional bias ──────
 
 """Per-node parameters in positional (in-edge-aligned) form: `w[k]` is the weight
-for the k-th in-edge (or `nothing` for weightless edges, e.g. skip/identity)."""
-struct FlatNodeParams
-    w::Vector{Union{Nothing, Matrix{Float32}}}
-    b::Union{Nothing, Matrix{Float32}}
+for the k-th in-edge (or `nothing` for weightless edges, e.g. skip/identity).
+
+PARAMETRIC on the field types so the same struct can hold eager `Matrix`es OR
+Reactant tracer arrays — concrete `Matrix`-typed fields break Reactant
+reconstruction (it substitutes `ConcretePJRTArray`s for the leaves)."""
+struct FlatNodeParams{W, B}
+    w::W
+    b::B
 end
 
 function to_flat_params(plan::CompiledPlan, params::GraphParams)
@@ -74,6 +78,87 @@ end
 
 to_flat_state(plan::CompiledPlan, state::GraphState) =
     NodeState[state.nodes[n] for n in plan.names]
+
+# ── Reactant bridge: flatten params to a plain array tuple (+ static layout),
+#    repack inside the traced region, rebuild states from z_latents. The
+#    @compile'd function takes only Tuples of arrays — never concrete-typed
+#    structs (which break Reactant reconstruction). ────────────────────────────
+
+"""Flatten per-node params to a flat `Tuple` of arrays + a static layout that
+`repack_params` uses to rebuild them. The tuple is what `Reactant.@compile`
+traces; the layout (integer indices) is a compile-time constant."""
+function flatten_param_arrays(fparams::Vector{<:FlatNodeParams})
+    arrs = Any[]
+    layout = Tuple{Vector{Int}, Int}[]
+    for fp in fparams
+        widx = Int[]
+        for w in fp.w
+            if w === nothing
+                push!(widx, 0)
+            else
+                push!(arrs, w)
+                push!(widx, length(arrs))
+            end
+        end
+        bidx = 0
+        if fp.b !== nothing
+            push!(arrs, fp.b)
+            bidx = length(arrs)
+        end
+        push!(layout, (widx, bidx))
+    end
+    return Tuple(arrs), layout
+end
+
+"""Rebuild `Vector{FlatNodeParams}` from a flat array tuple + layout. Built inside
+the traced region, so the (parametric) FlatNodeParams hold tracer arrays."""
+repack_params(arr_tuple, layout) = [
+    FlatNodeParams(
+        Any[wi == 0 ? nothing : arr_tuple[wi] for wi in widx],
+        bidx == 0 ? nothing : arr_tuple[bidx]
+    ) for (widx, bidx) in layout
+]
+
+"""Build a `Vector{NodeState}` from per-node z_latents; other fields are zero
+placeholders (recomputed in inference step 1, so unused — matches the eager init)."""
+state_from_latents(zl) = NodeState[
+    NodeState(
+        zl[i], zero(zl[i]), zero(zl[i]),
+        zeros(eltype(zl[i]), size(zl[i], 1)), zero(zl[i]), zero(zl[i])
+    ) for i in eachindex(zl)
+]
+
+"""
+    jit_inference_runner(arr_tuple, zl, plan, layout, clamped) -> Tuple of z_latents
+
+Reactant-traceable entry point: takes only Tuples of arrays (params flattened via
+`flatten_param_arrays`, plus per-node z_latents), runs `flat_run_inference`, and
+returns the new z_latents tuple. `plan`/`layout`/`clamped` are compile-time-static
+— capture them in a closure before `Reactant.@compile` (see `FabricPCReactantExt`)."""
+function jit_inference_runner(
+    arr_tuple, zl, plan::CompiledPlan, layout, clamped::Vector{Bool}
+)
+    fparams = repack_params(arr_tuple, layout)
+    fstate = flat_run_inference(plan, fparams, state_from_latents(zl), clamped)
+    return ntuple(i -> fstate[i].z_latent, length(fstate))
+end
+
+"""
+    compile_inference(structure, params, clamps; batch) -> callable
+
+JIT-compile the predictive-coding inference loop via Reactant/XLA (≈9× faster
+than eager on the MNIST-shaped MLP). The returned object maps
+`(params, init_state) -> Vector` of converged per-node `z_latent` arrays (node
+order = `structure.node_names`). The compiled thunk is specialized to the param
+shapes, `batch`, and which nodes are clamped — recompile if those change.
+
+Requires `using Reactant` (implemented by the `FabricPCReactantExt` extension).
+"""
+function compile_inference end
+compile_inference(args...; kwargs...) =
+    error(
+        "compile_inference requires Reactant — run `using Reactant` to load FabricPCReactantExt"
+    )
 
 # ── Dict-free node forward (positional inputs/weights) ──────────────────────────
 # `ins` / `slots` are aligned to the node's in-edges (plan.in_src / plan.in_slot);

@@ -223,3 +223,28 @@ lookups, no `merge` in the loop. Validated == the eager Dict path bit-for-bit
 swap `Vector` → `NTuple` and wrap in `Reactant.@compile` inside a
 `FabricPCReactantExt` weakdep/extension (increment 2); add the flat weight-grad
 path for JIT'd training.
+
+### §11 update — increment 2 landed (Reactant extension, 32× in-package)
+
+`ext/FabricPCReactantExt.jl` + Project.toml `[weakdeps]`/`[extensions]`: Reactant
+is a WEAKDEP, so the core package stays Reactant-free and the JIT is opt-in via
+`using Reactant`. `compile_inference(structure, params, clamps; batch)` traces the
+Dict-free `jit_inference_runner` with `Reactant.@compile` and returns a
+`CompiledInference` callable mapping `(params, init_state) → converged z_latents`.
+
+Two fixes made the trace work: (a) `FlatNodeParams` made type-PARAMETRIC — concrete
+`Matrix`-typed fields broke Reactant reconstruction (it substitutes
+`ConcretePJRTArray`s); (b) the `@compile`'d function takes only Tuples of arrays
+(params flattened via `flatten_param_arrays`, per-node z_latents), repacking the
+struct INSIDE the traced region. The carried state is just z_latents per node
+(z_mu/error/… are recomputed each step), so the pytree stays a clean tuple.
+
+Validated (env with FabricPC + Reactant): JIT == eager bit-for-bit (max|Δ| = 0)
+and **32× faster than the eager Dict path** (280 ms → 8.7 ms, MNIST-shaped MLP,
+batch 256, 20 steps) — larger than the §11 microbenchmark's 8.8× because the real
+Dict-based eager path is slower than the naive-array baseline. Core CI stays
+Reactant-free (the flat path is tested == eager in `test_jit_flat.jl`); the
+extension is exercised via `examples/jit_inference.jl` (needs Reactant).
+
+Remaining: a flat weight-grad path to JIT the full train_step (not just
+inference); NTuple-typed state for fully type-stable tracing.

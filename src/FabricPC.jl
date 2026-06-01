@@ -104,6 +104,14 @@ export graph,
 # Training
 export get_graph_param_gradient, train_step, sgd_update, predict, AdamW, step!, train_step!
 # JIT (Dict-free traceable inference path — foundation for Reactant)
-export CompiledPlan, to_flat_params, to_flat_state, flat_run_inference
+export CompiledPlan,
+    to_flat_params,
+    to_flat_state,
+    flat_run_inference,
+    flatten_param_arrays,
+    repack_params,
+    state_from_latents,
+    jit_inference_runner,
+    compile_inference
 
 end # module FabricPC

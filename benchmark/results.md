@@ -71,3 +71,17 @@ JIT matches eager to `max|Δ| = 2.9e-6`. (Timing forces `Array(...)` materializa
 is allocation-naive; FabricPC's Dict-based eager is slower still, so the
 in-package payoff would be ≥ this. Confirms the JIT path is worth the GraphState
 refactor — see `docs/decisions.md` §11.
+
+## Reactant/XLA JIT — in-package (FabricPCReactantExt, `examples/jit_inference.jl`)
+
+`compile_inference` (the opt-in extension) JIT-compiles the inference loop. Vs the
+real eager **Dict** path (not the naive-array microbenchmark above), MNIST-shaped
+MLP (784→128→10), batch 256, 20 steps:
+
+| path | time (ms) | speedup |
+|------|----------:|--------:|
+| eager (Dict GraphState) | 280.0 | 1× |
+| Reactant/XLA JIT | 8.7 | **32×** |
+
+JIT == eager to `max|Δ| = 0` (bit-exact). Reactant is a weakdep — core stays
+Reactant-free. See `docs/decisions.md` §11.
