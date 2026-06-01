@@ -85,22 +85,33 @@ exactly to minimize port divergence; energies sum over all non-batch dims).
 CI with the format-pin fix from day one, docs, MIT LICENSE w/ upstream
 attribution).
 
-**Phase B — core types + AD-free linear PC (v0 CORE).**
+**Phase B — core types + AD-free linear PC (v0 CORE). ✅ DONE.**
 - `core/types.jl`: NodeInfo/SlotInfo/EdgeInfo/NodeState/GraphState/GraphParams/
-  GraphStructure as immutable structs.
-- `core/topology.jl`: Edge, SlotRef, SlotSpec.
-- `nodes/`: AbstractNode contract, `Linear` (+FlattenInput), `IdentityNode`,
-  `SkipConnection`, `LinearResidual` — with **explicit Gaussian gradients**.
-- `core/energy.jl`: GaussianEnergy (+ `get_energy_and_gradient`).
+  GraphStructure as immutable structs. ✅
+- `core/topology.jl`: Edge, SlotRef, SlotSpec. ✅ (GraphNamespace deferred — flat names.)
+- `nodes/`: AbstractNode contract, `Linear` (explicit-grad fused; `flatten_input`
+  inert at rank-1), `IdentityNode` — with **explicit Gaussian gradients**. ✅
+  `SkipConnection` / `LinearResidual` deferred to a Phase B follow-up.
+- `core/energy.jl`: GaussianEnergy + `grad_latent`. ✅ (other energies → Phase D.)
+- `core/activations.jl`: IdentityActivation. ✅ (non-linear → Phase D.)
 - `core/inference.jl`: gather_inputs, `forward_value_and_grad` accumulation,
-  `InferenceSGD`, `run_inference` (static loop, Reactant-friendly later).
-- `core/learning.jl`: `compute_local_weight_gradients`.
-- `assembly`: `graph()`, topological sort, slot resolution; `initialize_params`,
-  `FeedforwardStateInit`, initializers (Normal/Zeros/Xavier/Kaiming/MuPC).
-- `training`: `get_graph_param_gradient`, `train_step`, single-device `train_pcn`,
-  `eval_step` — using **Optimisers.jl** (Adam/SGD).
-- **Acceptance:** a 3-layer linear PC graph learns a small deterministic task
-  (energy ↓, train accuracy ↑), bit-checked against hand computation.
+  `InferenceSGD`, `run_inference` (eager loop; Reactant-friendly later). ✅
+- `core/learning.jl`: `compute_local_weight_gradients`. ✅
+- `core/scaling.jl`: no-op stubs (`scaling_config === nothing`); real muPC → Phase C. ✅
+- `assembly`: `graph()`, BFS topological sort, slot resolution; `initialize_params`,
+  `FeedforwardStateInit`, initializers (Normal/Zeros). ✅ (Xavier/Kaiming/MuPC deferred.)
+- `training`: `get_graph_param_gradient`, `train_step`, `sgd_update` (manual SGD,
+  faithful to optax.sgd). ✅ (Optimisers.jl Adam/momentum + `train_pcn`/`eval_step`
+  + multi-device pmap path deferred.)
+- **Acceptance:** ✅ a 3-layer linear PC graph (4→6→3) learns a deterministic
+  linear map to machine precision — energy 8.76 → 4.7e-14, prediction
+  `max|pred−y| = 4.8e-7` (Float32 floor), weights healthy (no collapse). Plus an
+  exact hand-computed gradient check + finite-difference cross-check of all four
+  explicit gradients (self / input / weight / bias). 21/21 tests.
+
+**Phase B follow-up (next):** `SkipConnection` + `LinearResidual` nodes
+(muPC-relevant; skip slots are non-variance-scalable, count toward depth L);
+optionally wire `Optimisers.jl` for Adam once a non-trivial exhibit needs it.
 
 **Phase C — muPC (the novel layer).**
 - `core/mupc.jl` (pure scalar/topology math — no AD), `core/scaling.jl`
