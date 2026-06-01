@@ -13,4 +13,5 @@ using Test
     include("test_classifier.jl")
     include("test_optim.jl")
     include("test_mupc_resnet.jl")
+    include("test_jit_flat.jl")
 end

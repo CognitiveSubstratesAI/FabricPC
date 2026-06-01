@@ -47,6 +47,7 @@ include("graph_initialization/params_initializer.jl")
 include("graph_initialization/state_initializer.jl")
 include("training/train.jl")
 include("training/adam.jl")
+include("jit_flat.jl")
 
 export FABRICPC_VERSION
 # Activations / energy / initializers
@@ -102,5 +103,7 @@ export graph,
     initialize_graph_state
 # Training
 export get_graph_param_gradient, train_step, sgd_update, predict, AdamW, step!, train_step!
+# JIT (Dict-free traceable inference path — foundation for Reactant)
+export CompiledPlan, to_flat_params, to_flat_state, flat_run_inference
 
 end # module FabricPC

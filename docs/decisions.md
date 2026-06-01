@@ -210,3 +210,16 @@ session, opt-in — keep the eager Dict path as ground truth):
 
 Decision: feasibility + payoff are PROVEN and committed as a benchmark; the full
 GraphState refactor + extension is scoped above as the next deliberate increment.
+
+### §11 update — increment 1 landed (Dict-free inference path)
+
+`src/jit_flat.jl`: `CompiledPlan` (GraphStructure → static integer topology),
+positional `FlatNodeParams`, and `flat_run_inference` — the inference hot loop
+re-expressed over a position-indexed `Vector{NodeState}` with Dict-free node
+forwards (`flat_forward` / `flat_latent_grads` for Linear/Identity/Skip/Residual,
+reusing the shared pre_grad/mu_grad/energy helpers). No Dicts, no string-keyed
+lookups, no `merge` in the loop. Validated == the eager Dict path bit-for-bit
+(`test_jit_flat.jl`: MLP train+predict, residual net). Remaining for the JIT:
+swap `Vector` → `NTuple` and wrap in `Reactant.@compile` inside a
+`FabricPCReactantExt` weakdep/extension (increment 2); add the flat weight-grad
+path for JIT'd training.
