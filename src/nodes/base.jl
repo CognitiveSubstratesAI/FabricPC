@@ -45,7 +45,19 @@ are built from this (`input_grad = pre_grad·Wᵀ`, `dW = xᵀ·pre_grad`,
 at precision 1, but correct for any energy/precision).
 """
 pre_grad(node::AbstractNode, state::NodeState) =
-    mu_grad(node, state) .* derivative(node.activation, state.pre_activation)
+    _pre_grad(node.activation, node.energy, node, state)
+
+# Generic element-wise case: dE/dpre = (∂E/∂z_mu) · f'(pre).
+_pre_grad(act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::NodeState) =
+    mu_grad(node, state) .* derivative(act, state.pre_activation)
+
+# Exact Softmax + CrossEntropy coupling: the off-diagonal softmax Jacobian and
+# the CE gradient combine to the clean closed form dE/dpre = s - y (= z_mu -
+# z_latent). This is exact (no autodiff, no diagonal approximation) and is what
+# makes a softmax+CE classifier train properly on hard multi-class tasks — the
+# diagonal `s·(1-s)` approximation used elsewhere is too crude there.
+_pre_grad(::SoftmaxActivation, ::CrossEntropyEnergy, node::AbstractNode, state::NodeState) =
+    state.z_mu .- state.z_latent
 
 """
     get_weight_fan_in(node, source_shape) -> Int

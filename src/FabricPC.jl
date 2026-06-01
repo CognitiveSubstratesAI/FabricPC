@@ -46,6 +46,7 @@ include("graph_assembly/graph_construction.jl")
 include("graph_initialization/params_initializer.jl")
 include("graph_initialization/state_initializer.jl")
 include("training/train.jl")
+include("training/adam.jl")
 
 export FABRICPC_VERSION
 # Activations / energy / initializers
@@ -70,7 +71,12 @@ export AbstractEnergy,
     energy,
     grad_latent,
     grad_mu
-export AbstractInitializer, ZerosInitializer, NormalInitializer, initialize
+export AbstractInitializer,
+    ZerosInitializer,
+    NormalInitializer,
+    MuPCInitializer,
+    XavierInitializer,
+    initialize
 # Topology
 export SlotSpec, SlotRef, Edge, slot
 # Nodes
@@ -95,6 +101,6 @@ export graph,
     FeedforwardStateInit,
     initialize_graph_state
 # Training
-export get_graph_param_gradient, train_step, sgd_update, predict
+export get_graph_param_gradient, train_step, sgd_update, predict, AdamW, step!, train_step!
 
 end # module FabricPC

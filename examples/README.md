@@ -58,12 +58,31 @@ Findings (see `docs/decisions.md` §9):
 - `MuPCConfig(include_output=true)` is unsuitable for an MSE one-hot classifier —
   it scales the output by ≈1/N, capping `z_mu` near 0 so it cannot reach a
   one-hot target. Use `include_output=false` (hidden-only) for MSE classification.
-- With the current eager `InferenceSGD` + plain-SGD recipe, muPC-on does **not**
-  outperform the plain config on MNIST — it has a *lower* lr ceiling (diverges
-  above ~0.03), the opposite of muP's lr-transfer promise. The variance-control
-  property itself is real and verified (`test_mupc.jl`); the missing piece is
-  upstream's full muPC *training* recipe (per-layer inference-rate scaling etc.),
-  which lives in their `train.py`, not `mupc.py` — left as future work.
+- This shallow `FPC_MUPC` variant does not beat the plain config. The **full**
+  muPC recipe (unit-variance init + AdamW + deep ResNet + exact softmax/CE) DOES
+  train deep nets — see `mupc_resnet.jl` below and `docs/decisions.md` §10.
+
+## `mupc_resnet.jl` — deep muPC FC-ResNet (the full recipe)
+
+`julia --project=. examples/mupc_resnet.jl` trains a deep fully-connected
+residual PC network with the **complete muPC recipe**: `MuPCInitializer`
+(unit-variance) + per-edge muPC scaling + `AdamW` + the exact Softmax/CE gradient
+(`dE/dpre = s − y`). Autodiff-free.
+
+```
+input(784) → stem(64) → [8 × LinearResidual(64, Tanh)] → output(10, Softmax/CE)
+```
+
+Reference result (8 blocks, 8000 train / 2000 test, 5 epochs, lr 0.002, ~5m):
+
+| epoch | mean energy | test accuracy |
+|------:|------------:|--------------:|
+| 0 (random) | — | 0.0585 |
+| 1 | 0.7964 | 0.5415 |
+| 5 | 0.0867 | **0.8160** |
+
+A deep (8-layer) PC ResNet trains, energy descending monotonically — the muPC
+win. Env: `FPC_BLOCKS` (8), `FPC_HID` (64), `FPC_NTRAIN`/`FPC_NTEST`/`FPC_EPOCHS`.
 
 ### Notes
 

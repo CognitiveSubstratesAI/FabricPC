@@ -142,3 +142,38 @@ Decision: ship the exhibit's `FPC_MUPC=1` path (hidden-only, stable inference
 settings) as a faithful, honest demonstration that muPC integrates and trains;
 do NOT claim a muPC accuracy/transfer win on MNIST. The plain config remains the
 default. The full muPC training dynamics are deferred (and noted in DESIGN.md).
+
+## 10. Full muPC training recipe — and the exact Softmax+CE gradient
+
+Date: 2026-06-01
+
+Closed the §9 negative finding by porting the COMPLETE muPC recipe from upstream's
+`examples/mupc_demo.py`. The three pieces Phase C lacked:
+
+1. **MuPCInitializer** — weights are unit-variance `gain·N(0,1)`, NOT
+   `NormalInitializer(std=0.05)`. muPC's whole point is to DECOUPLE init (unit
+   variance) from the per-edge forward scaling; pairing the scaling with a
+   small-std init double-shrinks the weights and breaks the parameterization.
+   This was the root cause of §9's failure.
+2. **AdamW** — muPC's `weight_grad_scale=1` ("optimizer handles magnitude")
+   assumes an adaptive optimizer. Plain SGD does not realize the recipe.
+3. **Architecture** — deep FC-ResNet: IdentityNode input → Linear stem (MuPCInit)
+   → N × LinearResidual(Tanh, MuPCInit) → Linear output (Softmax/CE, Xavier),
+   `MuPCConfig(include_output=false)`, `infer_steps = max(20, 3·(N+2))`.
+
+One more fix was needed for hard multi-class tasks: the **exact Softmax+CE
+gradient**. Our explicit path used the diagonal-softmax approximation `s·(1-s)`
+(faithful to upstream's `SoftmaxActivation.derivative`, but upstream's *plain*
+output node uses autodiff → the exact gradient). On easy 3-class synthetic the
+diagonal approx trains fine, but on 10-class MNIST it makes the energy ASCEND.
+Fix: a `_pre_grad(::SoftmaxActivation, ::CrossEntropyEnergy, …)` dispatch
+returning the clean closed form `dE/dpre = s − y` (= z_mu − z_latent), exact for
+normalized (one-hot) targets — no autodiff, no off-diagonal Jacobian. Validated
+by finite-difference (`test_energies.jl`).
+
+**Result (positive — closes §9):** an 8-block muPC FC-ResNet trains MNIST
+5.85% → 81.6% with the energy descending monotonically (0.80 → 0.087), and a
+deep 6-block muPC residual classifier is a CI test (`test_mupc_resnet.jl`).
+muPC + the full recipe makes deep PC nets trainable. The diagonal-softmax
+approximation remains for the general (non-CE) softmax case; only the CE pairing
+gets the exact path.

@@ -170,13 +170,17 @@ attribution).
   + `examples/README.md` with committed numbers. ✅
 - `benchmark/throughput.jl` + `benchmark/results.md`: eager train_step throughput
   (~400 samp/s plateau on the MNIST net). ✅
-- muPC-on MNIST (`FPC_MUPC=1`, hidden-only) trains to ~77% (decisions.md §9) but
-  does not beat the plain config — the full muPC training recipe (per-layer
-  inference-rate scaling) is future work; the variance-control property itself is
-  verified in `test_mupc.jl`.
-- Reach still DEFERRED: full muPC training dynamics, natural-gradient optimizers,
-  transformer nodes / RoPE, Storkey-Hopfield, autoregressive, multi-GPU,
-  Reactant/XLA JIT path.
+**Phase F — full muPC training recipe. ✅ DONE.** (decisions.md §10)
+- Ported the three missing recipe pieces: `MuPCInitializer` (unit-variance init —
+  the §9 root cause was a std=0.05 / scaling mismatch), `XavierInitializer` (for
+  the unscaled output), and `AdamW` (the adaptive optimizer muPC assumes).
+- Added the **exact Softmax+CrossEntropy gradient** `dE/dpre = s − y` (the diagonal
+  softmax approx is too crude for 10-class; finite-diff verified).
+- `examples/mupc_resnet.jl`: deep FC-ResNet (MuPCInit + LinearResidual blocks +
+  AdamW). **8-block net trains MNIST 5.85% → 81.6%, energy monotone ↓** (0.80 →
+  0.087) — the §9 ascent is gone. CI test: a 6-block muPC residual classifier.
+- Reach still DEFERRED: natural-gradient optimizers, transformer nodes / RoPE,
+  Storkey-Hopfield, autoregressive, multi-GPU, Reactant/XLA JIT path.
 
 ## Explicit defers (do NOT port until needed, exhibit-gated)
 

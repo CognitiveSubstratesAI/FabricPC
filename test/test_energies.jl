@@ -110,6 +110,60 @@ end
     @test gp.weights[ek] ≈ num_W rtol = 2e-2 atol = 1e-3
 end
 
+@testset "exact Softmax+CrossEntropy node gradient (finite-diff)" begin
+    # The Softmax+CE special-case (dE/dpre = s - y) is EXACT — unlike the diagonal
+    # softmax approximation, it passes a finite-difference check of all gradients.
+    rng = MersenneTwister(55)
+    ek = "x->y:in"
+    in_f, out_f, batch = 4, 5, 3
+    node = Linear(
+        (out_f,), "y";
+        activation=SoftmaxActivation(), energy=CrossEntropyEnergy(), use_bias=true
+    )
+    W = randn(rng, Float32, in_f, out_f) .* 0.5f0
+    b = randn(rng, Float32, 1, out_f) .* 0.5f0
+    params = NodeParams(Dict(ek => copy(W)), Dict("b" => copy(b)))
+    x = randn(rng, Float32, batch, in_f)
+    # One-hot targets (Σy = 1) — the valid classification case where dE/dpre = s - y
+    # is exact (for general unnormalized y it would be s·Σy - y).
+    z = zeros(Float32, batch, out_f)
+    for i in 1:batch
+        z[i, rand(rng, 1:out_f)] = 1.0f0
+    end
+    inputs = Dict(ek => x)
+    info = internal_info("y", (out_f,), ek)
+
+    _, input_grads, self_grad = forward_and_latent_grads(
+        node, params, inputs, bare_state(z), info, true
+    )
+    _, gp = forward_and_weight_grads(node, params, inputs, bare_state(z))
+
+    ε = 1.0f-2
+    fd(f) = (f(ε) - f(-ε)) / (2ε)
+    num_self = similar(self_grad)
+    for i in eachindex(z)
+        num_self[i] = fd(
+            δ -> (zz=copy(z); zz[i] += δ; local_energy(node, params, inputs, zz))
+        )
+    end
+    @test self_grad ≈ num_self rtol = 2e-2 atol = 1e-3
+    num_in = similar(input_grads[ek])
+    for i in eachindex(x)
+        num_in[i] = fd(
+            δ -> (xx=copy(x); xx[i] += δ; local_energy(node, params, Dict(ek => xx), z))
+        )
+    end
+    @test input_grads[ek] ≈ num_in rtol = 2e-2 atol = 1e-3
+    num_W = similar(W)
+    for i in eachindex(W)
+        num_W[i] = fd(
+            δ -> (Wp=copy(W); Wp[i] += δ;
+                local_energy(node, NodeParams(Dict(ek => Wp), Dict("b" => b)), inputs, z))
+        )
+    end
+    @test gp.weights[ek] ≈ num_W rtol = 2e-2 atol = 1e-3
+end
+
 @testset "Bernoulli (binary) PC graph trains" begin
     data_rng = MersenneTwister(23)
     param_rng = MersenneTwister(29)
