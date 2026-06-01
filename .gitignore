@@ -1,0 +1,21 @@
+# Julia artifacts
+Manifest.toml
+docs/Manifest.toml
+docs/build/
+*.cov
+*.jl.cov
+*.jl.mem
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local dev cache
+deps/build.log
+LocalPreferences.toml
+
+# Scratch
+/tmp/
+*.tmp

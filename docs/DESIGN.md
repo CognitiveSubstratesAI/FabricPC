@@ -1,0 +1,148 @@
+# FabricPC.jl — design & port plan
+
+A faithful Julia port of [FabricPC](https://github.com/CognitiveSubstratesAI/FabricPC)
+(upstream Python/JAX by Matthew Behrend, MIT) — a flexible, graph-based
+**predictive-coding** training framework. This is **Layer 2** of the NGC Julia
+stack:
+
+| Layer | Package | Role |
+|------:|---------|------|
+| 0 | NGCSimLib.jl | substrate (Component/Compartment/Context/Process) |
+| 1 | NGCLearn.jl | biophysical component zoo |
+| **2** | **FabricPC.jl** (this) | predictive-coding graph training framework + muPC |
+
+> **Relationship to Layers 0/1 (important):** FabricPC is a *parallel* graph
+> abstraction, NOT built on NGCSimLib's Component/Compartment. NGCSimLib wires
+> Components via Compartments; FabricPC wires **Nodes** via **Edges→slots** with
+> its own `GraphStructure`/`GraphState`/`GraphParams` pytrees. Per the layered
+> plan, composition between the two is deferred (Layer 3, optional). FabricPC.jl
+> is therefore a standalone package that does *not* depend on NGCSimLib/NGCLearn.
+
+## What FabricPC is
+
+Predictive coding performs **bilevel optimization**: an inner loop infers latent
+activations by minimizing local prediction errors, an outer loop updates weights
+via **local (Hebbian-like) rules**. Crucially, the outer loop does **not**
+backprop through the inner loop — weight gradients are local and analytic.
+
+Core abstractions:
+- **Node** — owns an output latent `z_latent`, computes a top-down prediction
+  `z_mu` from incoming edges, derives `error = z_latent − z_mu`, contributes a
+  local energy. Single output; named input **slots**.
+- **Edge** — connects a source node to a target node's slot (`"src->tgt:slot"`).
+- **GraphStructure** (static) / **GraphState** (dynamic latents) / **GraphParams**
+  (weights) — the three pytrees.
+- **muPC** — μP (maximal-update parameterization) generalized to PC over
+  arbitrary DAGs: per-edge forward/grad scaling factors derived from topology
+  (slot in-degree K, residual depth L, fan-in, activation gain) keep
+  activations/errors/grads O(1) at any width/depth. **This is the novel research
+  contribution** (Innocenti et al., arXiv:2505.13124; Yang et al. Depth-μP).
+
+## The key architectural finding: v0 needs NO autodiff
+
+PC's local learning means a **minimal working, trainable PC graph requires no
+reverse-mode AD**:
+- **Inference** (inner loop): `z ← z·(1−η·decay) − η·latent_grad`, where
+  `latent_grad` is assembled locally by pushing each node's prediction-error
+  gradient back to its in-neighbors.
+- **Learning** (outer loop): local Hebbian weight gradients from the converged
+  state.
+
+Upstream computes these two gradients by `jax.value_and_grad` of node-local
+energy *by default*, **but** also ships closed-form explicit gradients
+(`LinearExplicitGrad`, GaussianEnergy) that are exact and AD-free:
+- `self_grad   = precision·(z_latent − z_mu)`
+- `gain_mod_error = error · f'(pre_activation)`
+- `input_grad[e]  = −(gain_mod_error · Wₑᵀ)`
+- `dW[e] = −(inputₑᵀ · gain_mod_error)`,  `db = −Σ_batch gain_mod_error`
+
+**v0 ports the explicit-grad Gaussian path.** Enzyme (the Julia analog of
+`jax.value_and_grad`) is deferred to when non-linear / transformer nodes need the
+generic autodiff fallback. This sidesteps the single biggest porting risk
+(Enzyme over closures returning struct-of-arrays aux) for the entire v0.
+
+## Data model (already understood, from upstream core/types.py)
+
+- `NodeInfo{name, shape, node_class, node_config, activation, energy, slots,
+  in/out_degree, in/out_edges, scaling_config}` — static per-node.
+- `SlotInfo{name, is_multi_input, is_variance_scalable, is_skip_connection,
+  in_neighbors}`.
+- `EdgeInfo{key="src->tgt:slot", source, target, slot}`.
+- `NodeState{z_latent, z_mu, error, energy, pre_activation, latent_grad}` —
+  dynamic; `GraphState{nodes, batch_size}`.
+- `NodeParams{weights::Dict, biases::Dict}`; `GraphParams{nodes::Dict}`.
+
+Julia rendering: immutable structs updated via Accessors.jl `@set`; an **ordered**
+node container (Vector + name→index, or OrderedDict) since the inference
+gradient-accumulation is **node-order-dependent**. Keep batch as a chosen layout
+convention applied consistently (decide: batch-first to match upstream, or
+batch-last to match NGCLearn — **decision: batch-first**, matching upstream
+exactly to minimize port divergence; energies sum over all non-batch dims).
+
+## Phased plan (each phase gated on tests; faithful-then-verified)
+
+**Phase A — scout + scaffold (this).** Design doc, repo scaffold (Project.toml,
+CI with the format-pin fix from day one, docs, MIT LICENSE w/ upstream
+attribution).
+
+**Phase B — core types + AD-free linear PC (v0 CORE).**
+- `core/types.jl`: NodeInfo/SlotInfo/EdgeInfo/NodeState/GraphState/GraphParams/
+  GraphStructure as immutable structs.
+- `core/topology.jl`: Edge, SlotRef, SlotSpec.
+- `nodes/`: AbstractNode contract, `Linear` (+FlattenInput), `IdentityNode`,
+  `SkipConnection`, `LinearResidual` — with **explicit Gaussian gradients**.
+- `core/energy.jl`: GaussianEnergy (+ `get_energy_and_gradient`).
+- `core/inference.jl`: gather_inputs, `forward_value_and_grad` accumulation,
+  `InferenceSGD`, `run_inference` (static loop, Reactant-friendly later).
+- `core/learning.jl`: `compute_local_weight_gradients`.
+- `assembly`: `graph()`, topological sort, slot resolution; `initialize_params`,
+  `FeedforwardStateInit`, initializers (Normal/Zeros/Xavier/Kaiming/MuPC).
+- `training`: `get_graph_param_gradient`, `train_step`, single-device `train_pcn`,
+  `eval_step` — using **Optimisers.jl** (Adam/SGD).
+- **Acceptance:** a 3-layer linear PC graph learns a small deterministic task
+  (energy ↓, train accuracy ↑), bit-checked against hand computation.
+
+**Phase C — muPC (the novel layer).**
+- `core/mupc.jl` (pure scalar/topology math — no AD), `core/scaling.jl`
+  (apply-side; preserve missing-key dtype semantics + autodiff-boundary
+  placement), activation `variance_gain`/`jacobian_gain` tables, `get_weight_fan_in`.
+- **Acceptance:** width/depth scan shows O(1) activations/grads with muPC on vs
+  blow-up off (reproduce an upstream muPC stability result).
+
+**Phase D — Enzyme autodiff fallback + activation zoo.**
+- Generic `forward_and_latent_grads`/`forward_and_weight_grads` via Enzyme for
+  arbitrary node `forward`s; non-Gaussian energies; full activation zoo.
+- **Acceptance:** a non-linear (Tanh) PC graph trains; Enzyme path == explicit
+  path on Linear/Gaussian (conformance).
+
+**Phase E — exhibits + reach (SECONDARY/DEFER).**
+- MNIST-style PC classifier exhibit; natural-gradient optimizers; then (deferred)
+  transformer nodes / RoPE, Storkey-Hopfield, autoregressive, multi-GPU.
+
+## Explicit defers (do NOT port until needed, exhibit-gated)
+
+- Transformer nodes (`transformer.py`, `transformer_v2.py`, RoPE), Storkey-Hopfield.
+- `train_backprop.py` (needs Enzyme; baseline comparator only).
+- All pmap/multi-GPU (`multi_gpu.py` is a deprecated shim — skip entirely).
+- Dashboards (Aim/trackers), bayesian tuner, A/B experiments.
+- Cycle-tolerant partial topological order — treat as an explicit design decision
+  if/when recurrent PC graphs are needed (upstream warns + returns partial order).
+
+## Backend & conventions
+
+- **Compute:** plain Julia + Reactant (XLA) for the JIT path, Enzyme for the
+  Phase-D autodiff fallback — same backend choices as NGCSimLib/NGCLearn.
+- **Optimizers:** Optimisers.jl (Adam/SGD; natural-gradient = ~10-line custom rules).
+- **Immutability:** Accessors.jl `@set` over the NamedTuple/struct state.
+- **Determinism:** ordered node container; splittable RNG (Xoshiro substreams),
+  one subkey per non-source node, replicating upstream key-assignment order.
+- **dtype discipline:** only `z_latent` carries clamp dtype (int token indices on
+  source nodes); all other state fields stay float (stable Reactant carry).
+- **muPC scaling is optional** (`scaling_config === nothing` ⇒ identity), so v0
+  runs before Phase C lands.
+
+## Verification discipline
+
+Each phase reproduces behavior against the upstream source (equations + a
+runnable check), eager/explicit path is the ground truth, tests gate every
+commit, CI green before moving on — same discipline that carried Layers 0 and 1.
