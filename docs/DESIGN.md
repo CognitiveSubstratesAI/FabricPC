@@ -130,11 +130,26 @@ attribution).
   L=2 detection, unscaled skip edges, and a muPC-on convergence smoke test.
   61/61 tests.
 
-**Phase D — Enzyme autodiff fallback + activation zoo.**
+**Phase D — non-linear activations + Enzyme autodiff fallback.** Split into D1/D2.
+
+*Phase D1 — element-wise non-linear activation zoo. ✅ DONE (NO new dep).*
+- Key realization: the explicit Linear/LinearResidual path already consumes
+  `derivative(activation, pre)` via `gain_mod_error = error·f'(pre)`, which is
+  exact for ANY element-wise activation under Gaussian energy. So Sigmoid / Tanh
+  / ReLU / LeakyReLU / GELU / HardTanh train through the EXISTING explicit path —
+  no autodiff. Each ships `forward`/`derivative` + the muPC `variance_gain`/
+  `jacobian_gain` constants (ported verbatim). GELU uses the tanh approximation
+  for forward (matching its `derivative`) so f/f' are self-consistent.
+- **Acceptance:** ✅ per-activation derivative finite-diff; gain constants;
+  explicit Linear path exact with Tanh (finite-diff self/input/weight); a Tanh
+  PC graph trains (energy ↓ >2×). 83/83 tests.
+
+*Phase D2 — Enzyme fallback + non-Gaussian energies + Softmax (next, adds dep).*
 - Generic `forward_and_latent_grads`/`forward_and_weight_grads` via Enzyme for
-  arbitrary node `forward`s; non-Gaussian energies; full activation zoo.
-- **Acceptance:** a non-linear (Tanh) PC graph trains; Enzyme path == explicit
-  path on Linear/Gaussian (conformance).
+  arbitrary node `forward`s; non-Gaussian energies (Bernoulli/CE/…); Softmax
+  (non-element-wise; needs the full Jacobian or autodiff).
+- **Acceptance:** Enzyme path == explicit path on Linear/Gaussian (conformance);
+  a non-Gaussian-energy graph trains.
 
 **Phase E — exhibits + reach (SECONDARY/DEFER).**
 - MNIST-style PC classifier exhibit; natural-gradient optimizers; then (deferred)

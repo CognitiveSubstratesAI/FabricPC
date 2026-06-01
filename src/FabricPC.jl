@@ -49,7 +49,16 @@ include("training/train.jl")
 
 export FABRICPC_VERSION
 # Activations / energy / initializers
-export AbstractActivation, IdentityActivation
+export AbstractActivation,
+    IdentityActivation,
+    SigmoidActivation,
+    TanhActivation,
+    ReLUActivation,
+    LeakyReLUActivation,
+    GeluActivation,
+    HardTanhActivation,
+    variance_gain,
+    jacobian_gain
 export AbstractEnergy, GaussianEnergy, energy, grad_latent
 export AbstractInitializer, ZerosInitializer, NormalInitializer, initialize
 # Topology

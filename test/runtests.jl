@@ -8,4 +8,5 @@ using Test
     include("test_phase_b.jl")
     include("test_residual.jl")
     include("test_mupc.jl")
+    include("test_activations.jl")
 end
