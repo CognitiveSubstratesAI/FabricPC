@@ -36,6 +36,8 @@ include("core/state_ops.jl")
 include("nodes/base.jl")
 include("nodes/linear.jl")
 include("nodes/identity.jl")
+include("nodes/skip_connection.jl")
+include("nodes/linear_residual.jl")
 include("core/scaling.jl")
 include("core/inference.jl")
 include("core/learning.jl")
@@ -52,7 +54,7 @@ export AbstractInitializer, ZerosInitializer, NormalInitializer, initialize
 # Topology
 export SlotSpec, SlotRef, Edge, slot
 # Nodes
-export AbstractNode, Linear, IdentityNode, get_slots
+export AbstractNode, Linear, IdentityNode, SkipConnection, LinearResidual, get_slots
 # Core types
 export NodeParams,
     GraphParams,

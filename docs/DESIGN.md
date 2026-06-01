@@ -90,8 +90,10 @@ attribution).
   GraphStructure as immutable structs. ✅
 - `core/topology.jl`: Edge, SlotRef, SlotSpec. ✅ (GraphNamespace deferred — flat names.)
 - `nodes/`: AbstractNode contract, `Linear` (explicit-grad fused; `flatten_input`
-  inert at rank-1), `IdentityNode` — with **explicit Gaussian gradients**. ✅
-  `SkipConnection` / `LinearResidual` deferred to a Phase B follow-up.
+  inert at rank-1), `IdentityNode`, `SkipConnection`, `LinearResidual` — all with
+  **explicit Gaussian gradients**. ✅ (Skip slot non-variance-scalable +
+  skip-connection flags carried for Phase C; LinearResidual splits `:in`/`:skip`
+  edges by key suffix.)
 - `core/energy.jl`: GaussianEnergy + `grad_latent`. ✅ (other energies → Phase D.)
 - `core/activations.jl`: IdentityActivation. ✅ (non-linear → Phase D.)
 - `core/inference.jl`: gather_inputs, `forward_value_and_grad` accumulation,
@@ -109,9 +111,9 @@ attribution).
   exact hand-computed gradient check + finite-difference cross-check of all four
   explicit gradients (self / input / weight / bias). 21/21 tests.
 
-**Phase B follow-up (next):** `SkipConnection` + `LinearResidual` nodes
-(muPC-relevant; skip slots are non-variance-scalable, count toward depth L);
-optionally wire `Optimisers.jl` for Adam once a non-trivial exhibit needs it.
+**Phase B follow-up:** ✅ `SkipConnection` + `LinearResidual` nodes done
+(hand-check + finite-diff + a residual-block learning test; 43/43 total).
+`Optimisers.jl` Adam still deferred until a non-trivial exhibit needs it.
 
 **Phase C — muPC (the novel layer).**
 - `core/mupc.jl` (pure scalar/topology math — no AD), `core/scaling.jl`
