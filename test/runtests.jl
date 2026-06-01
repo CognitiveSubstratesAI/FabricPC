@@ -7,4 +7,5 @@ using Test
     end
     include("test_phase_b.jl")
     include("test_residual.jl")
+    include("test_mupc.jl")
 end

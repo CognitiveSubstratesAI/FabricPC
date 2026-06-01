@@ -38,6 +38,7 @@ include("nodes/linear.jl")
 include("nodes/identity.jl")
 include("nodes/skip_connection.jl")
 include("nodes/linear_residual.jl")
+include("core/mupc.jl")
 include("core/scaling.jl")
 include("core/inference.jl")
 include("core/learning.jl")
@@ -64,6 +65,8 @@ export NodeParams,
     EdgeInfo,
     SlotInfo,
     GraphStructure
+# muPC (Phase C)
+export MuPCConfig, MuPCScalingFactors, compute_mupc_scalings
 # Inference / learning
 export InferenceSGD, run_inference, inference_step, compute_local_weight_gradients
 # Assembly + init

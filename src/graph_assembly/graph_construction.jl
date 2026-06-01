@@ -3,8 +3,8 @@
 # Assembles node descriptors + edges + a task map into an immutable
 # `GraphStructure`: resolves edge keys, builds per-node `NodeInfo` (degrees,
 # edge keys, slots), validates endpoints/slots, and computes a topological order.
-# muPC scaling attachment is deferred to Phase C (the `scaling` kwarg is accepted
-# but must be `nothing` in v0).
+# When a `MuPCConfig` is passed as `scaling`, per-node muPC factors are computed
+# (core/mupc.jl) and attached to each `NodeInfo.scaling_config`.
 
 """
     TaskMap(; task = node_or_name, …)
@@ -82,7 +82,8 @@ end
           graph_state_initializer = FeedforwardStateInit(), scaling = nothing) -> GraphStructure
 
 Build a `GraphStructure` from node descriptors, `Edge`s, and a `TaskMap`. Port of
-`graph()`. `scaling` (muPC) is Phase C — pass `nothing` in v0.
+`graph()`. Pass a `MuPCConfig` as `scaling` to compute and attach per-node muPC
+factors (`NodeInfo.scaling_config`); `nothing` (default) leaves scaling off.
 """
 function graph(
     nodes::AbstractVector,
@@ -90,11 +91,8 @@ function graph(
     task_map::TaskMap,
     inference;
     graph_state_initializer=FeedforwardStateInit(),
-    scaling=nothing
+    scaling::Union{Nothing, MuPCConfig}=nothing
 )
-    scaling === nothing ||
-        throw(ArgumentError("muPC scaling is Phase C; pass scaling = nothing in v0"))
-
     # 1. Build EdgeInfo objects (preserve edge-list order).
     edge_infos = Dict{String, EdgeInfo}()
     edge_keys_ordered = String[]
@@ -160,6 +158,20 @@ function graph(
     end
 
     node_order = _topological_sort(node_names, infos, edge_infos)
+
+    # Compute + attach muPC scaling factors when requested (NodeInfo is immutable,
+    # so reconstruct via Accessors @set). Terminal inputs / excluded outputs get
+    # `nothing` (left as the default).
+    if scaling !== nothing
+        scalings = compute_mupc_scalings(node_map, infos, edge_infos, scaling, node_order)
+        for name in keys(infos)
+            sc = get(scalings, name, nothing)
+            if sc !== nothing
+                info = infos[name]
+                infos[name] = @set info.scaling_config = sc
+            end
+        end
+    end
 
     config = (inference=inference, graph_state_initializer=graph_state_initializer)
     return GraphStructure(

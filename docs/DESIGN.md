@@ -115,12 +115,20 @@ attribution).
 (hand-check + finite-diff + a residual-block learning test; 43/43 total).
 `Optimisers.jl` Adam still deferred until a non-trivial exhibit needs it.
 
-**Phase C — muPC (the novel layer).**
-- `core/mupc.jl` (pure scalar/topology math — no AD), `core/scaling.jl`
-  (apply-side; preserve missing-key dtype semantics + autodiff-boundary
-  placement), activation `variance_gain`/`jacobian_gain` tables, `get_weight_fan_in`.
-- **Acceptance:** width/depth scan shows O(1) activations/grads with muPC on vs
-  blow-up off (reproduce an upstream muPC stability result).
+**Phase C — muPC (the novel layer). ✅ DONE.**
+- `core/mupc.jl` (`MuPCConfig`, `MuPCScalingFactors`, residual-depth L,
+  `compute_mupc_scalings` — pure scalar/topology math, no AD). ✅
+- `core/scaling.jl` real apply-side methods for `MuPCScalingFactors` — missing-key
+  = no-op (dtype-preserving), pre-scale inputs / post-scale top-down + weight
+  grads. ✅ Activation `variance_gain`/`jacobian_gain` (default 1; Identity). ✅
+  Per-node `get_weight_fan_in` (Identity/Skip = 1). ✅
+- `graph(...; scaling = MuPCConfig())` computes + attaches per-node factors. ✅
+- **Acceptance:** ✅ width scan reproduces the muPC variance-control result —
+  hidden-activation RMS stays ≈1.0 across width 64→4096 (1.045 / 0.965 / 0.995 /
+  0.982) with muPC ON, vs the √(fan_in) blow-up OFF (8.4 / 15.4 / 31.8 / 62.9,
+  tracking √W exactly). Plus exact forward-scale formula checks, residual-depth
+  L=2 detection, unscaled skip edges, and a muPC-on convergence smoke test.
+  61/61 tests.
 
 **Phase D — Enzyme autodiff fallback + activation zoo.**
 - Generic `forward_and_latent_grads`/`forward_and_weight_grads` via Enzyme for
