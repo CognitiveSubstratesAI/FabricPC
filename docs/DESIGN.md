@@ -179,8 +179,13 @@ attribution).
 - `examples/mupc_resnet.jl`: deep FC-ResNet (MuPCInit + LinearResidual blocks +
   AdamW). **8-block net trains MNIST 5.85% → 81.6%, energy monotone ↓** (0.80 →
   0.087) — the §9 ascent is gone. CI test: a 6-block muPC residual classifier.
+- **Reactant/XLA JIT** — feasibility + payoff PROVEN (`benchmark/reactant_jit.jl`:
+  8.8× on the MNIST-shaped PC inference, JIT == eager to 3e-6). Full in-package
+  integration (Dict→`NTuple` traceable state + Dict-free node forward + a
+  `FabricPCReactantExt` weakdep/extension) is scoped in decisions.md §11 — the
+  next deliberate increment.
 - Reach still DEFERRED: natural-gradient optimizers, transformer nodes / RoPE,
-  Storkey-Hopfield, autoregressive, multi-GPU, Reactant/XLA JIT path.
+  Storkey-Hopfield, autoregressive, multi-GPU.
 
 ## Explicit defers (do NOT port until needed, exhibit-gated)
 

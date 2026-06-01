@@ -52,3 +52,22 @@ per-edge scaling + AdamW + exact Softmax/CE gradient). 8 residual blocks, hidden
 The energy descends monotonically and a **deep (8-layer) PC ResNet trains** —
 this is the muPC win (decisions.md §10). The earlier §9 failure (energy ascending)
 was a unit-variance-init + exact-softmax-gradient gap, now closed.
+
+## Reactant/XLA JIT — feasibility + payoff (`reactant_jit.jl`)
+
+FabricPC's eager path uses Dict-keyed `GraphState`, which XLA cannot trace. This
+benchmark reformulates the SAME PC inference math (the hot `infer_steps` loop)
+over a fixed tuple of per-node arrays — the representation a full Reactant
+integration would use — and compiles it with `Reactant.@compile`. MNIST-shaped
+MLP (784→128→10, Gaussian), batch 256, 20 inference steps:
+
+| path | time (ms) | speedup |
+|------|----------:|--------:|
+| eager (naive Julia) | 50.7 | 1× |
+| Reactant/XLA JIT (synced) | 5.8 | **8.8×** |
+
+JIT matches eager to `max|Δ| = 2.9e-6`. (Timing forces `Array(...)` materialization
+— without it, async dispatch shows a misleading ~1000×.) The eager baseline here
+is allocation-naive; FabricPC's Dict-based eager is slower still, so the
+in-package payoff would be ≥ this. Confirms the JIT path is worth the GraphState
+refactor — see `docs/decisions.md` §11.

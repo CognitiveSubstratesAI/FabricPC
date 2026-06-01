@@ -177,3 +177,36 @@ deep 6-block muPC residual classifier is a CI test (`test_mupc_resnet.jl`).
 muPC + the full recipe makes deep PC nets trainable. The diagonal-softmax
 approximation remains for the general (non-CE) softmax case; only the CE pairing
 gets the exact path.
+
+## 11. Reactant/XLA JIT: feasible + ~9× — full integration is the GraphState refactor
+
+Date: 2026-06-01
+
+Feasibility spike (`benchmark/reactant_jit.jl`): Reactant 0.2.262 loads here and
+`@compile`s a fixed-step PC relaxation loop (matmul + activation + local-grad +
+latent update) over a tuple of per-node arrays. JIT matches eager to ~3e-6 and
+runs **8.8× faster** (synced) on the MNIST-shaped MLP inference (50.7 → 5.8 ms).
+The async-dispatch trap: timing the thunk WITHOUT `Array(...)` shows a bogus
+~1000×; always materialize to time XLA compute.
+
+What blocks dropping `Reactant.@compile` straight onto `run_inference`: the eager
+state is `Dict{String,NodeState}` / `Dict{String,Matrix}` with per-step `merge`
+(rebuilding Dicts). XLA traces array ops over a STATIC pytree; Dict-keyed,
+per-step-rebuilt containers are not traceable. Full integration plan (multi-
+session, opt-in — keep the eager Dict path as ground truth):
+
+1. **Traceable state representation.** Lower a `GraphStructure` to a static plan:
+   node order as integer positions, edges as `(src_pos, tgt_pos, slot)` ints, and
+   per-node positional weight order. Represent state as `NTuple{N,NodeState}` and
+   params as `NTuple{N,NodeParams}` (NodeState/NodeParams are already structs of
+   arrays — traceable). No Dicts, no mutation in the loop.
+2. **Dict-free node forward.** Variants of `forward` / `forward_and_*_grads` that
+   take inputs/weights as tuples aligned to the node's in-edges (integer-indexed),
+   so the traced region has no string-keyed lookups.
+3. **Package as a weakdep + extension** (`FabricPCReactantExt`, Reactant in
+   `[weakdeps]`), mirroring NGCLearn — the core package stays Reactant-free; the
+   JIT is opt-in via `using Reactant`. Validate JIT == eager in the extension's
+   tests; gate the heavy CI job off-by-default.
+
+Decision: feasibility + payoff are PROVEN and committed as a benchmark; the full
+GraphState refactor + extension is scoped above as the next deliberate increment.
