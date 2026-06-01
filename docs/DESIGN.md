@@ -170,8 +170,13 @@ attribution).
   + `examples/README.md` with committed numbers. ✅
 - `benchmark/throughput.jl` + `benchmark/results.md`: eager train_step throughput
   (~400 samp/s plateau on the MNIST net). ✅
-- Reach still DEFERRED: natural-gradient optimizers, transformer nodes / RoPE,
-  Storkey-Hopfield, autoregressive, multi-GPU, Reactant/XLA JIT path.
+- muPC-on MNIST (`FPC_MUPC=1`, hidden-only) trains to ~77% (decisions.md §9) but
+  does not beat the plain config — the full muPC training recipe (per-layer
+  inference-rate scaling) is future work; the variance-control property itself is
+  verified in `test_mupc.jl`.
+- Reach still DEFERRED: full muPC training dynamics, natural-gradient optimizers,
+  transformer nodes / RoPE, Storkey-Hopfield, autoregressive, multi-GPU,
+  Reactant/XLA JIT path.
 
 ## Explicit defers (do NOT port until needed, exhibit-gated)
 

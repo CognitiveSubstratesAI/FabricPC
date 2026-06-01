@@ -115,3 +115,30 @@ Softmax is non-element-wise; we ship upstream's diagonal-Jacobian approximation
 element-wise PC gradients". Consequence: with Softmax the energy is NOT a clean
 monotone objective, so the Softmax+CrossEntropy classifier is validated by train
 ACCURACY improvement, not energy descent.
+
+## 9. muPC on MNIST: hidden-only, and no lr-transfer benefit (yet)
+
+Date: 2026-06-01
+
+Investigated why muPC-on diverged on the MNIST exhibit. Findings:
+
+1. **`include_output=true` is wrong for an MSE one-hot classifier.** It scales the
+   output edge by a ≈ 1/N (the muPC O(1/N) output convention), capping `z_mu`
+   near 0 — it cannot reach a one-hot target of magnitude 1, so training
+   diverges trying to grow the weights ~N×. Fix: `include_output=false`
+   (scale hidden layers only); the MSE/Gaussian output keeps standard scaling.
+   `include_output=true` is for the softmax+CE setup, not MSE.
+
+2. **muPC-on does not beat muPC-off here.** With `include_output=false`, muPC-on
+   trains MNIST (5.70% → 77.45%, hidden-only, eta_infer=0.02, lr=0.02, 5k/2k/6ep)
+   but underperforms the plain config (81.65%) and has a *lower* lr ceiling
+   (diverges above ~0.03) — the opposite of muP's lr-transfer promise. The
+   variance-control property is correctly implemented and verified
+   (`test_mupc.jl`: O(1) activations across width 64→4096). The gap is the muPC
+   *training* recipe: upstream sets per-layer inference rates / optimizer scaling
+   in `train.py` + experiments, not in `mupc.py`. Replicating that is future work.
+
+Decision: ship the exhibit's `FPC_MUPC=1` path (hidden-only, stable inference
+settings) as a faithful, honest demonstration that muPC integrates and trains;
+do NOT claim a muPC accuracy/transfer win on MNIST. The plain config remains the
+default. The full muPC training dynamics are deferred (and noted in DESIGN.md).

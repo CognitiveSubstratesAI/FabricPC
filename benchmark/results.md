@@ -30,3 +30,8 @@ eta_infer 0.1, infer_steps 30 (≈1m45s):
 | 6 | 0.1162 | **0.8165** |
 
 Pure autodiff-free predictive-coding MLP: 5.95% → 81.65% on the MNIST subset.
+
+**muPC variant** (`FPC_MUPC=1`, hidden-only, eta_infer 0.02, lr 0.02, 40 infer
+steps): 5.70% → 77.45%. muPC-on trains but does not beat the plain config on this
+task (lower lr ceiling); the variance-control property is verified separately in
+`test_mupc.jl`. See `docs/decisions.md` §9.

@@ -46,9 +46,26 @@ A pure autodiff-free PC MLP reaches ~82% on the MNIST subset; more data/epochs
 push it higher. (Not tuned for SOTA — the point is that the local PC learning
 pipeline trains a real classifier end-to-end.)
 
+### muPC variant
+
+`FPC_MUPC=1 julia --project=. examples/mnist_pc.jl` enables **hidden-only muPC**
+(scales the hidden edges to keep activations O(1); the MSE one-hot output is left
+unscaled). It switches to the stable muPC inference settings (`eta_infer=0.02`,
+`infer_steps=40`, `lr=0.02`) and trains to **~77%** (5.70% → 77.45%, 5k/2k, 6ep).
+
+Findings (see `docs/decisions.md` §9):
+
+- `MuPCConfig(include_output=true)` is unsuitable for an MSE one-hot classifier —
+  it scales the output by ≈1/N, capping `z_mu` near 0 so it cannot reach a
+  one-hot target. Use `include_output=false` (hidden-only) for MSE classification.
+- With the current eager `InferenceSGD` + plain-SGD recipe, muPC-on does **not**
+  outperform the plain config on MNIST — it has a *lower* lr ceiling (diverges
+  above ~0.03), the opposite of muP's lr-transfer promise. The variance-control
+  property itself is real and verified (`test_mupc.jl`); the missing piece is
+  upstream's full muPC *training* recipe (per-layer inference-rate scaling etc.),
+  which lives in their `train.py`, not `mupc.py` — left as future work.
+
 ### Notes
 
-- **Stability**: with 784 fan-in, `lr ≳ 0.005` or too large an `eta_infer`
-  diverges to NaN. This is the regime muPC targets — but muPC's PC inference
-  needs different relaxation settings than these eager defaults, so the exhibit
-  ships the plain, stable config. muPC-on MNIST is left for future tuning.
+- **Stability**: with 784 fan-in, plain `lr ≳ 0.005` or too large an `eta_infer`
+  diverges to NaN — hence the small default lr.

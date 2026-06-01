@@ -70,14 +70,21 @@ end
 # ── build + train + eval ────────────────────────────────────────────────────
 
 function main()
-    # Defaults tuned for stability: with 784 fan-in, lr ≳ 0.005 or eta_infer too
-    # large diverges to NaN (the regime muPC is meant to fix — but muPC's PC
-    # inference needs different relaxation settings than these eager defaults, so
-    # the exhibit ships the plain, stable config). lr=0.002 / eta_infer=0.1.
+    # Two configs (FPC_MUPC=1 selects muPC):
+    #  - plain (default): no scaling. With 784 fan-in, lr ≳ 0.005 or too-large
+    #    eta_infer diverges to NaN, so a small lr=0.002 / eta_infer=0.1 is used.
+    #  - muPC (hidden-only, include_output=false): scales the hidden edges to keep
+    #    activations O(1); the MSE one-hot output is left UNscaled (include_output
+    #    =true caps the output near 0 and cannot reach a one-hot target). Needs a
+    #    smaller eta_infer (0.02) for inference stability. Trains to ~77% — does
+    #    NOT beat the plain config here (see docs/decisions.md §9).
+    mupc = get(ENV, "FPC_MUPC", "0") == "1"
     n_train = parse(Int, get(ENV, "FPC_NTRAIN", "5000"))
     n_test = parse(Int, get(ENV, "FPC_NTEST", "2000"))
     epochs = parse(Int, get(ENV, "FPC_EPOCHS", "6"))
-    lr = parse(Float32, get(ENV, "FPC_LR", "0.002"))
+    lr = parse(Float32, get(ENV, "FPC_LR", mupc ? "0.02" : "0.002"))
+    eta_infer = parse(Float64, get(ENV, "FPC_ETA", mupc ? "0.02" : "0.1"))
+    infer_steps = parse(Int, get(ENV, "FPC_STEPS", mupc ? "40" : "30"))
     bs = parse(Int, get(ENV, "FPC_BATCH", "64"))
     rng = MersenneTwister(0)
 
@@ -86,7 +93,7 @@ function main()
     Xte = load_images("t10k-images-idx3-ubyte")[1:n_test, :]
     yte = load_labels("t10k-labels-idx1-ubyte")[1:n_test]
     Ytr = onehot(ytr, 10)
-    @info "MNIST loaded" n_train n_test epochs lr bs
+    @info "MNIST loaded" n_train n_test epochs lr eta_infer infer_steps bs mupc
 
     xn = Linear((784,), "x")
     hn = Linear((128,), "h"; activation=TanhActivation())
@@ -95,7 +102,9 @@ function main()
         [xn, hn, yn],
         [Edge(xn, hn), Edge(hn, yn)],
         TaskMap(; x=xn, y=yn),
-        InferenceSGD(; eta_infer=0.1, infer_steps=30)
+        InferenceSGD(; eta_infer=eta_infer, infer_steps=infer_steps);
+        # muPC scales hidden edges only; the MSE one-hot output stays unscaled.
+        scaling=(mupc ? MuPCConfig(; include_output=false) : nothing)
     )
     params = initialize_params(structure, MersenneTwister(1))
 
