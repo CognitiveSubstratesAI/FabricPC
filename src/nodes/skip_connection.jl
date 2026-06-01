@@ -64,9 +64,6 @@ function forward(node::SkipConnection, ::NodeParams, inputs::AbstractDict, state
     return sum(new_state.energy), new_state
 end
 
-compute_gain_mod_error(node::SkipConnection, state::NodeState) =
-    state.error .* derivative(node.activation, state.pre_activation)
-
 function forward_and_latent_grads(
     node::SkipConnection,
     params::NodeParams,
@@ -98,9 +95,9 @@ function forward_and_latent_grads(
     else
         _, ns = forward(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        gain_mod_error = compute_gain_mod_error(node, ns)
-        # dz_mu/dxₑ = 1 (pure sum) ⇒ input_grad = -gain_mod_error.
-        input_grads = Dict{String, Any}(k => -gain_mod_error for k in keys(inputs))
+        # z_mu = Σx bypasses the activation ⇒ dz_mu/dxₑ = 1 ⇒ input_grad = ∂E/∂z_mu.
+        dmu = mu_grad(node, ns)
+        input_grads = Dict{String, Any}(k => dmu for k in keys(inputs))
         return ns, input_grads, self_grad
     end
 end

@@ -106,18 +106,15 @@ function forward(node::Linear, params::NodeParams, inputs::AbstractDict, state::
     return sum(new_state.energy), new_state
 end
 
-"""Gain-modulated error `error .* f'(pre_activation)`. Port of `compute_gain_mod_error`."""
-compute_gain_mod_error(node::Linear, state::NodeState) =
-    state.error .* derivative(node.activation, state.pre_activation)
-
 """
     forward_and_latent_grads(node::Linear, params, inputs, state, info, is_clamped)
 
 Explicit (non-autodiff) inference-phase gradients. Returns the forwarded
 NodeState (with `latent_grad` preserved), the per-edge input gradients
-`dE/dxₑ = -(gain_mod_error · Wₑᵀ)`, and the self-latent gradient
-`dE/dz = precision·(z - z_mu)`. Handles the terminal-source and unclamped-output
-special cases (port of `NodeBase.forward_and_latent_grads`).
+`dE/dxₑ = pre_grad · Wₑᵀ`, and the self-latent gradient `dE/dz =
+grad_latent(energy)`. Handles the terminal-source and unclamped-output special
+cases (port of `NodeBase.forward_and_latent_grads`). `pre_grad = (∂E/∂z_mu)·f'`
+generalizes the Phase B Gaussian `error·f'` to any energy.
 """
 function forward_and_latent_grads(
     node::Linear,
@@ -157,10 +154,10 @@ function forward_and_latent_grads(
         # Internal or clamped-output node: explicit input + self-latent grads.
         _, ns = forward(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        gain_mod_error = compute_gain_mod_error(node, ns)
+        dpre = pre_grad(node, ns)
         input_grads = Dict{String, Any}()
         for (edge_key, _) in inputs
-            input_grads[edge_key] = -(gain_mod_error * transpose(params.weights[edge_key]))
+            input_grads[edge_key] = dpre * transpose(params.weights[edge_key])
         end
         return ns, input_grads, self_grad
     end
@@ -169,8 +166,9 @@ end
 """
     forward_and_weight_grads(node::Linear, params, inputs, state) -> (NodeState, NodeParams)
 
-Explicit learning-phase gradients: `dWₑ = -(xₑᵀ · gain_mod_error)`,
-`db = -Σ_batch gain_mod_error`. Port of `LinearExplicitGrad.forward_and_weight_grads`.
+Explicit learning-phase gradients: `dWₑ = xₑᵀ · pre_grad`, `db = Σ_batch pre_grad`,
+where `pre_grad = (∂E/∂z_mu)·f'(pre)`. Port of `LinearExplicitGrad.forward_and_weight_grads`
+generalized to any energy (identical to the Phase B Gaussian form at precision 1).
 """
 function forward_and_weight_grads(
     node::Linear,
@@ -179,16 +177,16 @@ function forward_and_weight_grads(
     state::NodeState
 )
     _, ns = forward(node, params, inputs, state)
-    gain_mod_error = compute_gain_mod_error(node, ns)
+    dpre = pre_grad(node, ns)
 
     weight_grads = Dict{String, Matrix{Float32}}()
     for (edge_key, x) in inputs
-        weight_grads[edge_key] = -(transpose(x) * gain_mod_error)
+        weight_grads[edge_key] = transpose(x) * dpre
     end
 
     bias_grads = Dict{String, Matrix{Float32}}()
     if haskey(params.biases, "b")
-        bias_grads["b"] = -sum(gain_mod_error; dims=1)
+        bias_grads["b"] = sum(dpre; dims=1)
     end
     return ns, NodeParams(weight_grads, bias_grads)
 end

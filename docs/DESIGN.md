@@ -144,12 +144,22 @@ attribution).
   explicit Linear path exact with Tanh (finite-diff self/input/weight); a Tanh
   PC graph trains (energy ↓ >2×). 83/83 tests.
 
-*Phase D2 — Enzyme fallback + non-Gaussian energies + Softmax (next, adds dep).*
-- Generic `forward_and_latent_grads`/`forward_and_weight_grads` via Enzyme for
-  arbitrary node `forward`s; non-Gaussian energies (Bernoulli/CE/…); Softmax
-  (non-element-wise; needs the full Jacobian or autodiff).
-- **Acceptance:** Enzyme path == explicit path on Linear/Gaussian (conformance);
-  a non-Gaussian-energy graph trains.
+*Phase D2 — non-Gaussian energies + Softmax, ANALYTIC (NO Enzyme). ✅ DONE.*
+- Decision (user-approved): the explicit path generalizes to all in-scope
+  energies analytically, so no autodiff dependency is added. The only genuine
+  Enzyme use-case (arbitrary custom forwards, e.g. transformers) is already
+  deferred to Phase E+ — so the Enzyme fallback is deferred to when it lands.
+- Added an analytic `grad_mu` (∂E/∂z_mu) per energy + generalized the node path
+  (`pre_grad = grad_mu·f'`, `mu_grad` for activation-bypassing paths). Bit-identical
+  to Phase B at Gaussian precision 1. Energies: Bernoulli, CrossEntropy, Laplacian,
+  Huber, KLDivergence. Softmax activation uses the upstream diagonal-Jacobian PC
+  approximation (energy not a clean monotone objective ⇒ tested via accuracy).
+- **Acceptance:** ✅ per-energy `grad_latent` + `grad_mu` finite-diff (all 6);
+  explicit node path exact with the ASYMMETRIC Bernoulli+Sigmoid (finite-diff
+  self/input/weight); a Bernoulli binary PC graph trains; Softmax+CE classifier
+  improves train accuracy. 104/104 tests.
+
+*Enzyme generic fallback — DEFERRED to when transformers/arbitrary forwards land.*
 
 **Phase E — exhibits + reach (SECONDARY/DEFER).**
 - MNIST-style PC classifier exhibit; natural-gradient optimizers; then (deferred)

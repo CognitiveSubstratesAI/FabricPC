@@ -123,9 +123,6 @@ function forward(
     return sum(new_state.energy), new_state
 end
 
-compute_gain_mod_error(node::LinearResidual, state::NodeState) =
-    state.error .* derivative(node.activation, state.pre_activation)
-
 function forward_and_latent_grads(
     node::LinearResidual,
     params::NodeParams,
@@ -157,16 +154,16 @@ function forward_and_latent_grads(
     else
         _, ns = forward(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        gain_mod_error = compute_gain_mod_error(node, ns)
+        dpre = pre_grad(node, ns)        # transform path: ∂E/∂pre
+        dmu = mu_grad(node, ns)          # skip path: ∂E/∂z_mu (bypasses activation)
         input_grads = Dict{String, Any}()
         for (edge_key, _) in inputs
             if _is_in_edge(edge_key)
                 # Transform path: gradient flows through W and the activation.
-                input_grads[edge_key] =
-                    -(gain_mod_error * transpose(params.weights[edge_key]))
+                input_grads[edge_key] = dpre * transpose(params.weights[edge_key])
             else
-                # Skip path: dz_mu/dxₛ = 1 (bypasses the activation) ⇒ -error.
-                input_grads[edge_key] = -ns.error
+                # Skip path: dz_mu/dxₛ = 1 (bypasses the activation) ⇒ ∂E/∂z_mu.
+                input_grads[edge_key] = dmu
             end
         end
         return ns, input_grads, self_grad
@@ -180,17 +177,17 @@ function forward_and_weight_grads(
     state::NodeState
 )
     _, ns = forward(node, params, inputs, state)
-    gain_mod_error = compute_gain_mod_error(node, ns)
+    dpre = pre_grad(node, ns)
 
     weight_grads = Dict{String, Matrix{Float32}}()
     for (edge_key, x) in inputs
         _is_in_edge(edge_key) || continue   # skip edges have no weights
-        weight_grads[edge_key] = -(transpose(x) * gain_mod_error)
+        weight_grads[edge_key] = transpose(x) * dpre
     end
 
     bias_grads = Dict{String, Matrix{Float32}}()
     if haskey(params.biases, "b")
-        bias_grads["b"] = -sum(gain_mod_error; dims=1)
+        bias_grads["b"] = sum(dpre; dims=1)
     end
     return ns, NodeParams(weight_grads, bias_grads)
 end

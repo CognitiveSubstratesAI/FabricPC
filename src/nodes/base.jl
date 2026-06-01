@@ -8,7 +8,7 @@
 #   forward_and_latent_grads(node, params, inputs, state, info, is_clamped)
 #                                                    -> (NodeState, input_grads, self_grad)
 #   forward_and_weight_grads(node, params, inputs, state) -> (NodeState, NodeParams)
-#   compute_gain_mod_error(node, state)              -> array
+#   (gradients use the shared helpers mu_grad / pre_grad below)
 #
 # This file provides the behaviours shared by all node types.
 
@@ -23,6 +23,29 @@ function energy_functional(node::AbstractNode, state::NodeState)
     e = energy(node.energy, state.z_latent, state.z_mu)
     return update_state(state; energy=e)
 end
+
+"""
+    mu_grad(node, state) -> array
+
+`∂E/∂z_mu` for this node's energy (the prediction-side energy gradient). Drives
+the explicit input/weight gradients. For a node that bypasses its activation
+(Identity/Skip), the input gradient is `(dz_mu/dx)·mu_grad`. At Gaussian
+precision 1, `mu_grad = -(z - z_mu) = -error`.
+"""
+mu_grad(node::AbstractNode, state::NodeState) =
+    grad_mu(node.energy, state.z_latent, state.z_mu)
+
+"""
+    pre_grad(node, state) -> array
+
+`∂E/∂pre = (∂E/∂z_mu) · f'(pre)` — the energy gradient w.r.t. the pre-activation,
+for nodes whose `z_mu = activation(pre)`. The linear-path input/weight gradients
+are built from this (`input_grad = pre_grad·Wᵀ`, `dW = xᵀ·pre_grad`,
+`db = Σ pre_grad`). Replaces the Gaussian-only `error·f'` from Phase B (identical
+at precision 1, but correct for any energy/precision).
+"""
+pre_grad(node::AbstractNode, state::NodeState) =
+    mu_grad(node, state) .* derivative(node.activation, state.pre_activation)
 
 """
     get_weight_fan_in(node, source_shape) -> Int

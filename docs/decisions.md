@@ -86,3 +86,32 @@ unpinned `Pkg.add("JuliaFormatter")` restored an older formatter than local,
 failing the format gate on clean code. FabricPC's CI pins JuliaFormatter to
 =2.5.2, drops the cache in the format job, and prints `git diff` on failure — so
 the format gate is reliable and self-diagnosing from the start.
+
+## 8. Phase D2: non-Gaussian energies are analytic — Enzyme deferred
+
+Date: 2026-06-01
+
+Phase D was planned as "Enzyme autodiff fallback + non-linear activations". On
+porting it became clear the explicit path already covers everything in scope
+WITHOUT autodiff:
+
+- Element-wise activations (Tanh/ReLU/GELU/…) train through the existing explicit
+  path — `pre_grad = (∂E/∂z_mu)·f'(pre)` is exact for any element-wise `f` (D1).
+- Non-Gaussian energies (Bernoulli/CE/Laplacian/Huber/KL) get an analytic
+  `grad_mu = ∂E/∂z_mu` alongside upstream's `grad_latent = ∂E/∂z`, so the node
+  path generalizes with no autodiff (D2). Bit-identical to Phase B at Gaussian
+  precision 1 (there `grad_mu = -error`).
+
+The ONLY genuine Enzyme use-case is arbitrary custom node forwards (transformers,
+attention) — which the DESIGN already defers to Phase E+. So adding Enzyme now
+would buy nothing in-scope while adding a heavy dep (minutes-long precompile,
+~30-min CI JIT job) and the known Enzyme-through-Dict fragility. Decision
+(user-approved): **stay autodiff-free; defer the Enzyme generic fallback to when
+transformers/arbitrary forwards are actually ported.** This also keeps the v0
+thesis intact — PC needs no backprop.
+
+Softmax is non-element-wise; we ship upstream's diagonal-Jacobian approximation
+(`s·(1-s)`, off-diagonal `-sᵢsⱼ` dropped), which upstream itself calls "valid for
+element-wise PC gradients". Consequence: with Softmax the energy is NOT a clean
+monotone objective, so the Softmax+CrossEntropy classifier is validated by train
+ACCURACY improvement, not energy descent.

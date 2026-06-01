@@ -57,9 +57,19 @@ export AbstractActivation,
     LeakyReLUActivation,
     GeluActivation,
     HardTanhActivation,
+    SoftmaxActivation,
     variance_gain,
     jacobian_gain
-export AbstractEnergy, GaussianEnergy, energy, grad_latent
+export AbstractEnergy,
+    GaussianEnergy,
+    BernoulliEnergy,
+    CrossEntropyEnergy,
+    LaplacianEnergy,
+    HuberEnergy,
+    KLDivergenceEnergy,
+    energy,
+    grad_latent,
+    grad_mu
 export AbstractInitializer, ZerosInitializer, NormalInitializer, initialize
 # Topology
 export SlotSpec, SlotRef, Edge, slot

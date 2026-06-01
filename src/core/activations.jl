@@ -3,14 +3,14 @@
 # Each activation is a small struct; `forward` / `derivative` dispatch on it.
 # Upstream computes `derivative` only on the explicit-gradient path (the
 # autodiff path never calls it). Since FabricPC.jl v0 is fully explicit, the
-# inference + learning loops DO call `derivative` (via compute_gain_mod_error).
+# inference + learning loops DO call `derivative` (via the node `pre_grad` helper).
 #
-# Phase B shipped IdentityActivation; Phase D1 adds the element-wise non-linear
-# zoo (Sigmoid, Tanh, ReLU, LeakyReLU, GELU, HardTanh). These work through the
-# EXISTING explicit Linear/LinearResidual gradient path — `gain_mod_error =
-# error · f'(pre)` is exact for any element-wise activation under Gaussian energy,
-# so no autodiff is needed. Softmax (non-element-wise) + the Enzyme generic
-# fallback are Phase D2.
+# Phase B shipped IdentityActivation; Phase D1 added the element-wise non-linear
+# zoo (Sigmoid, Tanh, ReLU, LeakyReLU, GELU, HardTanh); Phase D2 added Softmax.
+# Element-wise activations work through the EXISTING explicit Linear/LinearResidual
+# path — the node `pre_grad` helper computes `(∂E/∂z_mu)·f'(pre)`, exact for any
+# element-wise activation, so no autodiff is needed. Softmax is non-element-wise
+# and uses the diagonal-Jacobian PC approximation (see its docstring).
 
 abstract type AbstractActivation end
 
@@ -93,6 +93,27 @@ function derivative(::GeluActivation, x)
 end
 variance_gain(::GeluActivation) = Float32(sqrt(2.0))
 jacobian_gain(::GeluActivation) = 1.168f0   # 1/(√2·rms(gelu'(z))), z~N(0,2)
+
+"""
+Softmax over the last axis: `f(x)_i = e^{x_i} / Σ_j e^{x_j}`.
+
+NON-element-wise. `derivative` returns the DIAGONAL of the Jacobian, `s·(1-s)`
+— upstream's sanctioned approximation "valid for element-wise PC gradients"
+(the off-diagonal `-s_i s_j` terms are dropped). Pair with `CrossEntropyEnergy`
+for classification. The explicit gradient is therefore approximate for Softmax
+(unlike the exact element-wise activations); see docs/decisions.md.
+"""
+struct SoftmaxActivation <: AbstractActivation end
+function forward(::SoftmaxActivation, x)
+    # Stable softmax along the feature axis (dim 2 in our batch-first layout).
+    m = maximum(x; dims=2)
+    ex = exp.(x .- m)
+    return ex ./ sum(ex; dims=2)
+end
+function derivative(a::SoftmaxActivation, x)
+    s = forward(a, x)
+    return s .* (1.0f0 .- s)   # diagonal of diag(s) - s·sᵀ
+end
 
 """Hard tanh: f(x) = clamp(x, lo, hi); f'(x) = 1[lo<x<hi]."""
 struct HardTanhActivation <: AbstractActivation

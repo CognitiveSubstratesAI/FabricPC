@@ -75,9 +75,6 @@ function forward(
     return sum(new_state.energy), new_state
 end
 
-compute_gain_mod_error(node::IdentityNode, state::NodeState) =
-    state.error .* derivative(node.activation, state.pre_activation)
-
 function forward_and_latent_grads(
     node::IdentityNode,
     params::NodeParams,
@@ -109,10 +106,11 @@ function forward_and_latent_grads(
     else
         _, ns = forward(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        gain_mod_error = compute_gain_mod_error(node, ns)
+        # z_mu = scale·Σx bypasses the activation ⇒ dE/dxₑ = scale·(∂E/∂z_mu).
+        dmu = mu_grad(node, ns)
         input_grads = Dict{String, Any}()
         for (edge_key, _) in inputs
-            input_grads[edge_key] = -(node.scale .* gain_mod_error)
+            input_grads[edge_key] = node.scale .* dmu
         end
         return ns, input_grads, self_grad
     end
