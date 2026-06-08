@@ -248,3 +248,47 @@ extension is exercised via `examples/jit_inference.jl` (needs Reactant).
 
 Remaining: a flat weight-grad path to JIT the full train_step (not just
 inference); NTuple-typed state for fully type-stable tracing.
+
+## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
+
+Date: 2026-06-08
+
+Decision #8 deferred the Enzyme generic-gradient fallback "to when
+transformers/arbitrary forwards are actually ported." That trigger has arrived
+(the PC-transformer is the goal), so Phase D is now activated — as a weakdep
+extension (`FabricPCEnzymeExt`, loaded on `using Enzyme`), honoring #8's cost
+concern: the base package stays autodiff-free; only consumers of custom nodes pay
+the Enzyme precompile / CI-JIT cost.
+
+**The seam.** A node implements ONLY `compute_mu(node, params, inputs) -> z_mu`
+(concrete arrays). `energy_kernel`, `forward`, and the generic
+`forward_and_weight_grads` / `forward_and_latent_grads` (on `::AbstractNode`) are
+then derived: Enzyme reverse-mode differentiates `energy_kernel` w.r.t. `params`
+(learning) and w.r.t. `(inputs, z_latent)` (inference) — the Julia analog of
+upstream's base-class `jax.value_and_grad(forward)`. Linear/Identity/Skip/Residual
+keep their closed-form overrides (strictly more specific ⇒ win dispatch).
+
+**Still PURE PC, not backprop.** Each autodiff call is confined to ONE node's
+local energy `E_node(params, inputs, z_latent)`; it never propagates through the
+network or the inference relaxation. Enzyme only spares the hand-derivation of a
+complex node's *local* gradient — exactly what makes transformer / attention /
+Storkey-Hopfield nodes expressible.
+
+**Two hard lessons (gated against the closed-form Linear oracle, ~1e-7):**
+1. Enzyme must differentiate CONCRETE arrays. Differentiating the real `forward`
+   failed in `runtime_generic_augfwd` because NodeState's `::Any` fields
+   (decision #5) force Enzyme's type-unstable path. Hence `compute_mu` returns
+   plain `Matrix{Float32}` and NodeState bookkeeping stays OUTSIDE the
+   differentiated region.
+2. The input-edge `Dict` iteration mixes active/constant entries →
+   `EnzymeRuntimeActivityError`. Fix: `set_runtime_activity(Reverse)` (correct,
+   small perf cost). The core stubs are VARARG fallbacks (`_ad_*(args...)`), not
+   the ext's typed signature — a same-signature stub is a forbidden
+   precompile-time method overwrite.
+
+**Validation (`test_autodiff_seam.jl`):** (1) conformance — a `compute_mu`-only
+`ADLinear` reproduces the closed-form Linear weight/latent/input grads to 1e-4;
+(2) end-to-end — a 1-hidden-layer non-linear `MLPNode` (no closed-form local grad)
+trains a separable task purely by PC (energy falls, accuracy > 0.85). Full suite
+161/161. Next: the transformer node (rank-2 sequence shapes + attention forward)
+on this proven seam.
