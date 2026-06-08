@@ -15,4 +15,5 @@ using Test
     include("test_mupc_resnet.jl")
     include("test_jit_flat.jl")
     include("test_initializers_natgrad.jl")
+    include("test_train_pcn.jl")
 end

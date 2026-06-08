@@ -114,3 +114,115 @@ function predict(
     final_state = run_inference(params, init_state, clamps, structure)
     return final_state.nodes[structure.task_map[output_task]].z_mu
 end
+
+# One local training step, dispatching on the optimizer (AdamW vs plain-SGD lr).
+# Both call the LOCAL `train_step` — NO backprop through the network/inference loop.
+# Runtime dispatch (not `::AdamW` in the signature) because AdamW lives in a sibling
+# file included after this one; the body resolves `train_step!` at call time.
+_pcn_step(p::GraphParams, opt, b, s, rng) =
+    opt isa Real ? train_step(p, b, s, opt, rng) : train_step!(opt, p, b, s, rng)
+
+"""
+    train_pcn(params, structure, train_loader, opt; num_epochs = 10,
+              rng = Random.default_rng(), verbose = true,
+              epoch_callback = nothing, iter_callback = nothing)
+        -> (params, iter_energies, epoch_results)
+
+Train a predictive-coding network with **local learning — no backprop.** Loops
+`num_epochs` (fractional supported) × batches over `train_loader` (a re-iterable of
+task→array batches), calling the local `train_step!`/`train_step` and accumulating
+per-batch energy. `opt` is an `AdamW` optimizer OR a `Real` learning rate (plain
+SGD). Returns the trained params, a `[epochs][batches]` energy history, and the
+collected `epoch_callback` results. Port of `train_pcn` (single-device path;
+pmap/multi-GPU deferred).
+"""
+function train_pcn(
+    params::GraphParams,
+    structure::GraphStructure,
+    train_loader,
+    opt;
+    num_epochs::Real=10,
+    rng::AbstractRNG=Random.default_rng(),
+    verbose::Bool=true,
+    epoch_callback=nothing,
+    iter_callback=nothing
+)
+    total_epochs = ceil(Int, num_epochs)
+    frac = num_epochs - floor(num_epochs)
+    num_batches = length(train_loader)
+    iter_results = Vector{Vector{Float32}}()
+    epoch_results = Any[]
+    for epoch in 1:total_epochs
+        max_batches =
+            if (epoch == total_epochs && frac > 0.0)
+                round(Int, frac * num_batches)
+            else
+                num_batches
+            end
+        batch_energies = Float32[]
+        for (bidx, batch) in enumerate(train_loader)
+            bidx > max_batches && break
+            params, energy, _ = _pcn_step(params, opt, batch, structure, rng)
+            push!(batch_energies, Float32(energy))
+            iter_callback === nothing || iter_callback(epoch, bidx, energy)
+        end
+        push!(iter_results, batch_energies)
+        epoch_callback === nothing ||
+            push!(epoch_results, epoch_callback(epoch, params, structure, rng))
+        if verbose
+            m =
+                if isempty(batch_energies)
+                    0.0f0
+                else
+                    sum(batch_energies) / length(batch_energies)
+                end
+            println(
+                "[train_pcn] epoch $epoch/$total_epochs  mean energy $(round(m; digits=5))"
+            )
+        end
+    end
+    return params, iter_results, epoch_results
+end
+
+"""
+    evaluate_pcn(params, structure, test_loader; input_task = "x",
+                 output_task = "y", rng = Random.default_rng())
+        -> Dict{String,Float64}
+
+Evaluate a PC classifier (**no backprop**): for each batch, clamp the input, relax
+the graph, and `argmax` the output node's prediction vs the label's `argmax` →
+accuracy; also accumulate mean per-sample energy (with input+label clamped).
+Returns `Dict("accuracy" => …, "energy" => …)`. Port of `evaluate_pcn`
+(single-device).
+"""
+function evaluate_pcn(
+    params::GraphParams,
+    structure::GraphStructure,
+    test_loader;
+    input_task::AbstractString="x",
+    output_task::AbstractString="y",
+    rng::AbstractRNG=Random.default_rng()
+)
+    correct = 0
+    total = 0
+    energy_sum = 0.0f0
+    nbatch = 0
+    for batch in test_loader
+        labels = batch[output_task]
+        pred = predict(
+            params, structure, Dict(input_task => batch[input_task]), rng;
+            output_task=output_task
+        )
+        for i in 1:size(pred, 1)
+            correct += (argmax(@view pred[i, :]) == argmax(@view labels[i, :])) ? 1 : 0
+        end
+        total += size(pred, 1)
+        _, e, _ = get_graph_param_gradient(params, batch, structure, rng)
+        energy_sum += e
+        nbatch += 1
+    end
+    return Dict{String, Float64}(
+        "accuracy" => total == 0 ? 0.0 : correct / total,
+        "energy" => nbatch == 0 ? 0.0 : energy_sum / nbatch
+    )
+end

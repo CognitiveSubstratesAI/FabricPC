@@ -107,6 +107,7 @@ export graph,
     initialize_graph_state
 # Training
 export get_graph_param_gradient, train_step, sgd_update, predict, AdamW, step!, train_step!
+export train_pcn, evaluate_pcn
 export NaturalGradientDiag, NaturalGradientLayerwise, precondition!
 # JIT (Dict-free traceable inference path — foundation for Reactant)
 export CompiledPlan,
