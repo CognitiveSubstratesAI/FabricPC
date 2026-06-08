@@ -5,8 +5,9 @@
 # (exact JAX bit-parity is neither possible nor a goal — within-Julia
 # determinism under a seeded RNG is what we test against).
 #
-# Phase B ships Zeros + Normal. Kaiming / Xavier / Uniform arrive when a node
-# needs them (Linear's v0 default is Normal, matching upstream LinearExplicitGrad).
+# Full roster (upstream parity): Zeros, Normal, MuPC, Xavier (normal+uniform),
+# Kaiming/He (normal+uniform), Ones, Uniform. (Deferred: GlobalState /
+# NodeDistribution state inits — those are state, not weight, initializers.)
 
 abstract type AbstractInitializer end
 
@@ -58,20 +59,86 @@ initialize(rng::AbstractRNG, shape::Tuple, init::MuPCInitializer) =
     init.gain .* randn(rng, Float32, shape...)
 
 """
-    XavierInitializer(; gain = 1.0)
+    XavierInitializer(; gain = 1.0, distribution = :normal)
 
-Xavier/Glorot normal init: `W ~ N(0, std²)`, `std = gain·√(2/(fan_in+fan_out))`,
-for a weight of shape `(fan_in, fan_out)`. Used for the (unscaled) output layer of
-a muPC net. Port of `XavierInitializer` (normal variant; uniform deferred).
+Xavier/Glorot init for a weight of shape `(fan_in, fan_out)`. Port of
+`XavierInitializer` (both variants):
+- `:normal`  — `N(0, std²)`, `std = gain·√(2/(fan_in+fan_out))`
+- `:uniform` — `U(−limit, limit)`, `limit = gain·√(6/(fan_in+fan_out))`
 """
 struct XavierInitializer <: AbstractInitializer
     gain::Float32
+    distribution::Symbol
 end
-XavierInitializer(; gain=1.0) = XavierInitializer(Float32(gain))
+XavierInitializer(; gain=1.0, distribution=:normal) =
+    XavierInitializer(Float32(gain), distribution)
 
 function initialize(rng::AbstractRNG, shape::Tuple, init::XavierInitializer)
     fan_in = shape[1]
     fan_out = length(shape) > 1 ? shape[2] : shape[1]
-    std = init.gain * sqrt(2.0f0 / (fan_in + fan_out))
-    return std .* randn(rng, Float32, shape...)
+    if init.distribution == :uniform
+        limit = init.gain * sqrt(6.0f0 / (fan_in + fan_out))
+        return (-limit) .+ (2.0f0 * limit) .* rand(rng, Float32, shape...)
+    else
+        std = init.gain * sqrt(2.0f0 / (fan_in + fan_out))
+        return std .* randn(rng, Float32, shape...)
+    end
+end
+
+"""
+    KaimingInitializer(; mode = :fan_in, nonlinearity = :relu,
+                       distribution = :normal, a = 0.01, gain = 1.0)
+
+Kaiming/He init optimized for ReLU networks (preserves activation variance).
+Port of `KaimingInitializer`. For shape `(fan_in, fan_out)` (or `(fan_in,)`):
+- `fan = fan_in` (`:fan_in`) or `fan_out` (`:fan_out`)
+- ReLU gain `√2`; leaky-ReLU gain `√(2/(1+a²))`; scaled by `gain`
+- `:normal`  — `std = gain·g/√fan`
+- `:uniform` — `limit = gain·g·√(3/fan)`
+"""
+struct KaimingInitializer <: AbstractInitializer
+    mode::Symbol
+    nonlinearity::Symbol
+    distribution::Symbol
+    a::Float32
+    gain::Float32
+end
+KaimingInitializer(; mode=:fan_in, nonlinearity=:relu, distribution=:normal,
+    a=0.01, gain=1.0) =
+    KaimingInitializer(mode, nonlinearity, distribution, Float32(a), Float32(gain))
+
+function initialize(rng::AbstractRNG, shape::Tuple, init::KaimingInitializer)
+    fan = init.mode == :fan_out ? (length(shape) > 1 ? shape[2] : shape[1]) : shape[1]
+    g = init.nonlinearity == :leaky_relu ? sqrt(2.0f0 / (1.0f0 + init.a^2)) : sqrt(2.0f0)
+    if init.distribution == :uniform
+        limit = init.gain * g * sqrt(3.0f0 / fan)
+        return (-limit) .+ (2.0f0 * limit) .* rand(rng, Float32, shape...)
+    else
+        std = init.gain * g / sqrt(Float32(fan))
+        return std .* randn(rng, Float32, shape...)
+    end
+end
+
+"""
+    OnesInitializer()
+
+Initialize with ones. Port of `OnesInitializer`.
+"""
+struct OnesInitializer <: AbstractInitializer end
+initialize(::AbstractRNG, shape::Tuple, ::OnesInitializer) = ones(Float32, shape...)
+
+"""
+    UniformInitializer(; minval = -0.05, maxval = 0.05)
+
+Uniform init `U(minval, maxval)`. Port of `UniformInitializer`.
+"""
+struct UniformInitializer <: AbstractInitializer
+    minval::Float32
+    maxval::Float32
+end
+UniformInitializer(; minval=-0.05, maxval=0.05) =
+    UniformInitializer(Float32(minval), Float32(maxval))
+
+function initialize(rng::AbstractRNG, shape::Tuple, init::UniformInitializer)
+    return init.minval .+ (init.maxval - init.minval) .* rand(rng, Float32, shape...)
 end
