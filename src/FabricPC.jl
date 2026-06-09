@@ -40,6 +40,7 @@ include("nodes/skip_connection.jl")
 include("nodes/linear_residual.jl")
 include("nodes/autodiff.jl")
 include("nodes/transformer.jl")
+include("nodes/transformer_decomposed.jl")
 include("core/mupc.jl")
 include("core/scaling.jl")
 include("core/inference.jl")
@@ -92,6 +93,8 @@ export AbstractNode, Linear, IdentityNode, SkipConnection, LinearResidual, get_s
 export compute_mu, energy_kernel
 # PC-transformer block (local-PC gradients via the Enzyme seam)
 export TransformerBlock
+# Decomposed (fully-PC) transformer stages
+export MhaResidualNode, LnMlp1Node, Mlp2ResidualNode
 # Core types
 export NodeParams,
     GraphParams,

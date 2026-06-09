@@ -414,3 +414,34 @@ poisons the subsequent compile (`setfield!: immutable Tuple`). So the "JIT path 
 eager fallback" architecture is broken; a working integration needs either an
 all-compiled (no eager Enzyme) graph or the on-device GraphState refactor (#11).
 Deferred; the eager PC-transformer + the block-JIT benchmark (689de8c) stand.
+
+## 16. Decomposed (fully-PC) transformer stages — PC at every sub-component
+
+Date: 2026-06-09
+
+Ported the middle stages of transformer_v2.py as three separate PC nodes, so
+predictive coding operates at EVERY sub-component, not just the block boundary:
+  x → MhaResidual(z=x+W_o·MHA(LN x)) → LnMlp1(z=GELU(LN·W_ff1)) → Mlp2Residual(z=res+·W_ff2)
+with a skip (residual) edge from MhaResidual into Mlp2Residual. Each node implements
+only `compute_mu`; local PC gradients come from the Enzyme seam. Reuses the `_tb_*`
+helpers (`_tb_mha` was generalized to take config explicitly — num_heads/use_rope/
+causal — so the monolithic block and MhaResidual share it; no regression, 184/184).
+
+Unlike the monolithic `TransformerBlock`, residuals are PLAIN (z = x + mha, z =
+res + mlp2) — no 1/√2 or √S scaling (matches transformer_v2). Causal MhaResidual ⇒
+autoregressive.
+
+KEY new surface validated: **multi-slot nodes**. `Mlp2Residual` has "in" (from
+LnMlp1, (S,ff)) + "residual" (skip from MhaResidual, (S,embed)) — different feature
+dims, same rank-3, so `_concrete_inputs` (one inferred rank N=3) handles them, and
+the seam returns local PC input gradients for BOTH edges (test asserts the residual
+edge's grad == z_mu − z_latent, since the residual passes straight through). The
+skip is just another input edge to the autodiff — `is_skip_connection`/
+`is_variance_scalable=false` only matter for muPC scaling (off here).
+
+Validated: forward shapes + causal no-leak (CI, fast) + the multi-slot grad smoke
+(CI, Enzyme). End-to-end is the heavy example examples/decomposed_transformer_pc.jl
+— a fully-PC decomposed transformer doing autoregressive next-token prediction with
+MhaResidual/LnMlp1 as FREE latents relaxed by multi-node PC inference (infer_steps>1),
+x + output clamped. DEFER: EmbeddingNode + VocabProjectionNode (discrete-token I/O —
+embedding lookup + vocab logits + custom latent-grad), a follow-up.

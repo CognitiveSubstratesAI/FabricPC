@@ -159,10 +159,14 @@ _tb_causal_mask(S) = Float32[j <= i ? 0.0f0 : -1.0f9 for i in 1:S, j in 1:S]
 _tb_varcomp(S, causal) =
     causal ? reshape(sqrt.(Float32.(1:S)), 1, S, 1) : fill(sqrt(Float32(S)), 1, 1, 1)
 
-# Multi-head self-attention. x (B,S,E) -> (B,S,E). Causal masks future keys.
-function _tb_mha(node::TransformerBlock, p, x)
+# Multi-head self-attention on a (pre-normed) x (B,S,E) -> (B,S,E). Config passed
+# explicitly (num_heads/use_rope/causal) so both the monolithic TransformerBlock and
+# the decomposed MhaResidualNode share it. Reads W_q/W_k/W_v/W_o + b_* from `p`.
+# Returns W_o·attn (no √S/residual scaling — the callsite owns those). Causal masks
+# future keys.
+function _tb_mha(num_heads::Int, use_rope::Bool, causal::Bool, p, x)
     B, S, E = size(x)
-    H = node.num_heads
+    H = num_heads
     Dh = E ÷ H
     Q = _tb_dense(x, p.weights["W_q"], reshape(p.biases["b_q"], 1, 1, E))
     K = _tb_dense(x, p.weights["W_k"], reshape(p.biases["b_k"], 1, 1, E))
@@ -177,7 +181,7 @@ function _tb_mha(node::TransformerBlock, p, x)
         Qh = Q[:, :, cols]
         Kh = K[:, :, cols]
         Vh = V[:, :, cols]
-        if node.use_rope
+        if use_rope
             Qh = _tb_apply_rope(Qh, cosA, sinA)
             Kh = _tb_apply_rope(Kh, cosA, sinA)
         end
@@ -186,7 +190,7 @@ function _tb_mha(node::TransformerBlock, p, x)
             kb = Kh[b, :, :]
             vb = Vh[b, :, :]
             scores = (qb * transpose(kb)) ./ scale
-            scores = node.causal ? scores .+ cmask : scores
+            scores = causal ? scores .+ cmask : scores
             m = maximum(scores; dims=2)
             ex = exp.(scores .- m)
             (ex ./ sum(ex; dims=2)) * vb
@@ -212,7 +216,9 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
         x, reshape(params.weights["ln1_gamma"], 1, 1, E),
         reshape(params.biases["ln1_beta"], 1, 1, E)
     )
-    attn = _tb_mha(node, params, xn1) .* _tb_varcomp(S, node.causal)   # variance comp.
+    attn =
+        _tb_mha(node.num_heads, node.use_rope, node.causal, params, xn1) .*
+        _tb_varcomp(S, node.causal)   # variance comp.
     xres1 = inv2 .* (x .+ attn)
     xn2 = _tb_layernorm(
         xres1, reshape(params.weights["ln2_gamma"], 1, 1, E),
