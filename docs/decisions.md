@@ -445,3 +445,35 @@ Validated: forward shapes + causal no-leak (CI, fast) + the multi-slot grad smok
 MhaResidual/LnMlp1 as FREE latents relaxed by multi-node PC inference (infer_steps>1),
 x + output clamped. DEFER: EmbeddingNode + VocabProjectionNode (discrete-token I/O —
 embedding lookup + vocab logits + custom latent-grad), a follow-up.
+
+## 17. EmbeddingNode + VocabProjectionNode — transformer_v2 token I/O complete
+
+Date: 2026-06-09
+
+Completed the decomposed transformer_v2 pipeline with its discrete-token endpoints:
+  tokens → Embedding → MhaResidual → LnMlp1 → Mlp2Residual → VocabProjection → logits
+
+EmbeddingNode (discrete token ids → embeddings) uses EXPLICIT gradients, NOT the
+autodiff seam: the input is integer token indices, so (a) the seam's Float32
+concrete-ify would corrupt them and (b) there is no gradient through a discrete
+index. forward = row lookup embeddings[idx]; forward_and_weight_grads = scatter-add
+of ∂E/∂z_mu into embedding rows by token id (validated == manual scatter, reldiff 0);
+forward_and_latent_grads = zero input grad (discrete) + self grad = grad_latent (the
+latent is anchored to the lookup). Clamps arrive as Float32 (set_latents_to_clamps
+casts), so ids are round()'d back to Int for indexing.
+
+VocabProjectionNode (embeddings → vocab logits) is seam-based (compute_mu =
+activation(x·W_out + b_out)). Defaults to Identity + Gaussian (rank-agnostic, trains
+next-token to one-hot targets, proven). Upstream's softmax+KL default is DEFERRED:
+the port's SoftmaxActivation softmaxes over dim 2, not the rank-3 vocab axis — a
+last-axis softmax would be needed (+ the softmax+CE non-monotone-energy caveat #8).
+
+Tests 190/190 (Embedding lookup + scatter weight-grad + discrete latent-grad; Vocab
+forward). examples/decomposed_lm_pc.jl: the FULL fully-PC transformer LM (token ids
+→ logits), Embedding/Mha/LnMlp1/Mlp2 as free latents relaxed by multi-node PC
+inference, trained end-to-end by LOCAL PC (no backprop). transformer_v2 port complete.
+
+WORKFLOW NOTE: warm Revise session hot-reloads EXISTING method/test edits (instant),
+but adding NEW structs (these nodes) to a tracked package is NOT picked up by
+Revise.revise() — needs a module reload. Validate new-node forwards via a fast cold
+FabricPC run (no Enzyme needed for explicit nodes); use Revise for iterate-on-existing.

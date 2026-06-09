@@ -77,4 +77,49 @@ const TD = FabricPC
         # input grad equals the self-latent grad's negative (Gaussian: ∂E/∂res = z_mu−z).
         @test igrads["mha->mlp2:residual"] ≈ (z .- zlat) rtol = 1e-3
     end
+
+    @testset "EmbeddingNode: lookup + scatter weight-grad + discrete latent-grad" begin
+        rng = MersenneTwister(1)
+        B, S, E, V = 2, 3, 4, 7
+        en = EmbeddingNode((S, E), "emb"; vocab_size=V)
+        ep = TD.initialize_params(
+            en, rng, (S, E), Dict("tok->emb:in" => (S,)), en.weight_init
+        )
+        idx = Float32[((b + s) % V) + 1 for b in 1:B, s in 1:S]
+        inputs = Dict{String, Any}("tok->emb:in" => idx)
+        zlat = randn(rng, Float32, B, S, E)
+        st = NodeState(zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
+            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E))
+        _, ns = TD.forward(en, ep, inputs, st)
+        emb = ep.weights["embeddings"]
+        @test all(ns.z_mu[b, s, :] ≈ emb[Int(idx[b, s]), :] for b in 1:B, s in 1:S)
+        # weight grad = scatter-add of ∂E/∂z_mu into rows by token id (vs manual)
+        _, gp = TD.forward_and_weight_grads(en, ep, inputs, st)
+        gm = ns.z_mu .- zlat                                   # grad_mu (Gaussian)
+        manual = zero(emb)
+        for b in 1:B, s in 1:S
+            manual[Int(idx[b, s]), :] .+= gm[b, s, :]
+        end
+        @test gp.weights["embeddings"] ≈ manual rtol = 1e-5
+        # discrete input ⇒ zero input grad; self grad = grad_latent (z − z_mu)
+        info = NodeInfo("emb", (E,), "EmbeddingNode", Dict{String, SlotInfo}(),
+            1, 1, ["tok->emb:in"], String[], nothing)
+        _, ig, sg = TD.forward_and_latent_grads(en, ep, inputs, st, info, false)
+        @test all(iszero, ig["tok->emb:in"])
+        @test sg ≈ (zlat .- ns.z_mu) rtol = 1e-5
+    end
+
+    @testset "VocabProjectionNode: embed → vocab logits" begin
+        rng = MersenneTwister(2)
+        B, S, E, V = 2, 4, 8, 5
+        vp = VocabProjectionNode((S, V), "vocab")
+        vpp = TD.initialize_params(
+            vp, rng, (S, V), Dict("h->vocab:in" => (S, E)), vp.weight_init
+        )
+        x = randn(rng, Float32, B, S, E)
+        z = compute_mu(vp, vpp, Dict{String, Any}("h->vocab:in" => x))
+        @test size(z) == (B, S, V)
+        @test z ≈
+            TD._tb_dense(x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :))
+    end
 end

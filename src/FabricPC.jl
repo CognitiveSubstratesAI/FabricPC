@@ -94,7 +94,7 @@ export compute_mu, energy_kernel
 # PC-transformer block (local-PC gradients via the Enzyme seam)
 export TransformerBlock
 # Decomposed (fully-PC) transformer stages
-export MhaResidualNode, LnMlp1Node, Mlp2ResidualNode
+export MhaResidualNode, LnMlp1Node, Mlp2ResidualNode, EmbeddingNode, VocabProjectionNode
 # Core types
 export NodeParams,
     GraphParams,
