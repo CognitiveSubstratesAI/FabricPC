@@ -19,4 +19,5 @@ using Test
     include("test_autodiff_seam.jl")   # Phase D: Enzyme node-local autodiff seam
     include("test_transformer.jl")     # Phase D: PC-transformer block (Enzyme seam)
     include("test_transformer_decomposed.jl")  # fully-PC decomposed stages
+    include("test_storkey_hopfield.jl")         # Hopfield associative memory (composite energy)
 end

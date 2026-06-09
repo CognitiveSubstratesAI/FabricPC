@@ -477,3 +477,34 @@ WORKFLOW NOTE: warm Revise session hot-reloads EXISTING method/test edits (insta
 but adding NEW structs (these nodes) to a tracked package is NOT picked up by
 Revise.revise() — needs a module reload. Validate new-node forwards via a fast cold
 FabricPC run (no Enzyme needed for explicit nodes); use Revise for iterate-on-existing.
+
+## 18. StorkeyHopfield — first composite-energy node (PC + attractor); seam handles it
+
+Date: 2026-06-09
+
+Ported the Hopfield associative-memory node — the last remaining substrate node type.
+It's the FIRST node with a COMPOSITE energy:
+  E_total = E_pc(z, z_mu) + s·E_hop(z, W),   E_hop = (1/2D)·zᵀ(W²−W)z
+E_pc pulls the latent toward the upstream prediction; E_hop pulls it toward stored
+patterns (attractors in W). Attractor dynamics (denoising / pattern completion) arise
+from the Hopfield energy gradient (s/D)(W²−W)z accumulated to latent_grad during PC
+inference. z_mu = activation(probe·blend + (probe·W)(1−blend) + b), blend=1/(1+s);
+strength s learnable (softplus-constrained, init 1) or fixed.
+
+KEY: the Enzyme seam handles the composite energy with no new machinery — the node
+OVERRIDES `energy_kernel` (returns Σ(E_pc + s·E_hop)) so Enzyme differentiates the
+FULL energy for both the latent grad (PC pull + attractor pull) and the weight grad
+(incl ∂E_hop/∂W, the W²−W term), and overrides `forward` so state.energy reports the
+full energy (the generic forward sets E_pc only). Validated vs finite-difference:
+forward energy exact; latent grad reldiff 5.6e-6; weight grad reldiff 6.2e-5. W is
+stored under the input edge key (gradient flows to the source); _prepare_W symmetrizes
+(differentiable). This establishes the pattern for ANY node whose energy is not just
+node.energy: override energy_kernel (+ forward for reporting), seam does the rest.
+
+Tests in test_storkey_hopfield.jl (forward energy + composite-energy seam grads vs FD
++ strength=0 pass-through). examples/hopfield_assoc_memory.jl: a Hopfield node learns
+associative recall (denoise noisy ±1 probes → clean patterns) by LOCAL PC. With this,
+the FabricPC PC-substrate node set matches upstream (Linear/Identity/Skip/Residual/
+Transformer/transformer_v2/StorkeyHopfield) — ~complete. Remaining non-substrate:
+multi-device training, dashboards/dataloader/experiments/tuner, train_backprop (the
+anti-thesis baseline). decisions.md #18.

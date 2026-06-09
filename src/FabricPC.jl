@@ -41,6 +41,7 @@ include("nodes/linear_residual.jl")
 include("nodes/autodiff.jl")
 include("nodes/transformer.jl")
 include("nodes/transformer_decomposed.jl")
+include("nodes/storkey_hopfield.jl")
 include("core/mupc.jl")
 include("core/scaling.jl")
 include("core/inference.jl")
@@ -95,6 +96,8 @@ export compute_mu, energy_kernel
 export TransformerBlock
 # Decomposed (fully-PC) transformer stages
 export MhaResidualNode, LnMlp1Node, Mlp2ResidualNode, EmbeddingNode, VocabProjectionNode
+# Hopfield associative-memory node (composite PC + attractor energy)
+export StorkeyHopfield
 # Core types
 export NodeParams,
     GraphParams,
