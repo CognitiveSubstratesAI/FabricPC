@@ -205,3 +205,80 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
     z_mu = inv2 .* (xres1 .+ ff2)
     return forward(node.activation, z_mu)            # output activation (Identity by default)
 end
+
+# =============================================================================
+# Reactant/XLA JIT path: a Dict-free, positional-array form of the block forward,
+# traceable by Reactant.@compile AND differentiable by Enzyme UNDER @compile
+# (Reactant+Enzyme) — the perf compiler for the eager forward above.
+#
+# Differs from `compute_mu` ONLY in mechanics, not math: it takes the parameter
+# arrays positionally (no Dict — Reactant traces arrays/tuples), biases/γβ as
+# (1,1,·), and unrolls heads+batch with `ntuple(…, Val(N))` so the indices are
+# LITERAL ⇒ concrete slices (a `map`/`for` over a range makes the index a traced
+# value, which breaks `Q[:,:,(h-1)*Dh+1:h*Dh]`). Internal activation is GELU and
+# output activation identity (the default node config). Validated equal to
+# `compute_mu` (test_transformer.jl) and JIT==eager + Enzyme(JIT)==Enzyme(eager) to
+# ~1e-7 (benchmark/transformer_jit.jl). `B` is the (fixed-per-compile) batch size.
+function _tb_block_flat(
+    x, W_q, W_k, W_v, W_o, b_q, b_k, b_v, b_o, W_ff1, b_ff1, W_ff2, b_ff2,
+    ln1g, ln1b, ln2g, ln2b, ::Val{H}, ::Val{B}, ::Val{ROPE}
+) where {H, B, ROPE}
+    S = size(x, 2)
+    E = size(x, 3)
+    Dh = E ÷ H
+    inv2 = 1.0f0 / sqrt(2.0f0)
+    xn1 = _tb_layernorm(x, ln1g, ln1b)
+    Q = _tb_dense(xn1, W_q, b_q)
+    K = _tb_dense(xn1, W_k, b_k)
+    V = _tb_dense(xn1, W_v, b_v)
+    cosA, sinA = _tb_rope_tables(Dh, S)
+    scale = sqrt(Float32(Dh))
+    heads = ntuple(Val(H)) do h
+        cols = ((h - 1) * Dh + 1):(h * Dh)
+        Qh = Q[:, :, cols]
+        Kh = K[:, :, cols]
+        Vh = V[:, :, cols]
+        if ROPE
+            Qh = _tb_apply_rope(Qh, cosA, sinA)
+            Kh = _tb_apply_rope(Kh, cosA, sinA)
+        end
+        outb = ntuple(Val(B)) do b
+            qb = Qh[b, :, :]
+            kb = Kh[b, :, :]
+            vb = Vh[b, :, :]
+            sc = (qb * transpose(kb)) ./ scale
+            m = maximum(sc; dims=2)
+            ex = exp.(sc .- m)
+            (ex ./ sum(ex; dims=2)) * vb
+        end
+        stack(outb; dims=1)
+    end
+    attn = _tb_dense(cat(heads...; dims=3), W_o, b_o) .* sqrt(Float32(S))
+    xres1 = inv2 .* (x .+ attn)
+    xn2 = _tb_layernorm(xres1, ln2g, ln2b)
+    ff1 = _tb_dense(xn2, W_ff1, b_ff1)
+    ff2 = _tb_dense(forward(GeluActivation(), ff1), W_ff2, b_ff2)
+    return inv2 .* (xres1 .+ ff2)
+end
+
+"""
+    flat_block_args(node, params) -> Tuple
+
+Unpack a `TransformerBlock`'s `NodeParams` (Dict) into the positional array tuple
+`_tb_block_flat` expects (weights + (1,1,·) biases/γβ), in order. The bridge from
+the Dict-based eager params to the Reactant-traceable flat kernel.
+"""
+function flat_block_args(node::TransformerBlock, params::NodeParams)
+    E = node.shape[end]
+    r(a, n) = reshape(a, 1, 1, n)
+    w = params.weights
+    b = params.biases
+    return (
+        w["W_q"], w["W_k"], w["W_v"], w["W_o"],
+        r(b["b_q"], E), r(b["b_k"], E), r(b["b_v"], E), r(b["b_o"], E),
+        w["W_ff1"], r(b["b_ff1"], node.ff_dim), w["W_ff2"], r(b["b_ff2"], E),
+        r(w["ln1_gamma"], E), r(b["ln1_beta"], E), r(w["ln2_gamma"], E), r(
+            b["ln2_beta"], E
+        )
+    )
+end

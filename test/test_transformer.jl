@@ -116,6 +116,24 @@ end
         @test compute_mu(node2, params, inputs) ≈ _block_loop(node2, params, x) rtol = 1e-4
     end
 
+    @testset "Dict-free flat kernel == compute_mu (Reactant-path equivalence)" begin
+        # The positional ntuple/Val kernel used for the Reactant+Enzyme JIT path must
+        # be numerically identical to the eager Dict-based compute_mu (default config:
+        # GELU internal, identity output). Guards the two forms from drifting apart.
+        rng = MersenneTwister(13)
+        B, S, E, H = 3, 4, 8, 2
+        node = TransformerBlock((S, E), "t"; num_heads=H, use_rope=true)
+        params = TF.initialize_params(
+            node, rng, (S, E), Dict("x->t:in" => (S, E)), node.weight_init
+        )
+        x = randn(rng, Float32, B, S, E)
+        zc = compute_mu(node, params, Dict{String, Any}("x->t:in" => x))
+        zf = TF._tb_block_flat(
+            x, TF.flat_block_args(node, params)..., Val(H), Val(B), Val(true)
+        )
+        @test zf ≈ zc rtol = 1e-5
+    end
+
     @testset "autoencodes sequences by local PC (no backprop)" begin
         rng = MersenneTwister(2025)
         B, S, E, H = 4, 4, 8, 2

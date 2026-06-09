@@ -339,3 +339,47 @@ v1 scope: full (non-causal) attention, single `"in"` slot, no mask. DEFER (not
 gaps): causal masking, the decomposed per-stage transformer (`transformer_v2.py`:
 Embedding/MhaResidual/LnMlp/VocabProjection as separate PC nodes), Storkey-Hopfield,
 Reactant+Enzyme JIT of the block.
+
+## 14. Reactant+Enzyme JIT of the PC-transformer block (feasible; perf layer)
+
+Date: 2026-06-09
+
+The transformer node's local PC gradients run eagerly via the Enzyme seam
+(#12/#13, correctness-first). This adds the PERFORMANCE path: the block forward
+AND its local gradient compile to XLA via Reactant — Reactant being Julia's native
+XLA frontend (same backend as JAX), not a JAX transliteration. Reactant intercepts
+`Enzyme.autodiff` under `@compile`, so the *same* local-energy gradient is lowered
+to XLA differentiation (Reactant+Enzyme). Still pure local PC: the autodiff is
+confined to one block's local energy.
+
+**Recipe (gated standalone before building):**
+- A Dict-free, positional-array kernel `_tb_block_flat` (Reactant traces arrays/
+  tuples, not Dicts) — numerically identical to the eager `compute_mu`
+  (test_transformer.jl: reldiff 0.0). `flat_block_args` bridges NodeParams→tuple.
+- `ntuple(…, Val(N))` STATIC unrolling of heads + batch. A `map`/`for` over a range
+  makes the loop index a *traced* value, so the head-slice range `(h-1)*Dh+1:h*Dh`
+  becomes a TracedUnitRange and `Q[:,:,cols]` fails ("non-boolean TracedRNumber in
+  boolean context"). `ntuple(Val)` gives literal indices ⇒ concrete slices. Batch
+  size `B` is a `Val` (fixed per compile, like the inference JIT).
+- Gate A (forward): Reactant == eager, reldiff 4e-8. Gate B (gradient):
+  Reactant+Enzyme == eager-Enzyme, reldiff 7e-8 (dx) / 3e-7 (dW).
+
+**Benchmark** (`benchmark/transformer_jit.jl`, benchmark/jit env): forward JIT==eager
+(1.9e-6) at ~1.5–1.9× over eager on CPU (XLA's edge is modest on CPU/small blocks;
+larger on GPU); Reactant+Enzyme gradient validated by directional finite-difference
+(⟨∇,v⟩ reldiff 1.3e-3) at ~7ms. Enzyme + Revise added to the benchmark/jit env.
+
+**Enzyme friction documented (so we don't relearn):**
+- Eager Enzyme on the `ntuple` kernel is unstable with MANY active args at once
+  (falls into `runtime_generic_rev` → `sum(abs2, Nothing)` / `PrimalErrorThunk`).
+  The eager seam uses the `map`-based `compute_mu` and differentiates the full
+  NodeParams fine; the `ntuple` kernel is for the Reactant path, where the full
+  gradient lowers cleanly. Per-array `Duplicated` (rest `Const`) is the robust form.
+- An outer scalar factor on the returned loss (`/2`, `0.5f0*…`) trips Enzyme's
+  reverse seeding here (`*(Float32, add_one_in_place)`); use a bare `sum(abs2,…)`.
+
+**Deferred (the real integration, multi-session — the GraphState refactor of #11):**
+routing the transformer node's gradients through a compiled+cached kernel during
+`train_pcn` (Dict→flat at the training callsite, compile-per-(config,batch) cache).
+This benchmark proves the kernel + the Reactant+Enzyme gradient; wiring it into the
+eager training loop is the next step. Eager PC-transformer remains the default.
