@@ -292,3 +292,50 @@ Storkey-Hopfield nodes expressible.
 trains a separable task purely by PC (energy falls, accuracy > 0.85). Full suite
 161/161. Next: the transformer node (rank-2 sequence shapes + attention forward)
 on this proven seam.
+
+## 13. PC-transformer (TransformerBlock) — native Julia, gradients via the seam
+
+Date: 2026-06-09
+
+Built the first transformer block as a single PC node (port of
+`fabricpc/nodes/transformer.py`), the flagship of decision #12's seam: a
+transformer whose every parameter is learned by LOCAL predictive coding, no
+backprop. The node implements only `compute_mu` (LayerNorm → MHA+RoPE → ·√seq →
+residual/√2 → LayerNorm → FFN → residual/√2); its weight + latent gradients come
+free from the Enzyme seam.
+
+**Native Julia, not a JAX transliteration (user directive).** Two consequences:
+1. *Embrace column-major; drop numpy-byte-compatibility.* We train from scratch,
+   so any consistent head partition + RoPE pairing is valid — the gate is
+   mathematical correctness, not matching numpy's layout. This dissolves most of
+   the "column-major hazard." Key fact used: for last-axis contraction,
+   `reshape(reshape(x, B*S, E) * W, B, S, :)` IS layout-correct in column-major
+   (batch/seq are the leading fast axes). Head split = contiguous embed blocks;
+   RoPE = adjacent-pair rotation. Both arbitrary-but-consistent.
+2. *No NNlib `batched_mul`.* Julia loops/`map`/`stack`/`cat` are fast and idiomatic;
+   attention is a native per-(head, batch) loop. Base + LinearAlgebra only.
+   Reactant/XLA (already wired for inference via FabricPCReactantExt) is the future
+   perf compiler for this eager forward — Reactant is Julia's native XLA path, the
+   right answer rather than mimicking JAX ops.
+
+**Rank-3 support.** Latents are `(batch, seq, embed)`. The framework was already
+rank-agnostic (energy sums over all non-batch dims; state init uses `shape...`).
+Only the seam's input/latent dicts hardcoded rank-2: generalized `_concrete_inputs`
++ `_ad_latent_grads` to `Array{Float32,N}` with N inferred (kept concrete-typed so
+Enzyme stays on its type-stable path). All node PARAMS stay 2D `Matrix` (biases /
+LayerNorm γ,β stored `(1,embed)`, reshaped to `(1,1,embed)` in `compute_mu`), so
+NodeParams is unchanged.
+
+**Two gates (gate-before-build, no Python — jax/numpy unavailable):**
+1. Native vectorized forward == independent explicit-loop oracle, reldiff 0.0
+   (RoPE on/off). Locks the reshapes/head-split/RoPE.
+2. Enzyme grad == finite-difference (dW 0.009, dx 0.0004) — the native
+   `map`/`stack`/`cat`/index forward IS Enzyme-differentiable (`set_runtime_activity`).
+Both re-asserted in-repo (`test_transformer.jl`): forward-oracle + an autoencode
+that trains by local PC (energy falls, no NaN; AdamW, infer_steps=1 since both
+graph endpoints are clamped ⇒ no free latents). Full suite 168/168.
+
+v1 scope: full (non-causal) attention, single `"in"` slot, no mask. DEFER (not
+gaps): causal masking, the decomposed per-stage transformer (`transformer_v2.py`:
+Embedding/MhaResidual/LnMlp/VocabProjection as separate PC nodes), Storkey-Hopfield,
+Reactant+Enzyme JIT of the block.

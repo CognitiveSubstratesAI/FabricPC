@@ -42,7 +42,8 @@ end
 function _ad_latent_grads(
     node::AbstractNode, params::NodeParams, inputs, z_latent
 )
-    dinputs = Dict{String, Matrix{Float32}}(k => zero(v) for (k, v) in inputs)
+    N = ndims(first(values(inputs)))
+    dinputs = Dict{String, Array{Float32, N}}(k => zero(v) for (k, v) in inputs)
     dz = zero(z_latent)
     Enzyme.autodiff(
         set_runtime_activity(Reverse),

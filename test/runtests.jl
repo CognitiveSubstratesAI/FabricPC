@@ -17,4 +17,5 @@ using Test
     include("test_initializers_natgrad.jl")
     include("test_train_pcn.jl")
     include("test_autodiff_seam.jl")   # Phase D: Enzyme node-local autodiff seam
+    include("test_transformer.jl")     # Phase D: PC-transformer block (Enzyme seam)
 end

@@ -78,8 +78,19 @@ _ad_param_grads(args...) = error(_ENZYME_HINT)
 _ad_latent_grads(args...) = error(_ENZYME_HINT)
 
 # gather_inputs builds Dict{String,Any}; concrete-ify so Enzyme stays type-stable.
-_concrete_inputs(inputs) =
-    Dict{String, Matrix{Float32}}(k => Float32.(v) for (k, v) in inputs)
+# Rank is inferred from the inputs (rank-2 (batch,features) for dense nodes, rank-3
+# (batch,seq,embed) for sequence/transformer nodes) and baked into the Dict's
+# concrete value type `Array{Float32,N}` — an abstract `Array{Float32}` value type
+# would re-trigger Enzyme's type-unstable path. Assumes one rank across input slots
+# (true for the current nodes; a mixed-rank node would concrete-ify per slot).
+function _concrete_inputs(inputs)
+    N = ndims(first(values(inputs)))
+    d = Dict{String, Array{Float32, N}}()
+    for (k, v) in inputs
+        d[k] = Float32.(v)
+    end
+    return d
+end
 
 """
     forward_and_weight_grads(node::AbstractNode, params, inputs, state) -> (NodeState, NodeParams)

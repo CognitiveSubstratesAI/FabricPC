@@ -39,6 +39,7 @@ include("nodes/identity.jl")
 include("nodes/skip_connection.jl")
 include("nodes/linear_residual.jl")
 include("nodes/autodiff.jl")
+include("nodes/transformer.jl")
 include("core/mupc.jl")
 include("core/scaling.jl")
 include("core/inference.jl")
@@ -89,6 +90,8 @@ export SlotSpec, SlotRef, Edge, slot
 export AbstractNode, Linear, IdentityNode, SkipConnection, LinearResidual, get_slots
 # Phase-D autodiff seam (generic local-PC gradients; activate with `using Enzyme`)
 export compute_mu, energy_kernel
+# PC-transformer block (local-PC gradients via the Enzyme seam)
+export TransformerBlock
 # Core types
 export NodeParams,
     GraphParams,
