@@ -17,7 +17,9 @@
 #
 # All parameters are 2D `Matrix{Float32}` so they fit NodeParams unchanged (biases
 # and LayerNorm γ/β are stored (1, embed) and reshaped to (1,1,embed) here for the
-# broadcast). v1: full (non-causal) attention, single "in" slot, no mask.
+# broadcast). Single "in" slot. Self-attention is full by default or causal
+# (`causal=true`: future keys masked + per-position √i variance comp) for
+# autoregressive next-token modeling. No external mask input.
 
 """
     TransformerBlock(shape, name; num_heads = 4, activation = IdentityActivation(),
@@ -27,7 +29,8 @@
 
 A pre-norm transformer block as a single PC node. `shape = (seq_len, embed_dim)`;
 `embed_dim` must be divisible by `num_heads`. Single multi-input-free `"in"` slot.
-Local PC gradients via the Enzyme autodiff seam (`using Enzyme` to activate).
+`causal=true` masks future keys (autoregressive). Local PC gradients via the Enzyme
+autodiff seam (`using Enzyme` to activate).
 """
 struct TransformerBlock <: AbstractNode
     shape::Tuple
@@ -38,6 +41,7 @@ struct TransformerBlock <: AbstractNode
     internal_activation::AbstractActivation
     ff_dim::Int
     use_rope::Bool
+    causal::Bool
     weight_init::AbstractInitializer
     latent_init::AbstractInitializer
 end
@@ -51,6 +55,7 @@ function TransformerBlock(
     internal_activation::AbstractActivation=GeluActivation(),
     ff_dim::Union{Int, Nothing}=nothing,
     use_rope::Bool=true,
+    causal::Bool=false,
     weight_init::AbstractInitializer=NormalInitializer(),
     latent_init::AbstractInitializer=NormalInitializer()
 )
@@ -63,7 +68,7 @@ function TransformerBlock(
     ffd = ff_dim === nothing ? 4 * embed : ff_dim
     return TransformerBlock(
         shp, String(name), num_heads, activation, energy, internal_activation,
-        ffd, use_rope, weight_init, latent_init
+        ffd, use_rope, causal, weight_init, latent_init
     )
 end
 
@@ -144,7 +149,17 @@ function _tb_apply_rope(xh, cosA, sinA)
     )
 end
 
-# Multi-head self-attention (full / non-causal). x (B,S,E) -> (B,S,E).
+# Additive causal mask (S,S): 0 on/below the diagonal (query i may attend to key
+# j ≤ i), -1f9 above (future keys) → ~0 after softmax. Data-independent ⇒ a traced
+# constant under Reactant.
+_tb_causal_mask(S) = Float32[j <= i ? 0.0f0 : -1.0f9 for i in 1:S, j in 1:S]
+
+# Per-position softmax variance compensation (1,S,1): √S for full attention; for
+# causal, query i attends to i keys ⇒ √i (restores ≈unit variance per position).
+_tb_varcomp(S, causal) =
+    causal ? reshape(sqrt.(Float32.(1:S)), 1, S, 1) : fill(sqrt(Float32(S)), 1, 1, 1)
+
+# Multi-head self-attention. x (B,S,E) -> (B,S,E). Causal masks future keys.
 function _tb_mha(node::TransformerBlock, p, x)
     B, S, E = size(x)
     H = node.num_heads
@@ -154,6 +169,9 @@ function _tb_mha(node::TransformerBlock, p, x)
     V = _tb_dense(x, p.weights["W_v"], reshape(p.biases["b_v"], 1, 1, E))
     cosA, sinA = _tb_rope_tables(Dh, S)
     scale = sqrt(Float32(Dh))
+    # Build unconditionally (always Matrix{Float32}) and add only when causal: a
+    # `Union{Nothing,Matrix}` cmask makes Enzyme reject the node (IllegalTypeAnalysis).
+    cmask = _tb_causal_mask(S)
     heads = map(1:H) do h
         cols = ((h - 1) * Dh + 1):(h * Dh)
         Qh = Q[:, :, cols]
@@ -168,6 +186,7 @@ function _tb_mha(node::TransformerBlock, p, x)
             kb = Kh[b, :, :]
             vb = Vh[b, :, :]
             scores = (qb * transpose(kb)) ./ scale
+            scores = node.causal ? scores .+ cmask : scores
             m = maximum(scores; dims=2)
             ex = exp.(scores .- m)
             (ex ./ sum(ex; dims=2)) * vb
@@ -193,7 +212,7 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
         x, reshape(params.weights["ln1_gamma"], 1, 1, E),
         reshape(params.biases["ln1_beta"], 1, 1, E)
     )
-    attn = _tb_mha(node, params, xn1) .* sqrt(Float32(S))     # full-attn variance comp.
+    attn = _tb_mha(node, params, xn1) .* _tb_varcomp(S, node.causal)   # variance comp.
     xres1 = inv2 .* (x .+ attn)
     xn2 = _tb_layernorm(
         xres1, reshape(params.weights["ln2_gamma"], 1, 1, E),
@@ -221,8 +240,8 @@ end
 # ~1e-7 (benchmark/transformer_jit.jl). `B` is the (fixed-per-compile) batch size.
 function _tb_block_flat(
     x, W_q, W_k, W_v, W_o, b_q, b_k, b_v, b_o, W_ff1, b_ff1, W_ff2, b_ff2,
-    ln1g, ln1b, ln2g, ln2b, ::Val{H}, ::Val{B}, ::Val{ROPE}
-) where {H, B, ROPE}
+    ln1g, ln1b, ln2g, ln2b, ::Val{H}, ::Val{B}, ::Val{ROPE}, ::Val{CAUSAL}=Val(false)
+) where {H, B, ROPE, CAUSAL}
     S = size(x, 2)
     E = size(x, 3)
     Dh = E ÷ H
@@ -233,6 +252,7 @@ function _tb_block_flat(
     V = _tb_dense(xn1, W_v, b_v)
     cosA, sinA = _tb_rope_tables(Dh, S)
     scale = sqrt(Float32(Dh))
+    cmask = CAUSAL ? _tb_causal_mask(S) : nothing
     heads = ntuple(Val(H)) do h
         cols = ((h - 1) * Dh + 1):(h * Dh)
         Qh = Q[:, :, cols]
@@ -247,13 +267,14 @@ function _tb_block_flat(
             kb = Kh[b, :, :]
             vb = Vh[b, :, :]
             sc = (qb * transpose(kb)) ./ scale
+            CAUSAL && (sc = sc .+ cmask)
             m = maximum(sc; dims=2)
             ex = exp.(sc .- m)
             (ex ./ sum(ex; dims=2)) * vb
         end
         stack(outb; dims=1)
     end
-    attn = _tb_dense(cat(heads...; dims=3), W_o, b_o) .* sqrt(Float32(S))
+    attn = _tb_dense(cat(heads...; dims=3), W_o, b_o) .* _tb_varcomp(S, CAUSAL)
     xres1 = inv2 .* (x .+ attn)
     xn2 = _tb_layernorm(xres1, ln2g, ln2b)
     ff1 = _tb_dense(xn2, W_ff1, b_ff1)

@@ -78,7 +78,11 @@ function _block_loop(node::TransformerBlock, p::NodeParams, x)
         scale = sqrt(Float32(Dh))
         for bi in 1:B, qi in 1:S
             sc = Float32[
-                sum(Qh[bi, qi, d] * Kh[bi, ki, d] for d in 1:Dh) / scale for ki in 1:S
+                if (node.causal && ki > qi)
+                    -1.0f9
+                else
+                    sum(Qh[bi, qi, d] * Kh[bi, ki, d] for d in 1:Dh) / scale
+                end for ki in 1:S
             ]
             m = maximum(sc)
             ex = exp.(sc .- m)
@@ -88,7 +92,8 @@ function _block_loop(node::TransformerBlock, p::NodeParams, x)
             end
         end
     end
-    attn = dns(attn_concat, "W_o", "b_o") .* sqrt(Float32(S))
+    vc = node.causal ? reshape(sqrt.(Float32.(1:S)), 1, S, 1) : sqrt(Float32(S))
+    attn = dns(attn_concat, "W_o", "b_o") .* vc
     xres1 = inv2 .* (x .+ attn)
     xn2 = ln(xres1, "ln2_gamma", "ln2_beta")
     ff1 = dns(xn2, "W_ff1", "b_ff1")
@@ -132,6 +137,40 @@ end
             x, TF.flat_block_args(node, params)..., Val(H), Val(B), Val(true)
         )
         @test zf ≈ zc rtol = 1e-5
+    end
+
+    @testset "causal attention: forward == oracle, flat parity, no future leak" begin
+        rng = MersenneTwister(17)
+        B, S, E, H = 3, 5, 8, 2
+        node = TransformerBlock((S, E), "t"; num_heads=H, use_rope=true, causal=true)
+        params = TF.initialize_params(
+            node, rng, (S, E), Dict("x->t:in" => (S, E)), node.weight_init
+        )
+        x = randn(rng, Float32, B, S, E)
+        zc = compute_mu(node, params, Dict{String, Any}("x->t:in" => x))
+        @test zc ≈ _block_loop(node, params, x) rtol = 1e-4
+        # flat kernel with the causal Val matches compute_mu
+        zf = TF._tb_block_flat(
+            x, TF.flat_block_args(node, params)..., Val(H), Val(B), Val(true), Val(true)
+        )
+        @test zf ≈ zc rtol = 1e-5
+        # causality: the first output position must NOT depend on a LATER input token
+        # (every sub-op is per-position except attention, which is causally masked).
+        # Perturb position S NON-uniformly across embed so it survives LayerNorm's
+        # mean-subtraction (a uniform offset would be removed, making this vacuous).
+        x2 = copy(x)
+        x2[:, S, :] .+= reshape(Float32.(1:E), 1, E)
+        zc2 = compute_mu(node, params, Dict{String, Any}("x->t:in" => x2))
+        @test zc[:, 1, :] ≈ zc2[:, 1, :] rtol = 1e-5             # causal: no future leak
+        # contrast (proves the test isn't vacuous): the SAME perturbation DOES change
+        # the first output of a non-causal block (position 1 attends to position S).
+        ncn = TransformerBlock((S, E), "t"; num_heads=H, use_rope=true, causal=false)
+        ncp = TF.initialize_params(
+            ncn, MersenneTwister(17), (S, E), Dict("x->t:in" => (S, E)), ncn.weight_init
+        )
+        nz = compute_mu(ncn, ncp, Dict{String, Any}("x->t:in" => x))
+        nz2 = compute_mu(ncn, ncp, Dict{String, Any}("x->t:in" => x2))
+        @test maximum(abs.(nz[:, 1, :] .- nz2[:, 1, :])) > 1.0f-2
     end
 
     @testset "autoencodes sequences by local PC (no backprop)" begin

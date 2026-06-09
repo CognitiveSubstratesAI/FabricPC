@@ -383,3 +383,34 @@ routing the transformer node's gradients through a compiled+cached kernel during
 `train_pcn` (Dict→flat at the training callsite, compile-per-(config,batch) cache).
 This benchmark proves the kernel + the Reactant+Enzyme gradient; wiring it into the
 eager training loop is the next step. Eager PC-transformer remains the default.
+
+## 15. Causal self-attention (autoregressive PC-transformer) + the JIT-training finding
+
+Date: 2026-06-09
+
+**Causal masking.** `TransformerBlock(...; causal=true)` masks future keys for
+autoregressive (next-token) modeling: an additive lower-triangular mask
+(0 on/below diag, -1f9 above) is added to the attention scores before softmax, and
+the softmax variance compensation becomes per-position √i (query i attends to i
+keys) instead of √S. Applied identically in `compute_mu` (eager) and
+`_tb_block_flat` (the Reactant JIT kernel, via an optional `Val{CAUSAL}` that
+defaults false — existing callers unchanged). No external mask input slot: causality
+is a node config flag (training from scratch needs no data-supplied mask), keeping
+the single rank-3 `"in"` slot and the rank-N seam intact.
+
+Validated (test_transformer.jl): causal forward == the explicit-loop oracle;
+causal flat kernel == compute_mu (reldiff 0.0); and a SEMANTIC no-future-leak test —
+perturbing the last input token NON-uniformly (a uniform offset is removed by
+LayerNorm's mean-subtraction, which would make the test vacuous) leaves the first
+causal output position unchanged (0.0), while the same perturbation changes a
+non-causal block's first output (0.65). That contrast proves the test isn't vacuous.
+
+**JIT-training-integration finding (investigated, deferred — see memory).** Routing
+the block's compiled Reactant+Enzyme gradient into `train_pcn` was gated and found
+FEASIBLE (the full 16-weight gradient compiles under Reactant and matches finite-diff
+to 0.014) but BLOCKED by an upstream tooling conflict: **eager `Enzyme.autodiff` and
+Reactant+Enzyme `@compile` cannot coexist in one process** — a prior eager autodiff
+poisons the subsequent compile (`setfield!: immutable Tuple`). So the "JIT path with
+eager fallback" architecture is broken; a working integration needs either an
+all-compiled (no eager Enzyme) graph or the on-device GraphState refactor (#11).
+Deferred; the eager PC-transformer + the block-JIT benchmark (689de8c) stand.
