@@ -19,3 +19,14 @@ LocalPreferences.toml
 # Scratch
 /tmp/
 *.tmp
+# Secrets / credentials — never commit
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+.netrc
+secrets.*
+*.secret
+credentials.json
