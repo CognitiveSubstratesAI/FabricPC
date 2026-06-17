@@ -20,4 +20,5 @@ using Test
     include("test_transformer.jl")     # Phase D: PC-transformer block (Enzyme seam)
     include("test_transformer_decomposed.jl")  # fully-PC decomposed stages
     include("test_storkey_hopfield.jl")         # Hopfield associative memory (composite energy)
+    include("test_sequence_training.jl")        # autoregressive/sequence trainer (port phases)
 end

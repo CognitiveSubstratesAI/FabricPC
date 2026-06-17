@@ -52,6 +52,8 @@ include("graph_initialization/state_initializer.jl")
 include("training/train.jl")
 include("training/adam.jl")
 include("training/natural_gradients.jl")
+include("training/train_autoregressive.jl")
+export create_causal_mask, compute_loss
 include("jit_flat.jl")
 
 export FABRICPC_VERSION
