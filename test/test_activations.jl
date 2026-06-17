@@ -12,6 +12,7 @@ using FabricPC:
     derivative,
     variance_gain,
     jacobian_gain,
+    jacobian,
     forward_and_latent_grads,
     forward_and_weight_grads
 
@@ -130,4 +131,31 @@ end
     end
     @test all(isfinite, energies)
     @test energies[end] < 0.5f0 * energies[1]
+end
+
+@testset "full jacobian() — softmax cross-checked vs upstream (activations.py:348)" begin
+    # Reference computed from upstream's EXACT formula J_ij = s_i(δ_ij − s_j) on x = [1 2 3]
+    # (s = [0.090031, 0.244728, 0.665241]). Layout: batch-first (B,D) → (B,D,D).
+    x = reshape(Float32[1, 2, 3], 1, 3)
+    J = jacobian(SoftmaxActivation(), x)
+    @test size(J) == (1, 3, 3)
+    ref = Float32[0.081925 -0.022033 -0.059892
+                  -0.022033 0.184836 -0.162803
+                  -0.059892 -0.162803 0.222695]
+    @test isapprox(J[1, :, :], ref; atol=1f-5)            # numeric parity with upstream
+    @test all(abs.(sum(J; dims=3)) .< 1f-5)               # softmax-Jacobian invariant: row sums 0
+    # diagonal must equal the diagonal `derivative` (s·(1−s)) the PC path uses
+    d = derivative(SoftmaxActivation(), x)
+    @test isapprox(Float32[J[1, i, i] for i in 1:3], vec(d); atol=1f-6)
+
+    # element-wise activations: jacobian = diag(derivative), off-diagonals exactly 0
+    for act in (IdentityActivation(), TanhActivation(), ReLUActivation())
+        xe = reshape(Float32[-1.5, 0.4, 2.0, -0.7], 2, 2)
+        Je = jacobian(act, xe)
+        @test size(Je) == (2, 2, 2)
+        de = derivative(act, xe) .* ones(Float32, 2, 2)
+        for b in 1:2, i in 1:2, j in 1:2
+            @test isapprox(Je[b, i, j], i == j ? de[b, i] : 0.0f0; atol=1f-6)
+        end
+    end
 end

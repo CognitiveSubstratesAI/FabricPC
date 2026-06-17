@@ -33,6 +33,20 @@ derivative(::IdentityActivation, x) = one(eltype(x))
 variance_gain(::AbstractActivation) = 1.0f0
 jacobian_gain(::AbstractActivation) = 1.0f0
 
+# Full Jacobian J[b,i,j] = ∂f(x)_i/∂x_j over the feature axis (dim 2; batch-first), shape
+# (B, D, D). For ELEMENT-WISE activations this is the diagonal embedding of `derivative`
+# (off-diagonals 0) — upstream's stated element-wise contract (activations.py:144, which raises
+# and instructs callers to "use derivative() as the diagonal"; here we materialize it so the API
+# is uniform across activations rather than raising — idiomatic for Julia dispatch). NON-element-
+# wise activations (Softmax) OVERRIDE with their off-diagonal terms. Convenience for explicit
+# (non-autodiff) gradient paths needing the full matrix. Mirrors upstream ActivationBase.jacobian.
+function jacobian(a::AbstractActivation, x::AbstractMatrix)
+    B, D = size(x)
+    d = derivative(a, x) .* ones(eltype(x), B, D)             # (B,D); materializes scalar (Identity)
+    eye = reshape(eltype(x)[i == j for i in 1:D, j in 1:D], 1, D, D)
+    return reshape(d, B, D, 1) .* eye                         # J[b,i,j] = δ_ij · d[b,i]
+end
+
 # =============================================================================
 # Element-wise non-linear activations (Phase D1).
 #
@@ -113,6 +127,15 @@ end
 function derivative(a::SoftmaxActivation, x)
     s = forward(a, x)
     return s .* (1.0f0 .- s)   # diagonal of diag(s) - s·sᵀ
+end
+# Full softmax Jacobian (the off-diagonal terms `derivative` drops): J[b,i,j] = s_i·(δ_ij − s_j),
+# shape (B, D, D). Mirrors upstream SoftmaxActivation.jacobian (activations.py:348). Use where the
+# exact (non-diagonal) softmax gradient is needed; the PC path keeps the diagonal `derivative`.
+function jacobian(a::SoftmaxActivation, x::AbstractMatrix)
+    s = forward(a, x)                                         # (B, D)
+    B, D = size(x)
+    eye = reshape(eltype(x)[i == j for i in 1:D, j in 1:D], 1, D, D)
+    return reshape(s, B, D, 1) .* (eye .- reshape(s, B, 1, D))  # s_i·(δ_ij − s_j)
 end
 
 """Hard tanh: f(x) = clamp(x, lo, hi); f'(x) = 1[lo<x<hi]."""

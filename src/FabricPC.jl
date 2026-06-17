@@ -66,7 +66,8 @@ export AbstractActivation,
     HardTanhActivation,
     SoftmaxActivation,
     variance_gain,
-    jacobian_gain
+    jacobian_gain,
+    jacobian
 export AbstractEnergy,
     GaussianEnergy,
     BernoulliEnergy,
