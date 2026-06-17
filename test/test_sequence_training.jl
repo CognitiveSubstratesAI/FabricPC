@@ -3,7 +3,7 @@
 using Test
 using Random
 using FabricPC
-import FabricPC: GraphState, NodeState
+import FabricPC: GraphState, NodeState, _sample_next
 
 @testset "sequence foundation (train_autoregressive.py:29,40)" begin
     # create_causal_mask: lower-triangular ones, mask[i,j] = 1 iff j ≤ i
@@ -62,4 +62,21 @@ end
     _, _, eres2 = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
         verbose = false, epoch_callback = (ep, p, s) -> ep)
     @test eres2 == [1, 2]
+end
+
+@testset "generation sampling core _sample_next (train_autoregressive.py:299 sampling)" begin
+    rng = MersenneTwister(1)
+    probs = Float32[0.1 0.7 0.2]                                  # argmax = token 2
+    @test all(==(2), [_sample_next(probs, rng; top_k = 1)[1] for _ in 1:30])        # greedy
+    @test all(==(2), [_sample_next(probs, rng; temperature = 0.01)[1] for _ in 1:30]) # T→0 greedy
+    @test all(==(2), [_sample_next(probs, rng; top_p = 0.7)[1] for _ in 1:30])       # nucleus keeps {2}
+    @test Set(_sample_next(probs, rng; top_p = 0.85)[1] for _ in 1:80) ⊆ Set([2, 3]) # nucleus {2,3}
+    # distribution fidelity over many draws
+    pr = Float32[0.2 0.3 0.5]; cnt = zeros(Int, 3)
+    for _ in 1:4000
+        cnt[_sample_next(pr, rng)[1]] += 1
+    end
+    @test all(abs.(cnt ./ 4000 .- [0.2, 0.3, 0.5]) .< 0.04)
+    # batched: independent per-row greedy
+    @test _sample_next(Float32[0.9 0.05 0.05; 0.05 0.05 0.9], rng; top_k = 1) == [1, 3]
 end

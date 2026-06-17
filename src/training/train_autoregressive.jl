@@ -94,3 +94,103 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
     end
     return params, iter_energies, epoch_results
 end
+
+_softmax_vec(v) = (m = maximum(v); e = exp.(v .- m); e ./ sum(e))
+
+"""
+    _sample_next(probs, rng; temperature=1.0, top_k=nothing, top_p=nothing) -> Vector{Int}
+
+Sample one next-token index (1-based) per batch row from post-softmax `probs` (B × V), with
+temperature scaling + optional top-k and top-p (nucleus) filtering, via Gumbel-max categorical
+sampling (≡ `jax.random.categorical`). Factored out of the generation step (upstream inlines it in
+`_generation_step`, train_autoregressive.py:299) so the sampling logic is unit-testable on its own.
+
+- temperature: logits = log(p+1e-10)/T (T<1 sharpens → greedier; T→0 ⇒ argmax).
+- top_k: keep only the k highest-logit tokens (rest masked to −Inf).
+- top_p: keep the smallest set whose cumulative softmax mass ≥ top_p (≥1 token always kept).
+"""
+function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
+                      temperature::Real = 1.0, top_k::Union{Nothing,Integer} = nothing,
+                      top_p::Union{Nothing,Real} = nothing)
+    B, V = size(probs)
+    logits = log.(probs .+ 1.0f-10) ./ Float32(temperature)
+    out = Vector{Int}(undef, B)
+    for b in 1:B
+        row = collect(@view logits[b, :])
+        if top_k !== nothing && top_k < V
+            thresh = partialsort(row, top_k; rev = true)        # k-th largest logit
+            @inbounds for v in 1:V
+                row[v] < thresh && (row[v] = -Inf32)
+            end
+        end
+        if top_p !== nothing
+            order = sortperm(row; rev = true)
+            c = cumsum(_softmax_vec(row[order]))
+            keep = falses(V)
+            @inbounds for (rank, idx) in enumerate(order)
+                keep[idx] = true
+                c[rank] >= Float32(top_p) && break               # stop after crossing the threshold
+            end
+            @inbounds for v in 1:V
+                keep[v] || (row[v] = -Inf32)
+            end
+        end
+        # Gumbel-max categorical: argmax(logits + Gumbel) (= jax.random.categorical)
+        best = 0; bestval = -Inf32
+        @inbounds for v in 1:V
+            row[v] == -Inf32 && continue
+            g = -log(-log(rand(rng, Float32) + 1.0f-20) + 1.0f-20)
+            val = row[v] + g
+            val > bestval && (bestval = val; best = v)
+        end
+        out[b] = best
+    end
+    return out
+end
+
+_one_hot(idx::AbstractMatrix{<:Integer}, V::Integer) =
+    Float32[idx[b, s] == v ? 1.0f0 : 0.0f0 for b in axes(idx, 1), s in axes(idx, 2), v in 1:V]
+
+"""
+    generate_autoregressive(params, structure, prompt, max_new_tokens, rng;
+                            temperature=1.0, top_k=nothing, top_p=nothing) -> tokens
+
+Autoregressively generate `max_new_tokens` token indices (1-based) from `prompt` (a 1-D
+`(seq,)` or 2-D `(batch, seq)` index array). Per step: format the context window for the input node
+(1-D input-node shape ⇒ raw indices for an `EmbeddingNode`; 2-D ⇒ one-hot for a `Linear`), clamp the
+input only, relax by inference, take the last-position output probabilities, sample via
+`_sample_next`, then slide the context window. Returns prompt ++ generated (unbatched if the prompt
+was 1-D). Port of `generate_autoregressive` (train_autoregressive.py:407); eager (upstream uses
+`jax.lax.scan` + `jax.jit`), no fixed-size output buffer needed.
+"""
+function generate_autoregressive(params::GraphParams, structure::GraphStructure, prompt,
+                                 max_new_tokens::Integer, rng::AbstractRNG;
+                                 temperature::Real = 1.0, top_k::Union{Nothing,Integer} = nothing,
+                                 top_p::Union{Nothing,Real} = nothing)
+    unbatch = ndims(prompt) == 1
+    p = unbatch ? reshape(prompt, 1, :) : prompt
+    B, prompt_len = size(p)
+    input_node = get(structure.task_map, "x", nothing)
+    output_node = get(structure.task_map, "y", nothing)
+    (input_node === nothing || output_node === nothing) &&
+        throw(ArgumentError("generate_autoregressive: task_map must contain 'x' and 'y'"))
+    in_shape = structure.infos[input_node].shape
+    seq_len = in_shape[1]
+    vocab_size = structure.infos[output_node].shape[end]
+
+    context = prompt_len >= seq_len ? p[:, (end - seq_len + 1):end] :
+              hcat(zeros(Int, B, seq_len - prompt_len), p)        # left-pad with 0
+    generated = Matrix{Int}(undef, B, max_new_tokens)
+    for t in 1:max_new_tokens
+        input_data = length(in_shape) == 1 ? context : _one_hot(context, vocab_size)
+        clamps = Dict{String,Any}(input_node => input_data)
+        st = initialize_graph_state(structure, B, rng; clamps = clamps, params = params)
+        fs = run_inference(params, st, clamps, structure)
+        last_probs = fs.nodes[output_node].z_mu[:, end, :]        # (B, V) at last position
+        nxt = _sample_next(last_probs, rng; temperature = temperature, top_k = top_k, top_p = top_p)
+        generated[:, t] = nxt
+        context = hcat(context[:, 2:end], reshape(nxt, B, 1))      # slide window + append
+    end
+    result = hcat(p, generated)
+    return unbatch ? vec(result) : result
+end
