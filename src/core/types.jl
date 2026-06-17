@@ -45,10 +45,35 @@ struct NodeInfo
 end
 
 """Learnable parameters of one node: named weight matrices + named biases."""
-struct NodeParams
-    weights::Dict{String, Matrix{Float32}}
-    biases::Dict{String, Matrix{Float32}}
+# ── Struct-of-Arrays param container (replaces Dict{String,Matrix} in NodeParams) ─────────────
+# WHY: Enzyme reverse-mode cannot accumulate gradients into a `Dict`'s shadow — its internal i64
+# hash/slot arrays trip `addToDiffe: "unhandled accumulate with partial sizes"` once a node's
+# `compute_mu` has a multi-head map (root-caused by bisection). A `NamedTuple` has no such integer
+# internals and differentiates cleanly; it is ALSO type-stable (no dynamic Dict lookup), which suits
+# the Reactant JIT path. `SoA` is a thin NamedTuple-backed container exposing the Dict-like *read*
+# API the codebase already uses (`["W_q"]`, `keys`, `values`, iteration), so node forwards and most
+# call sites are UNCHANGED; only construction converts Dict→SoA.
+struct SoA{NT<:NamedTuple}
+    nt::NT
 end
+SoA(d::AbstractDict) = SoA(NamedTuple{Tuple(Symbol(k) for k in keys(d))}(Tuple(values(d))))
+Base.getindex(s::SoA, k::AbstractString) = s.nt[Symbol(k)]
+Base.getindex(s::SoA, k::Symbol)         = s.nt[k]
+Base.haskey(s::SoA, k::AbstractString)   = haskey(s.nt, Symbol(k))
+Base.keys(s::SoA)   = String.(keys(s.nt))
+Base.values(s::SoA) = values(s.nt)
+Base.length(s::SoA) = length(s.nt)
+Base.pairs(s::SoA)  = (String(k) => v for (k, v) in pairs(s.nt))
+function Base.iterate(s::SoA, st::Int = 1)
+    st > length(s.nt) && return nothing
+    return (String(keys(s.nt)[st]) => s.nt[st], st + 1)
+end
+
+struct NodeParams{W<:SoA, B<:SoA}
+    weights::W
+    biases::B
+end
+NodeParams(w::AbstractDict, b::AbstractDict) = NodeParams(SoA(w), SoA(b))
 
 """All learnable parameters, keyed by node name."""
 struct GraphParams

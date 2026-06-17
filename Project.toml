@@ -11,22 +11,26 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 [weakdeps]
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [extensions]
 FabricPCEnzymeExt = "Enzyme"
 FabricPCReactantExt = "Reactant"
+FabricPCZygoteExt = "Zygote"
 
 [compat]
 Accessors = "0.1"
 Enzyme = "0.13"
 Optimisers = "0.3, 0.4"
 Reactant = "0.2"
+Zygote = "0.6, 0.7"
 julia = "1.12"
 
 [extras]
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [targets]
-test = ["Enzyme", "Statistics", "Test"]
+test = ["Enzyme", "Statistics", "Test", "Zygote"]

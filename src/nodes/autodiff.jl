@@ -38,7 +38,8 @@ function compute_mu end
 
 Scalar total node energy `Σ E(z_latent, compute_mu(node, params, inputs))`. This
 is the function Enzyme differentiates (w.r.t. `params` for weight grads; w.r.t.
-`inputs`/`z_latent` for inference grads). Generic in terms of `compute_mu`.
+`inputs`/`z_latent` for inference grads). Generic in terms of `compute_mu`. `params`
+weights/biases are `SoA` (NamedTuple-backed) so Enzyme can accumulate into them.
 """
 energy_kernel(node::AbstractNode, params::NodeParams, inputs, z_latent) =
     sum(energy(node.energy, z_latent, compute_mu(node, params, inputs)))
@@ -61,10 +62,17 @@ function forward(
     return sum(ns.energy), ns
 end
 
-# --- autodiff hooks: real implementations live in FabricPCEnzymeExt -----------
+# --- autodiff hooks: real implementations live in FabricPCEnzymeExt / FabricPCZygoteExt -------
+# Two interchangeable backends implement this seam (load ONE — both define the same hooks):
+#   • FabricPCZygoteExt (`using Zygote`) — the WORKING backend for transformer/attention nodes.
+#     Enzyme aborts on the full multi-head-attention block on Julia 1.12
+#     (`addToDiffe: "unhandled accumulate with partial sizes"`); Zygote handles FabricPC's
+#     functional forwards cleanly. Node-local gradient FD-validated (test_transformer_lm).
+#   • FabricPCEnzymeExt (`using Enzyme`) — original backend; fine for simple/dense nodes
+#     (validated to ~1e-7 vs the closed-form Linear oracle in test_autodiff_seam.jl).
 const _ENZYME_HINT =
-    "FabricPC: this node uses the Phase-D autodiff gradient fallback — run " *
-    "`using Enzyme` to activate it (it is an opt-in weakdep extension)."
+    "FabricPC: this node uses the Phase-D autodiff gradient seam — run `using Zygote` " *
+    "(works on transformer/attention) or `using Enzyme` (simple nodes) to activate it."
 
 # Varargs fallbacks (NOT the typed signature the extension defines): a same-
 # signature method in the ext would be a forbidden precompile-time overwrite. The

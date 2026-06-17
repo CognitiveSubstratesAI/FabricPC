@@ -31,7 +31,18 @@ function compute_loss(state::GraphState, targets, output_node::AbstractString;
                       loss_type::Symbol = :cross_entropy)
     pred = state.nodes[output_node].z_mu
     if loss_type === :cross_entropy
-        s = sum(targets .* log.(pred .+ 1.0f-10); dims = ndims(pred))   # Σ over vocab axis (kept dim)
+        d = ndims(pred)
+        # `pred` may be probabilities (a softmax-output node) or raw LOGITS (e.g. VocabProjection,
+        # which emits unnormalized scores). Use log-softmax when it is not a valid distribution so
+        # `log` never sees a negative (DomainError) and the metric is correct either way.
+        is_prob = all(>=(0.0f0), pred) && all(<(1.0f-2), abs.(sum(pred; dims = d) .- 1.0f0))
+        logp = if is_prob
+            log.(pred .+ 1.0f-10)
+        else
+            m = maximum(pred; dims = d)
+            (pred .- m) .- log.(sum(exp.(pred .- m); dims = d))        # numerically-stable log-softmax
+        end
+        s = sum(targets .* logp; dims = d)                             # Σ over vocab axis (kept dim)
         return -Float32(sum(s) / length(s))                            # mean over batch[, seq]
     elseif loss_type === :mse
         d = (pred .- targets) .^ 2
@@ -96,6 +107,7 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
 end
 
 _softmax_vec(v) = (m = maximum(v); e = exp.(v .- m); e ./ sum(e))
+_softmax_rows(m) = (e = exp.(m .- maximum(m; dims = 2)); e ./ sum(e; dims = 2))   # row-wise softmax (B,V)
 
 """
     _sample_next(probs, rng; temperature=1.0, top_k=nothing, top_p=nothing) -> Vector{Int}
@@ -138,11 +150,15 @@ function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
         # Gumbel-max categorical: argmax(logits + Gumbel) (= jax.random.categorical)
         best = 0; bestval = -Inf32
         @inbounds for v in 1:V
-            row[v] == -Inf32 && continue
+            (row[v] == -Inf32 || isnan(row[v])) && continue          # skip masked AND NaN logits
             g = -log(-log(rand(rng, Float32) + 1.0f-20) + 1.0f-20)
             val = row[v] + g
             val > bestval && (bestval = val; best = v)
         end
+        # fallback: if every logit was masked/NaN (e.g. an untrained model emitting NaN), pick the
+        # argmax of the row so we always return a valid 1..V token — never 0 (which is out of range
+        # for the 1-based EmbeddingNode → BoundsError) and still deterministic for greedy decoding.
+        best == 0 && (best = argmax(@view probs[b, :]))
         out[b] = best
     end
     return out
@@ -179,14 +195,18 @@ function generate_autoregressive(params::GraphParams, structure::GraphStructure,
     vocab_size = structure.infos[output_node].shape[end]
 
     context = prompt_len >= seq_len ? p[:, (end - seq_len + 1):end] :
-              hcat(zeros(Int, B, seq_len - prompt_len), p)        # left-pad with 0
+              hcat(ones(Int, B, seq_len - prompt_len), p)         # left-pad with token 1 (1-based;
+                                                                  # upstream pads 0 in 0-based JAX)
     generated = Matrix{Int}(undef, B, max_new_tokens)
     for t in 1:max_new_tokens
         input_data = length(in_shape) == 1 ? context : _one_hot(context, vocab_size)
         clamps = Dict{String,Any}(input_node => input_data)
         st = initialize_graph_state(structure, B, rng; clamps = clamps, params = params)
         fs = run_inference(params, st, clamps, structure)
-        last_probs = fs.nodes[output_node].z_mu[:, end, :]        # (B, V) at last position
+        # The output node (VocabProjectionNode) emits LOGITS, not softmax probs (unlike upstream's
+        # SoftmaxActivation output). Softmax the last position → probabilities for _sample_next
+        # (which re-logs them: log(softmax(z)) = z − C, and sampling is shift-invariant → exact).
+        last_probs = _softmax_rows(fs.nodes[output_node].z_mu[:, end, :])   # (B, V)
         nxt = _sample_next(last_probs, rng; temperature = temperature, top_k = top_k, top_p = top_p)
         generated[:, t] = nxt
         context = hcat(context[:, 2:end], reshape(nxt, B, 1))      # slide window + append

@@ -176,11 +176,18 @@ function _tb_mha(num_heads::Int, use_rope::Bool, causal::Bool, p, x)
     # Build unconditionally (always Matrix{Float32}) and add only when causal: a
     # `Union{Nothing,Matrix}` cmask makes Enzyme reject the node (IllegalTypeAnalysis).
     cmask = _tb_causal_mask(S)
+    # Head split via reshape (B,S,E)→(B,S,Dh,H) + full-last-dim slice `[:,:,:,h]`, NOT a partial
+    # column range `Q[:,:,(h-1)*Dh+1:h*Dh]`. Column-major reshape maps E-index (h-1)*Dh+dh →
+    # (dh,h), so `[:,:,:,h]` is exactly head h's contiguous block — but as a FULL-dimension slice
+    # Enzyme can scatter the gradient into. The partial-column UnitRange triggered Enzyme's
+    # "addToDiffe: unhandled accumulate with partial sizes" reverse-mode assertion (transformer.jl:179).
+    Qr = reshape(Q, B, S, Dh, H)
+    Kr = reshape(K, B, S, Dh, H)
+    Vr = reshape(V, B, S, Dh, H)
     heads = map(1:H) do h
-        cols = ((h - 1) * Dh + 1):(h * Dh)
-        Qh = Q[:, :, cols]
-        Kh = K[:, :, cols]
-        Vh = V[:, :, cols]
+        Qh = Qr[:, :, :, h]
+        Kh = Kr[:, :, :, h]
+        Vh = Vr[:, :, :, h]
         if use_rope
             Qh = _tb_apply_rope(Qh, cosA, sinA)
             Kh = _tb_apply_rope(Kh, cosA, sinA)
@@ -224,7 +231,7 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
         xres1, reshape(params.weights["ln2_gamma"], 1, 1, E),
         reshape(params.biases["ln2_beta"], 1, 1, E)
     )
-    ff1 = _tb_dense(xn2, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, :))
+    ff1 = _tb_dense(xn2, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2)))
     ffa = forward(node.internal_activation, ff1)
     ff2 = _tb_dense(ffa, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, E))
     z_mu = inv2 .* (xres1 .+ ff2)

@@ -30,3 +30,4 @@ LocalPreferences.toml
 secrets.*
 *.secret
 credentials.json
+.warm/

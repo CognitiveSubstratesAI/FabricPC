@@ -16,44 +16,46 @@
 module FabricPCEnzymeExt
 
 using FabricPC
-using FabricPC: AbstractNode, NodeParams, energy_kernel
+using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel
 import FabricPC: _ad_param_grads, _ad_latent_grads
 using Enzyme
+
+# The params weights/biases (and, for latent grads, the inputs) are threaded as `NamedTuple`s — the
+# `SoA` container's `.nt` — so Enzyme accumulates gradients into NamedTuples, never a `Dict` (a Dict
+# shadow trips `addToDiffe: "unhandled accumulate with partial sizes"` on its i64 hash internals once
+# a node's `compute_mu` has a multi-head map). `node`/`inputs`/`z` are passed as explicit `Const`
+# args (NOT closure captures — a captured mutable Dict triggers EnzymeMutabilityException).
+
+# differentiated kernels: rebuild the SoA from the differentiated NamedTuple, then call energy_kernel.
+_ek_w(node, wnt, bnt, inputs, z) = energy_kernel(node, NodeParams(SoA(wnt), SoA(bnt)), inputs, z)
+_ek_in(node, params, innt, z)    = energy_kernel(node, params, SoA(innt), z)
 
 function _ad_param_grads(
     node::AbstractNode, params::NodeParams, inputs, z_latent
 )
-    dparams = NodeParams(
-        Dict{String, Matrix{Float32}}(k => zero(v) for (k, v) in params.weights),
-        Dict{String, Matrix{Float32}}(k => zero(v) for (k, v) in params.biases)
-    )
+    wnt = params.weights.nt
+    bnt = params.biases.nt
+    dwnt = map(zero, wnt)
+    dbnt = map(zero, bnt)
     Enzyme.autodiff(
-        set_runtime_activity(Reverse),
-        energy_kernel,
-        Active,
-        Const(node),
-        Duplicated(params, dparams),
-        Const(inputs),
-        Const(z_latent)
+        set_runtime_activity(Reverse), _ek_w, Active,
+        Const(node), Duplicated(wnt, dwnt), Duplicated(bnt, dbnt), Const(inputs), Const(z_latent),
     )
-    return dparams
+    return NodeParams(SoA(dwnt), SoA(dbnt))
 end
 
 function _ad_latent_grads(
     node::AbstractNode, params::NodeParams, inputs, z_latent
 )
-    N = ndims(first(values(inputs)))
-    dinputs = Dict{String, Array{Float32, N}}(k => zero(v) for (k, v) in inputs)
+    innt = SoA(inputs).nt                         # Dict inputs (eager) → NamedTuple for Enzyme
+    dinnt = map(zero, innt)
     dz = zero(z_latent)
     Enzyme.autodiff(
-        set_runtime_activity(Reverse),
-        energy_kernel,
-        Active,
-        Const(node),
-        Const(params),
-        Duplicated(inputs, dinputs),
-        Duplicated(z_latent, dz)
+        set_runtime_activity(Reverse), _ek_in, Active,
+        Const(node), Const(params), Duplicated(innt, dinnt), Duplicated(z_latent, dz),
     )
+    N = ndims(first(values(inputs)))
+    dinputs = Dict{String, Array{Float32, N}}(String(k) => dinnt[k] for k in keys(dinnt))
     return dinputs, dz
 end
 

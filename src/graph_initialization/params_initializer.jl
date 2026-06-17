@@ -26,8 +26,13 @@ function initialize_params(structure::GraphStructure, rng::AbstractRNG)
             input_shapes[edge_key] = structure.infos[src].shape
         end
 
+        # Parameterless nodes (SkipConnection, IdentityNode) carry no `weight_init`
+        # field; their `initialize_params` ignores the init arg, so fall back to a
+        # default. Without this, an in-degree>0 SkipConnection (a residual summation
+        # in a transformer) would FieldError here.
+        wi = hasproperty(node, :weight_init) ? node.weight_init : NormalInitializer()
         node_params[name] = initialize_params(
-            node, rng, info.shape, input_shapes, node.weight_init
+            node, rng, info.shape, input_shapes, wi
         )
     end
     return GraphParams(node_params)

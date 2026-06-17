@@ -132,7 +132,7 @@ function compute_mu(node::LnMlp1Node, params::NodeParams, inputs)
         x, reshape(params.weights["ln_gamma"], 1, 1, E),
         reshape(params.biases["ln_beta"], 1, 1, E)
     )
-    h = _tb_dense(xn, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, :))
+    h = _tb_dense(xn, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2)))
     return forward(node.activation, h)
 end
 
@@ -186,7 +186,7 @@ function compute_mu(node::Mlp2ResidualNode, params::NodeParams, inputs)
     mlp1 = inputs[in_key]
     res = inputs[res_key]
     mlp2 = _tb_dense(
-        mlp1, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, :)
+        mlp1, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, size(params.biases["b_ff2"], 2))
     )
     return res .+ mlp2
 end
@@ -327,6 +327,6 @@ end
 
 function compute_mu(node::VocabProjectionNode, params::NodeParams, inputs)
     x = first(values(inputs))
-    logits = _tb_dense(x, params.weights["W_out"], reshape(params.biases["b_out"], 1, 1, :))
+    logits = _tb_dense(x, params.weights["W_out"], reshape(params.biases["b_out"], 1, 1, size(params.biases["b_out"], 2)))
     return forward(node.activation, logits)
 end
