@@ -119,10 +119,13 @@ for classification. The explicit gradient is therefore approximate for Softmax
 """
 struct SoftmaxActivation <: AbstractActivation end
 function forward(::SoftmaxActivation, x)
-    # Stable softmax along the feature axis (dim 2 in our batch-first layout).
-    m = maximum(x; dims=2)
+    # Stable softmax along the LAST axis: the feature axis for rank-2 (B, V) — dims=2, so this stays
+    # backward-compatible — and the vocab axis for rank-3 (B, S, V). The rank-3 case is what lets
+    # VocabProjectionNode use Softmax+CrossEntropy (per upstream transformer_v2).
+    d = ndims(x)
+    m = maximum(x; dims=d)
     ex = exp.(x .- m)
-    return ex ./ sum(ex; dims=2)
+    return ex ./ sum(ex; dims=d)
 end
 function derivative(a::SoftmaxActivation, x)
     s = forward(a, x)

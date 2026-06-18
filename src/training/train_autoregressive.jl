@@ -203,10 +203,10 @@ function generate_autoregressive(params::GraphParams, structure::GraphStructure,
         clamps = Dict{String,Any}(input_node => input_data)
         st = initialize_graph_state(structure, B, rng; clamps = clamps, params = params)
         fs = run_inference(params, st, clamps, structure)
-        # The output node (VocabProjectionNode) emits LOGITS, not softmax probs (unlike upstream's
-        # SoftmaxActivation output). Softmax the last position → probabilities for _sample_next
-        # (which re-logs them: log(softmax(z)) = z − C, and sampling is shift-invariant → exact).
-        last_probs = _softmax_rows(fs.nodes[output_node].z_mu[:, end, :])   # (B, V)
+        # VocabProjectionNode now emits SOFTMAX PROBABILITIES (Softmax+CrossEntropy, per upstream
+        # transformer_v2), so the last position is already a distribution — feed it straight to
+        # _sample_next (no re-softmax, which would double-normalize).
+        last_probs = fs.nodes[output_node].z_mu[:, end, :]                  # (B, V) — already probs
         nxt = _sample_next(last_probs, rng; temperature = temperature, top_k = top_k, top_p = top_p)
         generated[:, t] = nxt
         context = hcat(context[:, 2:end], reshape(nxt, B, 1))      # slide window + append

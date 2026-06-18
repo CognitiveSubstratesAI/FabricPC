@@ -56,7 +56,8 @@ function transformer_lm(;
     steps = infer_steps === nothing ? 3 * (2 * num_blocks + 2) : Int(infer_steps)
 
     input = IdentityNode((seq_len,), "input")
-    embed = EmbeddingNode((seq_len, embed_dim), "embed"; vocab_size=Int(vocab_size))
+    embed = EmbeddingNode((seq_len, embed_dim), "embed"; vocab_size=Int(vocab_size),
+        weight_init=NormalInitializer(std=1.0))                # upstream transformer_v2: embed std=1.0
 
     nodes = AbstractNode[input, embed]
     edges = Edge[Edge(input, slot(embed, "in"))]
@@ -76,7 +77,8 @@ function transformer_lm(;
         prev = skip
     end
 
-    output = VocabProjectionNode((seq_len, vocab_size), "output")
+    output = VocabProjectionNode((seq_len, vocab_size), "output";
+        weight_init=NormalInitializer(std=sqrt(1.0 / embed_dim)))  # upstream transformer_v2: logits std=√(1/E)
     push!(nodes, output)
     push!(edges, Edge(prev, slot(output, "in")))       # prev → output:in
 

@@ -282,10 +282,11 @@ end
 
 # ============================================================================
 # VocabProjectionNode — z_mu = activation(x · W_out + b_out): embeddings → vocab.
-# Seam-based (compute_mu). Defaults to Identity + Gaussian (rank-agnostic; trains
-# next-token to one-hot targets, proven in the examples). Upstream's softmax+KL
-# default is deferred — the port's SoftmaxActivation softmaxes over dim 2, not the
-# rank-3 vocab axis. Port of transformer_v2.VocabProjectionNode.
+# Seam-based (compute_mu). Defaults to Softmax + CrossEntropy (per upstream
+# transformer_v2.VocabProjectionNode: DEFAULT_ACTIVATION=Softmax, DEFAULT_ENERGY=CrossEntropy) —
+# the proper next-token classification objective. SoftmaxActivation now softmaxes over the LAST
+# axis, so it correctly normalizes the rank-3 (B,S,V) vocab axis. z_mu is therefore a probability
+# distribution (NOT logits).
 # ============================================================================
 struct VocabProjectionNode <: AbstractNode
     shape::Tuple                      # (seq_len, vocab_size)
@@ -299,8 +300,8 @@ end
 function VocabProjectionNode(
     shape,
     name::AbstractString;
-    activation::AbstractActivation=IdentityActivation(),
-    energy::AbstractEnergy=GaussianEnergy(),
+    activation::AbstractActivation=SoftmaxActivation(),
+    energy::AbstractEnergy=CrossEntropyEnergy(),
     weight_init::AbstractInitializer=XavierInitializer(),
     latent_init::AbstractInitializer=NormalInitializer()
 )

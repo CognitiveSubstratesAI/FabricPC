@@ -109,7 +109,7 @@ const TD = FabricPC
         @test sg ≈ (zlat .- ns.z_mu) rtol = 1e-5
     end
 
-    @testset "VocabProjectionNode: embed → vocab logits" begin
+    @testset "VocabProjectionNode: embed → vocab probabilities (Softmax+CrossEntropy default)" begin
         rng = MersenneTwister(2)
         B, S, E, V = 2, 4, 8, 5
         vp = VocabProjectionNode((S, V), "vocab")
@@ -119,7 +119,10 @@ const TD = FabricPC
         x = randn(rng, Float32, B, S, E)
         z = compute_mu(vp, vpp, Dict{String, Any}("h->vocab:in" => x))
         @test size(z) == (B, S, V)
-        @test z ≈
-            TD._tb_dense(x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :))
+        # default is now Softmax over the vocab axis (per upstream transformer_v2): a distribution.
+        @test all(>=(0.0f0), z) && all(isapprox.(sum(z; dims = 3), 1.0f0; atol = 1.0f-5))
+        logits = TD._tb_dense(x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :))
+        sm = exp.(logits .- maximum(logits; dims = 3)); sm = sm ./ sum(sm; dims = 3)
+        @test z ≈ sm                                           # = softmax(raw dense projection)
     end
 end
