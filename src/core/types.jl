@@ -59,14 +59,22 @@ end
 SoA(d::AbstractDict) = SoA(NamedTuple{Tuple(Symbol(k) for k in keys(d))}(Tuple(values(d))))
 Base.getindex(s::SoA, k::AbstractString) = s.nt[Symbol(k)]
 Base.getindex(s::SoA, k::Symbol)         = s.nt[k]
+Base.get(s::SoA, k::AbstractString, default) = haskey(s.nt, Symbol(k)) ? s.nt[Symbol(k)] : default
+Base.get(s::SoA, k::Symbol, default)         = haskey(s.nt, k) ? s.nt[k] : default
 Base.haskey(s::SoA, k::AbstractString)   = haskey(s.nt, Symbol(k))
-Base.keys(s::SoA)   = String.(keys(s.nt))
+# Key→String conversion (jl_cstr_to_string) is a foreigncall Zygote cannot differentiate. SoA keys
+# are STRUCTURAL — they never depend on the (differentiated) numeric values — so these helpers are
+# marked `Zygote.@nograd` in FabricPCZygoteExt. That lets an autodiff'd `compute_mu` ITERATE an SoA
+# (generic nodes that sum over input edges) while gradients still flow through the values (`s.nt[i]`).
+_soa_key(nt::NamedTuple, i::Int) = String(keys(nt)[i])
+_soa_keys(nt::NamedTuple)        = String[String(k) for k in keys(nt)]
+Base.keys(s::SoA)   = _soa_keys(s.nt)
 Base.values(s::SoA) = values(s.nt)
 Base.length(s::SoA) = length(s.nt)
-Base.pairs(s::SoA)  = (String(k) => v for (k, v) in pairs(s.nt))
+Base.pairs(s::SoA)  = (_soa_key(s.nt, i) => s.nt[i] for i in 1:length(s.nt))
 function Base.iterate(s::SoA, st::Int = 1)
     st > length(s.nt) && return nothing
-    return (String(keys(s.nt)[st]) => s.nt[st], st + 1)
+    return (_soa_key(s.nt, st) => s.nt[st], st + 1)
 end
 
 struct NodeParams{W<:SoA, B<:SoA}
@@ -74,6 +82,10 @@ struct NodeParams{W<:SoA, B<:SoA}
     biases::B
 end
 NodeParams(w::AbstractDict, b::AbstractDict) = NodeParams(SoA(w), SoA(b))
+# Mixed construction (e.g. a freshly-built gradient Dict for weights reusing an existing SoA bias):
+# coerce whichever arg is still a Dict. The SoA/SoA case uses the struct's own constructor.
+NodeParams(w::AbstractDict, b::SoA) = NodeParams(SoA(w), b)
+NodeParams(w::SoA, b::AbstractDict) = NodeParams(w, SoA(b))
 
 """All learnable parameters, keyed by node name."""
 struct GraphParams

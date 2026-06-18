@@ -50,8 +50,7 @@ end
         )
     )
     o2 = AdamW(empty)
-    @test step!(o2, empty, _zeros_like(empty)).nodes["x"].weights ==
-        Dict{String, Matrix{Float32}}()
+    @test length(step!(o2, empty, _zeros_like(empty)).nodes["x"].weights) == 0   # SoA: no params
 end
 
 @testset "AdamW descends a quadratic" begin

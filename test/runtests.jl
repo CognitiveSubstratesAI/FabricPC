@@ -1,5 +1,11 @@
 using FabricPC
 using Test
+# Load Zygote at top-level BEFORE the testset so the FabricPCZygoteExt seam (the AD backend for
+# TransformerBlock/VocabProjection/Storkey/ADLinear) is registered ahead of any test. If a test
+# file is the first to `using Zygote`, world-age makes the freshly-loaded ext methods invisible
+# within that file's own @testset → the seam raises its "load a backend" hint. (The suite is
+# Zygote-only — Enzyme also implements this seam, and the two cannot be co-loaded.)
+using Zygote
 
 @testset "FabricPC.jl" begin
     @testset "scaffold" begin
@@ -21,4 +27,5 @@ using Test
     include("test_transformer_decomposed.jl")  # fully-PC decomposed stages
     include("test_storkey_hopfield.jl")         # Hopfield associative memory (composite energy)
     include("test_sequence_training.jl")        # autoregressive/sequence trainer (port phases)
+    include("test_transformer_lm.jl")           # assembled transformer LM graph (e2e)
 end

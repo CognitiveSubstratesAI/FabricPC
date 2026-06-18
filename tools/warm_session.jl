@@ -13,6 +13,7 @@ catch
     @warn "Revise unavailable — src edits will NOT hot-reload"
 end
 using FabricPC, Random
+try; using Zygote; catch; @warn "Zygote unavailable"; end
 
 const DIR  = abspath(joinpath(@__DIR__, "..", ".warm"))
 mkpath(DIR)

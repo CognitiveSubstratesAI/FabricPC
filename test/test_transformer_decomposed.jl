@@ -6,7 +6,7 @@
 
 using FabricPC
 using FabricPC: NodeParams, NodeState, NodeInfo, SlotInfo, compute_mu
-using Enzyme
+using Zygote
 using Random, Test
 
 const TD = FabricPC

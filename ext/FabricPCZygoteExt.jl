@@ -11,9 +11,15 @@ module FabricPCZygoteExt
 
 using FabricPC
 using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel,
-    _tb_causal_mask, _tb_rope_tables, _tb_varcomp
+    _tb_causal_mask, _tb_rope_tables, _tb_varcomp, _soa_key, _soa_keys
 import FabricPC: _ad_param_grads, _ad_latent_grads
 using Zygote
+
+# SoA key strings are structural (independent of the differentiated values); the Symbol->String
+# foreigncall (jl_cstr_to_string) is not differentiable, so skip tracing it. This is what lets a
+# generic node's compute_mu iterate `inputs`/`params` (an SoA) inside the autodiff'd seam.
+Zygote.@nograd _soa_key
+Zygote.@nograd _soa_keys
 
 # These helpers build CONSTANT tables (functions of S/head_dim only — no differentiable input) via
 # comprehensions, which lower to `setindex!`; Zygote's tracer rejects that ("Mutating arrays not

@@ -11,7 +11,7 @@
 
 using FabricPC
 using FabricPC: NodeParams, compute_mu
-using Enzyme
+using Zygote
 using Random, Test
 
 const TF = FabricPC
