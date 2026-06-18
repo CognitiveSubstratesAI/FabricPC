@@ -1,8 +1,8 @@
 # Assembled transformer language-model graph (src/models/transformer_lm.jl).
 # Verifies the end-to-end seq-model assembly that wires the decomposed transformer
 # nodes into a working graph(): inference shapes, PC training reduces energy, and
-# autoregressive greedy generation. Uses the Enzyme autodiff seam (TransformerBlock
-# + VocabProjectionNode implement only compute_mu).
+# autoregressive greedy generation. Uses the Zygote autodiff seam (TransformerBlock
+# + VocabProjectionNode implement only compute_mu; Enzyme crashes on the multi-head block).
 
 using FabricPC
 using Zygote   # AD seam for TransformerBlock/VocabProjection (Enzyme crashes on the multi-head block)
@@ -39,21 +39,21 @@ import FabricPC: run_inference, initialize_graph_state
     onehot(t) = Float32[t[b, s] == v ? 1.0f0 : 0.0f0 for b in 1:B, s in 1:S, v in 1:V]
     batch = Dict{String, Any}("x" => Float32.(tokens), "y" => onehot(tokens))
     trng = MersenneTwister(3)
+    # Train with AdamW(1e-3) — upstream's canonical optimizer (optax.adamw(0.001, weight_decay=0.1);
+    # ab_experiment.py:12, every train_*.py docstring). Plain SGD at lr=0.02 DIVERGES on a transformer
+    # (weights -> 1e7 -> NaN by step ~4); Adam's per-parameter adaptive step is what makes attention
+    # trainable. With this, E drops ~191 -> 8 over 50 steps.
+    opt = AdamW(params; lr = 1.0f-3, weight_decay = 0.1f0)
     energies = Float32[]
     ces = Float32[]
     for _ in 1:50
-        params, e, ce, _ = train_step_autoregressive(params, 0.02, batch, structure, trng)
+        params, e, ce, _ = train_step_autoregressive(params, opt, batch, structure, trng)
         push!(energies, e)
         push!(ces, ce)
     end
     @test all(isfinite, energies)
-    # The transformer's node-local Zygote gradient is FD-validated correct (W_o/ln1_gamma match
-    # finite-difference to <1%), and the graph trains end-to-end — but PC training of a 16-dim
-    # transformer at lr=0.02 over 50 steps is numerically unstable here (the CE metric can hit NaN
-    # and the energy stays flat). This is a training-DYNAMICS gap (lr schedule / grad clipping /
-    # init), NOT a seam bug. @test_broken tracks it: it errors loudly once stability is fixed.
-    @test_broken all(isfinite, ces)
-    @test_broken energies[end] < energies[1]          # PC learning reduces energy
+    @test all(isfinite, ces)
+    @test energies[end] < energies[1]                 # PC learning reduces energy
 
     # (c) greedy generation: deterministic across RNGs, correct shapes (1-D and 2-D).
     prompt1 = [1, 2, 3]
