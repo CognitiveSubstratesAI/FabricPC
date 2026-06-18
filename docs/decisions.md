@@ -508,3 +508,64 @@ the FabricPC PC-substrate node set matches upstream (Linear/Identity/Skip/Residu
 Transformer/transformer_v2/StorkeyHopfield) — ~complete. Remaining non-substrate:
 multi-device training, dashboards/dataloader/experiments/tuner, train_backprop (the
 anti-thesis baseline). decisions.md #18.
+
+## 19. Autodiff backend = Zygote (Enzyme segfaults on attention); params as SoA
+
+Date: 2026-06-17
+
+The transformer/attention nodes have no hand-written local gradient — they rely on the
+Phase-D autodiff seam (differentiate `compute_mu` for the node-LOCAL PC gradient, NOT
+backprop). The original seam used Enzyme. On Julia 1.12, **Enzyme aborts on the full
+multi-head-attention block** (`addToDiffe: "unhandled accumulate with partial sizes"`;
+proven by 9 bisections — every ISOLATED gradient differentiates, only the combined graph
+crashes, and it's an opaque LLVM abort, not a debuggable Julia error). Decision: switch
+the seam to **Zygote**, which handles FabricPC's functional forwards. The node's gradient
+is FD-validated correct (W_o AD=0.59/FD=0.59, ln1_gamma 15.42/15.41, <1%).
+
+Supporting changes:
+- **`NodeParams` weights/biases `Dict` → `SoA(NamedTuple)`** with a Dict-like read API
+  (`getindex`/`get`/`haskey`/`keys`/`values`/`pairs`/`iterate`). Type-stable (no `Dict`
+  i64-hash internals in the differentiated region — which also tripped Enzyme) and AD-
+  friendly. Construction coerces; mixed `NodeParams(::Dict, ::SoA)` supported.
+- **SoA iteration is Zygote-differentiable**: the Symbol→String key conversion
+  (`jl_cstr_to_string`, a foreigncall Zygote can't differentiate) is routed through
+  `_soa_key`/`_soa_keys`, marked `Zygote.@nograd` in the ext. Keys are structural — values
+  still get gradients. This is what lets a generic node's `compute_mu` ITERATE an SoA
+  (sum over input edges); the fixed-key transformer never hit it, ADLinear/MLP/Storkey do.
+- `@nograd` the constant tables (causal mask / RoPE / variance comprehensions).
+- **Suite is Zygote-only** (ea9ee94): the Enzyme and Zygote exts implement the SAME seam
+  hooks and cannot co-load, so one backend wins. World-age gotcha — load `using Zygote` at
+  the TOP of `runtests` (before any testset) so the ext is registered first, else the first
+  file to `using Zygote` triggers the load but can't see the new methods in its own frame →
+  the seam raises its "load a backend" hint. Enzyme ext retained (opt-in) for simple/dense
+  nodes. Full suite 260/260.
+
+NOTE: Reactant remains the FORWARD/perf JIT for the analytic-node inference loop — it is
+NOT an AD engine (it uses Enzyme-MLIR for AD), so it does not bear on this seam choice. A
+future "purist PC" alternative is to hand-derive the analytic attention gradient (no AD,
+Reactant-compilable); deferred. decisions.md #19.
+
+## 20. Transformer LM trains: AdamW(1e-3) + Softmax/CrossEntropy output (transformer_v2)
+
+Date: 2026-06-18
+
+Two changes that take the assembled transformer LM from "differentiates" to "demonstrably
+learns", both grounded in upstream:
+- **Optimizer**: plain SGD@0.02 DIVERGES on a transformer (weights → 1e7 → NaN by step ~4;
+  confirmed by a trajectory probe). Upstream uses `optax.adam(1e-3)` / `adamw(1e-3, wd=0.1)`
+  EVERYWHERE (ab_experiment.py, every train_*.py). Switched to `AdamW(1e-3, wd=0.1)` — energy
+  drops ~191→8 over 50 steps; the trainer already dispatches to AdamW for a non-scalar opt.
+  The gradient was correct all along (this was never a seam bug).
+- **Output layer** (ported from upstream's unmerged `feature/transformer_block_v2`):
+  `VocabProjectionNode` default `Identity+Gaussian` → **`Softmax+CrossEntropy`** (the proper
+  next-token classification objective; z_mu is now a probability distribution, not logits).
+  Required making `SoftmaxActivation` softmax over the LAST axis (`dims=ndims(x)` — was a
+  hardcoded `dims=2`; backward-compatible for rank-2, correct for the rank-3 (B,S,V) vocab
+  axis, which is exactly what had blocked Softmax on VocabProjection). Inits matched too:
+  embed `std=1.0`, output `std=√(1/E)`. Generation consumes z_mu directly (already probs).
+
+ONLY the self-contained CE-energy + inits were ported from the unmerged branch; its
+structural pieces (explicit skip/mask nodes, FeedforwardStateInit, MuPCConfig, Optuna tuner)
+and `feature/convolution` (ConvNode) are deferred until they merge to upstream main — porting
+unmerged-branch structure invites churn. test_transformer_lm 14/14; full suite 261/261.
+decisions.md #20.
