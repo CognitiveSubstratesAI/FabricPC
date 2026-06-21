@@ -191,6 +191,34 @@ function run_cvar_demo()
     return (; c1, c2)
 end
 
+# ── PC-native gate: the L_CDS margin gradient AS a local error node (§3) ──────
+# The paper §3 wants CDS realized as LOCAL predictive-coding error nodes, not a
+# separate solver. The CDS margin over a box cone is m = Δr + Σ_{i:Δn_i<0} u_i·Δn_i,
+# and L_CDS = softplus(ε − m). Its gradient w.r.t. the support head's cone bounds u is
+# LOCAL and closed-form: ∂L/∂u_i = σ(ε−m)·(−Δn_i) for objectives the option hurts, 0
+# else. That gradient is exactly the error signal the PC support-head node follows —
+# so the gate is a PC error node, and descending it makes the cone satisfy admission.
+function lcds_grad(dr::Real, dn::AbstractVector, u::AbstractVector, eps::Float32)
+    m = box_margin(dr, dn, u)
+    sig = 1.0f0 / (1.0f0 + exp(-(eps - m)))          # σ(ε−m) = softplus'(ε−m)
+    Float32[dn[i] < 0 ? sig * (-dn[i]) : 0.0f0 for i in eachindex(dn)]
+end
+
+function run_pc_native_gate_demo(; eps::Float32=0.05f0, lr::Float32=0.5f0, steps::Int=60)
+    dn = Float32[1.0, -0.3]
+    u = Float32[1.0, 1.0]                             # naive full cone → margin −0.3 (reject)
+    m0 = box_margin(0.0, dn, u)
+    for _ in 1:steps
+        u = max.(u .- lr .* lcds_grad(0.0, dn, u, eps), 0.0f0)   # follow the local gate error
+    end
+    m1 = box_margin(0.0, dn, u)
+    println("── PC-native gate: follow the local L_CDS error (§3) ──")
+    println("  cone u: [1.0, 1.0] → ", round.(u; digits=3))
+    println("  margin: ", round(m0; digits=3), " (reject) → ", round(m1; digits=3),
+            m1 >= -eps ? "  → ADMIT (gate satisfied by local descent)" : "  → reject")
+    return (; m0, m1, u, eps)
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     r = run_mdn_demo()
     # Co-learned-geometry checks: energy fell, and each context's cone emphasises the
@@ -216,4 +244,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
     @assert v.c1 >= 0 "should CVaR-admit under motive-1-weighted α"
     @assert v.c2 < 0 "should CVaR-reject under motive-2-weighted α"
     println("SUBREP CVaR OK — distribution-aware gate flips with the MDN's motive weights")
+
+    println()
+    g = run_pc_native_gate_demo()
+    # The gate as a local PC error node: starting from the naive full cone (reject),
+    # descending the local L_CDS gradient drives the cone to satisfy admission.
+    @assert g.m0 < 0 "naive cone should reject"
+    @assert g.m1 >= -g.eps "descending the local gate error should reach admission"
+    println("SUBREP PC-NATIVE GATE OK — local L_CDS error drives the cone to admit")
 end
