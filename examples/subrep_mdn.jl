@@ -219,6 +219,47 @@ function run_pc_native_gate_demo(; eps::Float32=0.05f0, lr::Float32=0.5f0, steps
     return (; m0, m1, u, eps)
 end
 
+# ── §2.6 full admission-coupled co-training: learn the cone FROM the gate loss ──
+# Deeper than run_coupled_demo (which fit hand-derived MSE cone targets): here the MDN
+# co-trains directly on the paper's L_CDS hinge — there are NO cone targets, the
+# supervision is the gate's own gradient. Each step predicts the cone, forms a
+# PC pseudo-target u − η·∂L_CDS/∂u (a local descent step on softplus(ε−margin) via the
+# Danskin gradient lcds_grad), and runs one local-PC update toward it. The motive
+# geometry emerges purely from admission decisions (§2.6).
+# §2.6 regularizer: a log-VOLUME reward keeps the cone the WEAKEST ADEQUATE slice,
+# preventing the degenerate collapse to a point that admits everything. Combined
+# objective L = L_CDS − λ·Σ log(u_i); ∂/∂u_i = ∂L_CDS/∂u_i − λ/u_i (the reward pushes
+# every bound UP, away from 0 — so the cone stays as LARGE as admission allows).
+function lcds_grad_reg(dr::Real, dn::AbstractVector, u::AbstractVector, eps::Float32, lam::Float32)
+    lcds_grad(dr, dn, u, eps) .- lam ./ (u .+ 1.0f-3)
+end
+
+function run_lcds_cotrain_demo(; epochs::Int=250, lr_pc::Float64=0.3, eta::Float32=1.0f0,
+                               inner::Int=3, lam::Float32=0.03f0, eps::Float32=0.07f0, seed::Int=0)
+    X = permutedims(hcat(_CTX1, _CTX2))              # (2,2): two contexts
+    opts = (_OPT1, _OPT2)                            # each context's should-admit option
+    structure = mdn_graph()
+    params = initialize_params(structure, MersenneTwister(seed))
+    for ep in 1:epochs
+        u = predict(params, structure, Dict("x" => X), MersenneTwister(ep); output_task="y")
+        T = similar(u)
+        for i in 1:size(u, 1)                        # pseudo-target = L_CDS + volume-reward descent
+            T[i, :] = clamp.(u[i, :] .- eta .* lcds_grad_reg(0.0, opts[i], u[i, :], eps, lam), 0.0f0, 1.0f0)
+        end
+        params, _, _ = train_pcn(params, structure, [Dict("x" => X, "y" => T)], lr_pc;
+                                 num_epochs=inner, rng=MersenneTwister(ep), verbose=false)
+    end
+    cones = predict(params, structure, Dict("x" => X), MersenneTwister(99); output_task="y")
+    m1 = box_margin(0.0, _OPT1, cones[1, :])
+    m2 = box_margin(0.0, _OPT2, cones[2, :])
+    println("── §2.6 L_CDS admission-coupled co-training (NO cone targets — gate loss only) ──")
+    println("  ctx-1 cone ", round.(cones[1, :]; digits=3), "  margin ", round(m1; digits=3),
+            m1 >= -eps ? "  → ADMIT" : "  → reject")
+    println("  ctx-2 cone ", round.(cones[2, :]; digits=3), "  margin ", round(m2; digits=3),
+            m2 >= -eps ? "  → ADMIT" : "  → reject")
+    return (; cones, m1, m2, eps)
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     r = run_mdn_demo()
     # Co-learned-geometry checks: energy fell, and each context's cone emphasises the
@@ -252,4 +293,16 @@ if abspath(PROGRAM_FILE) == @__FILE__
     @assert g.m0 < 0 "naive cone should reject"
     @assert g.m1 >= -g.eps "descending the local gate error should reach admission"
     println("SUBREP PC-NATIVE GATE OK — local L_CDS error drives the cone to admit")
+
+    println()
+    l = run_lcds_cotrain_demo()
+    # The MDN learned each context's cone PURELY from the L_CDS gate loss + volume reward
+    # (no cone targets): each context's option is admitted, AND the cone is the WEAKEST
+    # ADEQUATE slice (NOT collapsed) — ctx-1 keeps the helped motive's weight and shrinks
+    # the hurt one's, ctx-2 the mirror. Differentiated geometry, not a degenerate point.
+    @assert l.m1 >= -l.eps "ctx-1 option should be admitted"
+    @assert l.m2 >= -l.eps "ctx-2 option should be admitted"
+    @assert l.cones[1, 1] > l.cones[1, 2] "ctx-1 cone should keep motive-1 weight (weakest-adequate)"
+    @assert l.cones[2, 2] > l.cones[2, 1] "ctx-2 cone should keep motive-2 weight (weakest-adequate)"
+    println("SUBREP L_CDS CO-TRAIN OK — weakest-adequate geometry learned from admission decisions")
 end
