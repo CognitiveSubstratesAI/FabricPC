@@ -87,6 +87,17 @@ derivative(a::LeakyReLUActivation, x) = ifelse.(x .> 0.0f0, 1.0f0, a.alpha)
 variance_gain(a::LeakyReLUActivation) = Float32(sqrt(2.0 / (1.0 + a.alpha^2)))
 
 """
+Softplus: f(x) = log(1 + eˣ) — a smooth, strictly-positive (≥0) activation;
+f'(x) = σ(x) = 1/(1 + e⁻ˣ). Numerically stable via `log1p(exp(-|x|)) + max(x, 0)`.
+Use for outputs that must stay positive — e.g. the SubRep MDN support head's cone
+bounds (`examples/subrep_mdn.jl`), matching the iCog `generator/mdn.py` softplus head
+(strict positivity, unlike ReLU which can pin a cone bound to exactly 0).
+"""
+struct SoftplusActivation <: AbstractActivation end
+forward(::SoftplusActivation, x) = log1p.(exp.(-abs.(x))) .+ max.(x, 0.0f0)
+derivative(::SoftplusActivation, x) = 1.0f0 ./ (1.0f0 .+ exp.(-x))
+
+"""
 GELU (tanh approximation): f(x) = 0.5·x·(1 + tanh(√(2/π)(x + 0.044715x³))).
 Upstream's `derivative` is for this tanh approximation, so we use the tanh form
 for `forward` too — keeping f and f' self-consistent for the explicit path
