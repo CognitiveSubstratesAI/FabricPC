@@ -90,6 +90,107 @@ function run_mdn_demo(; n::Int=32, epochs::Int=200, lr::Float64=0.02, seed::Int=
     return (; ev0, ev1, iters, cones)
 end
 
+# ── Admission-COUPLED training: the cone is shaped by the gate (§2.5 / §2.6) ──
+# The iCog support head trains (MSE) on Wₓ targets derived from CERTIFIED WEIGHTS —
+# the cone under which the gate admitted an option (utils/mdn_support_pipeline.py
+# observe_and_train_support; §2.5 Wₓ^{t+1}=conv(Wₓ^t ∪ W_new)). So the cone target
+# is DERIVED from the admission requirement, not hand-set. `cone_to_admit` is that
+# derivation for a box cone: drop weight (u_i→0) on objectives the option HURTS
+# (Δn_i<0), keep full weight where it helps — the minimal cone that admits it.
+# (The paper §2.6 L_CDS hinge is the principled equivalent of this supervised target.)
+cone_to_admit(dn::AbstractVector; hi::Float32=1.0f0) =
+    Float32[dn[i] >= 0 ? hi : 0.0f0 for i in eachindex(dn)]
+
+# box-cone CDS margin (matches lib/subrep/cds.metta cds-margin-box, ℓ=0) and the
+# full-simplex margin, so we can verify admission under the LEARNED vs naive cone.
+function box_margin(dr::Real, dn::AbstractVector, u::AbstractVector)
+    m = Float32(dr)
+    for i in eachindex(dn)
+        m += dn[i] >= 0 ? 0.0f0 : u[i] * dn[i]
+    end
+    m
+end
+simplex_margin(dr::Real, dn::AbstractVector) = Float32(dr) + minimum(dn)
+
+const _OPT1 = Float32[1.0, -0.3]    # ctx-1 option: helps motive-1, hurts motive-2
+const _OPT2 = Float32[-0.3, 1.0]    # ctx-2 option: the mirror
+
+function run_coupled_demo(; n::Int=32, epochs::Int=300, lr::Float64=0.02, seed::Int=0, eps::Float32=0.05f0)
+    cone1 = cone_to_admit(_OPT1)            # gate-derived target [1, 0]
+    cone2 = cone_to_admit(_OPT2)            # gate-derived target [0, 1]
+    X = zeros(Float32, 2n, 2); Y = zeros(Float32, 2n, 2)
+    for i in 1:n
+        X[i, :] .= _CTX1; Y[i, :] .= cone1
+        X[n + i, :] .= _CTX2; Y[n + i, :] .= cone2
+    end
+    structure = mdn_graph()
+    params = initialize_params(structure, MersenneTwister(seed))
+    loader = [Dict("x" => X, "y" => Y)]
+    params, iters, _ = train_pcn(
+        params, structure, loader, lr; num_epochs=epochs, rng=MersenneTwister(7), verbose=false
+    )
+    proto = permutedims(hcat(_CTX1, _CTX2))
+    cones = predict(params, structure, Dict("x" => proto), MersenneTwister(2); output_task="y")
+    u1 = cones[1, :]
+    m_simplex = simplex_margin(0.0, _OPT1)               # naive full-simplex cone
+    m_learned = box_margin(0.0, _OPT1, u1)               # the MDN's co-learned cone
+    println("── Admission-COUPLED MDN (cone derived from the gate) ──")
+    println("  ctx-1 learned cone u = ", round.(u1; digits=3), "  (gate-derived target ", cone1, ")")
+    println("  option Δn=", _OPT1, ":")
+    println("    full-simplex margin ", round(m_simplex; digits=3), "  → REJECT")
+    println("    learned-cone margin ", round(m_learned; digits=3),
+            m_learned >= -eps ? "  → ADMIT (co-learned geometry enables it)" : "  → reject")
+    return (; iters, cones, m_learned, m_simplex, eps)
+end
+
+# ── PDS-CVaR gate: distribution-aware admission over w ~ Dirichlet(α) (§3.2 Def 3) ──
+# The MDN's distribution_head emits Dirichlet concentration α; the CVaR gate admits an
+# option iff the worst-tail (CVaR_α) of Δr + wᵀΔn over w ~ Dirichlet(α) is ≥ 0 (iCog
+# certification/cvar_test.py). Dirichlet sampled via normalized Gammas (Marsaglia–Tsang;
+# no Distributions.jl dep).
+function _gamma_sample(a::Float32, rng)
+    a < 1.0f0 && return _gamma_sample(a + 1.0f0, rng) * rand(rng, Float32)^(1.0f0 / a)
+    d = a - 1.0f0 / 3.0f0
+    c = 1.0f0 / sqrt(9.0f0 * d)
+    while true
+        x = randn(rng, Float32)
+        v = (1.0f0 + c * x)^3
+        v <= 0.0f0 && continue
+        u = rand(rng, Float32)
+        (log(u) < 0.5f0 * x^2 + d - d * v + d * log(v)) && return d * v
+    end
+end
+function dirichlet_sample(alphas::AbstractVector, rng)
+    g = Float32[_gamma_sample(Float32(a), rng) for a in alphas]
+    g ./ sum(g)
+end
+
+function pds_cvar(dr::Real, dn::AbstractVector, alphas::AbstractVector;
+                  confidence::Float64=0.1, nsamples::Int=4000, rng=MersenneTwister(0))
+    vals = Vector{Float32}(undef, nsamples)
+    for s in 1:nsamples
+        w = dirichlet_sample(alphas, rng)
+        vals[s] = Float32(dr) + sum(w .* dn)
+    end
+    sort!(vals)                                   # ascending → worst draws first
+    k = max(1, ceil(Int, confidence * nsamples))  # the α-tail
+    sum(@view vals[1:k]) / k                       # CVaR = mean of the worst tail
+end
+cvar_admit(dr, dn, alphas; kw...) = pds_cvar(dr, dn, alphas; kw...) >= 0.0f0
+
+function run_cvar_demo()
+    opt = Float32[1.0, -0.3]                       # helps motive-1, hurts motive-2
+    a1 = Float32[10, 1]                            # MDN α: motive-1 dominant
+    a2 = Float32[1, 10]                            # MDN α: motive-2 dominant
+    c1 = pds_cvar(0.0, opt, a1; rng=MersenneTwister(1))
+    c2 = pds_cvar(0.0, opt, a2; rng=MersenneTwister(1))
+    println("── PDS-CVaR gate (distribution-aware over the MDN's α) ──")
+    println("  option Δn=", opt, ":")
+    println("    α=", a1, " (motive-1 weighted): CVaR ", round(c1; digits=3), c1 >= 0 ? "  → ADMIT" : "  → reject")
+    println("    α=", a2, " (motive-2 weighted): CVaR ", round(c2; digits=3), c2 >= 0 ? "  → ADMIT" : "  → reject")
+    return (; c1, c2)
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     r = run_mdn_demo()
     # Co-learned-geometry checks: energy fell, and each context's cone emphasises the
@@ -98,4 +199,21 @@ if abspath(PROGRAM_FILE) == @__FILE__
     @assert r.cones[1, 1] > r.cones[1, 2] "ctx-1 cone should emphasise motive-1"
     @assert r.cones[2, 2] > r.cones[2, 1] "ctx-2 cone should emphasise motive-2"
     println("SUBREP MDN OK — context → motive cone learned by local PC")
+
+    println()
+    c = run_coupled_demo()
+    # Admission-coupling: the MDN's gate-derived cone must ADMIT (margin ≥ −ε) the
+    # option that the naive full-simplex cone REJECTS (margin < 0) — the co-learned
+    # geometry is what enables the admission. This closes the gate→cone→MDN→gate loop.
+    @assert c.m_simplex < 0 "simplex should reject the complementary option"
+    @assert c.m_learned >= -c.eps "the co-learned cone should admit it"
+    println("SUBREP MDN COUPLED OK — gate-derived cone admits what the simplex rejects")
+
+    println()
+    v = run_cvar_demo()
+    # Distribution-aware admission: the SAME option is CVaR-admitted when the MDN's α
+    # weights motive-1 (which it helps) and CVaR-rejected when α weights motive-2.
+    @assert v.c1 >= 0 "should CVaR-admit under motive-1-weighted α"
+    @assert v.c2 < 0 "should CVaR-reject under motive-2-weighted α"
+    println("SUBREP CVaR OK — distribution-aware gate flips with the MDN's motive weights")
 end
