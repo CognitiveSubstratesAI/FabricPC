@@ -10,11 +10,22 @@
 # `compute_mu`). Reuses the `_tb_*` helpers in transformer.jl. UNLIKE the monolithic
 # `TransformerBlock`, residuals are plain (z = x + mha, z = res + mlp2) — no 1/√2 or
 # √S scaling (matches transformer_v2). v1: causal/full self-attention, no mask input.
-# Embedding/VocabProjection (discrete-token I/O) are a separate follow-up.
+# Embedding/VocabProjection (discrete-token I/O) are implemented below in this same file,
+# not a separate follow-up (D-03, docs/AUDIT_REGISTER.md) — see EmbeddingNode/VocabProjectionNode.
 
 # ============================================================================
 # MhaResidualNode — z_mu = x + W_o·MHA(LayerNorm(x))
 # ============================================================================
+"""
+    MhaResidualNode(shape, name; num_heads=4, use_rope=true, causal=false, energy=GaussianEnergy(),
+                    weight_init=NormalInitializer(), latent_init=NormalInitializer())
+
+Multi-head self-attention with a pre-norm residual: `z_mu = x + W_o·MHA(LayerNorm(x))`. Two
+input slots: `"in"` (the residual/main path) and `"skip"` (optional, decoupled bypass — falls
+back to `"in"` if unwired). Seam-based (implements only `compute_mu`; local PC gradients via
+Zygote or Enzyme). Part of the decomposed transformer_v2 family — pairs with [`LnMlp1Node`](@ref)
+and [`Mlp2ResidualNode`](@ref).
+"""
 struct MhaResidualNode <: AbstractNode
     shape::Tuple
     name::String
@@ -96,6 +107,14 @@ end
 # ============================================================================
 # LnMlp1Node — z_mu = activation(LayerNorm(x) · W_ff1 + b_ff1)   shape (S, ff_dim)
 # ============================================================================
+"""
+    LnMlp1Node(shape, name; activation=GeluActivation(), energy=GaussianEnergy(),
+              weight_init=NormalInitializer(), latent_init=NormalInitializer())
+
+First MLP layer with a leading LayerNorm: `z_mu = activation(LayerNorm(x) · W_ff1 + b_ff1)`,
+shape `(S, ff_dim)`. Single `"in"` slot (from [`MhaResidualNode`](@ref)). Seam-based (implements
+only `compute_mu`). Pairs with [`Mlp2ResidualNode`](@ref) for the second half of the FFN.
+"""
 struct LnMlp1Node <: AbstractNode
     shape::Tuple
     name::String
@@ -157,6 +176,15 @@ end
 # Two slots: "in" (from LnMlp1, (S,ff)) and "residual" (skip from MhaResidual,
 # (S,embed)). The skip's input gradient flows back to its source via the seam.
 # ============================================================================
+"""
+    Mlp2ResidualNode(shape, name; energy=GaussianEnergy(), weight_init=NormalInitializer(),
+                     latent_init=NormalInitializer())
+
+Second MLP layer with a residual add: `z_mu = residual + (mlp1_in · W_ff2 + b_ff2)`. TWO input
+slots: `"in"` (from [`LnMlp1Node`](@ref), shape `(S, ff_dim)`) and `"residual"` (the skip from
+[`MhaResidualNode`](@ref), shape `(S, embed_dim)`) — the residual edge carries no weight, an
+identity Jacobian into `z_mu`. Seam-based (implements only `compute_mu`).
+"""
 struct Mlp2ResidualNode <: AbstractNode
     shape::Tuple
     name::String
@@ -216,6 +244,16 @@ end
 # rows by token id; input grad = 0; self grad = grad_latent (anchors latent to the
 # lookup). Port of transformer_v2.EmbeddingNode.
 # ============================================================================
+"""
+    EmbeddingNode(shape, name; vocab_size, energy=GaussianEnergy(),
+                  weight_init=NormalInitializer(; std=0.02), latent_init=NormalInitializer())
+
+Discrete token-id lookup: `z_mu[b,t,:] = embeddings[idx[b,t], :]`. `idx` is a `(B, S)` array of
+1-based (Float32-encoded) token indices in `1:vocab_size`. Uses EXPLICIT (not autodiff-seam)
+gradients: the weight gradient is a scatter-add of `∂E/∂z_mu` into embedding rows by token id;
+the input gradient is zero (no gradient through a discrete index). Port of
+`transformer_v2.EmbeddingNode`.
+"""
 struct EmbeddingNode <: AbstractNode
     shape::Tuple                      # (seq_len, embed_dim)
     name::String
@@ -306,6 +344,16 @@ end
 # axis, so it correctly normalizes the rank-3 (B,S,V) vocab axis. z_mu is therefore a probability
 # distribution (NOT logits).
 # ============================================================================
+"""
+    VocabProjectionNode(shape, name; activation=SoftmaxActivation(), energy=CrossEntropyEnergy(),
+                        weight_init=XavierInitializer(), latent_init=NormalInitializer())
+
+Final embedding→vocabulary projection: `z_mu = activation(x · W_out + b_out)`, shape
+`(S, vocab_size)`. Defaults to Softmax + CrossEntropy (matches upstream
+`transformer_v2.VocabProjectionNode`'s `DEFAULT_ACTIVATION`/`DEFAULT_ENERGY`) — `z_mu` is a
+probability distribution over the vocab axis (the LAST axis), not raw logits. Seam-based
+(implements only `compute_mu`).
+"""
 struct VocabProjectionNode <: AbstractNode
     shape::Tuple                      # (seq_len, vocab_size)
     name::String

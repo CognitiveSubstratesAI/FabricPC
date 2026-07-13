@@ -12,7 +12,35 @@
 # element-wise activation, so no autodiff is needed. Softmax is non-element-wise
 # and uses the diagonal-Jacobian PC approximation (see its docstring).
 
+"""
+    AbstractActivation
+
+Element-wise (or, for [`SoftmaxActivation`](@ref), near-element-wise) nonlinearity. Every
+concrete subtype implements `forward`/`derivative` via dispatch — there is no generic
+fallback. `variance_gain`/`jacobian_gain` default to `1.0` (exact for Identity/ReLU/LeakyReLU)
+and are overridden by activations that contract variance.
+"""
 abstract type AbstractActivation end
+
+"""
+    jacobian(a::AbstractActivation, x::AbstractMatrix) -> Array
+
+Full Jacobian `J[b,i,j] = ∂f(x)_i/∂x_j`, shape `(B, D, D)`. For element-wise activations this
+is the diagonal embedding of `derivative(a, x)`; [`SoftmaxActivation`](@ref) overrides with the
+true off-diagonal terms. Convenience for explicit (non-autodiff) gradient paths that need the
+full matrix, not just the diagonal `derivative` this codebase's PC gradients normally use.
+"""
+function jacobian end
+
+"""
+    jacobian_gain(a::AbstractActivation) -> Float32
+
+muPC top-down-gradient compensation factor: `1 / (variance_gain(a) · rms(a'(z)))` for
+`z ~ N(0, variance_gain(a)^2)`, so `topdown_grad_scale = a · jacobian_gain(a)` yields ~1.0
+per-hop gradient propagation. Defaults to `1.0` (exact for Identity/ReLU/LeakyReLU); nonlinear
+activations override with a precomputed constant.
+"""
+function jacobian_gain end
 
 """
     IdentityActivation()
@@ -30,6 +58,13 @@ derivative(::IdentityActivation, x) = one(eltype(x))
 # Var = g² gives post-activation Var ≈ 1; `jacobian_gain` = 1/(g·rms(f')) to
 # normalize per-hop top-down gradient propagation to ~1. Both default to 1
 # (exact for identity / ReLU / LeakyReLU); non-linear activations override.
+"""
+    variance_gain(a::AbstractActivation) -> Float32
+
+muPC forward-scaling gain: the Kaiming-style `g` such that pre-activation `Var(z) = g²` gives
+post-activation `Var(f(z)) ≈ 1`. Used in `a = gain / sqrt(fan_in * K)`. Defaults to `1.0` (exact
+for Identity/ReLU/LeakyReLU); nonlinear activations override with a precomputed constant.
+"""
 variance_gain(::AbstractActivation) = 1.0f0
 jacobian_gain(::AbstractActivation) = 1.0f0
 

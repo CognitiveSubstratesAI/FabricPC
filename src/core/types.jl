@@ -44,7 +44,6 @@ struct NodeInfo
     scaling_config::Any   # ::MuPCScalingFactors or nothing (Phase C)
 end
 
-"""Learnable parameters of one node: named weight matrices + named biases."""
 # ── Struct-of-Arrays param container (replaces Dict{String,Matrix} in NodeParams) ─────────────
 # WHY: Enzyme reverse-mode cannot accumulate gradients into a `Dict`'s shadow — its internal i64
 # hash/slot arrays trip `addToDiffe: "unhandled accumulate with partial sizes"` once a node's
@@ -53,6 +52,15 @@ end
 # the Reactant JIT path. `SoA` is a thin NamedTuple-backed container exposing the Dict-like *read*
 # API the codebase already uses (`["W_q"]`, `keys`, `values`, iteration), so node forwards and most
 # call sites are UNCHANGED; only construction converts Dict→SoA.
+"""
+    SoA{NT<:NamedTuple}
+
+Struct-of-Arrays: a thin `NamedTuple`-backed container exposing a `Dict`-like read API
+(`getindex`, `get`, `haskey`, `keys`, `values`, `pairs`, iteration). Used for `NodeParams`'s
+`weights`/`biases` — a `NamedTuple` has no integer-hash internals for Enzyme reverse-mode to
+trip on (unlike `Dict`), and is type-stable (suits the Reactant JIT path). See
+`docs/decisions.md` §19.
+"""
 struct SoA{NT <: NamedTuple}
     nt::NT
 end
@@ -78,6 +86,13 @@ function Base.iterate(s::SoA, st::Int=1)
     return (_soa_key(s.nt, st) => s.nt[st], st + 1)
 end
 
+"""
+    NodeParams{W<:SoA, B<:SoA}
+
+Learnable parameters of one node: named weight matrices ([`SoA`](@ref)) + named biases
+([`SoA`](@ref)). `NodeParams(weights::AbstractDict, biases::AbstractDict)` coerces from plain
+`Dict`s.
+"""
 struct NodeParams{W <: SoA, B <: SoA}
     weights::W
     biases::B

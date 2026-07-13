@@ -19,9 +19,17 @@ using Accessors
 
 const FABRICPC_VERSION = v"0.1.0"
 
-# Every node descriptor subtypes this. Methods (forward, initialize_params,
-# forward_and_latent_grads, …) dispatch on the concrete node type — the Julia
-# analogue of upstream's `node_class` static-method dispatch.
+"""
+    AbstractNode
+
+Every node descriptor subtypes this ([`Linear`](@ref), [`IdentityNode`](@ref),
+[`SkipConnection`](@ref), [`LinearResidual`](@ref), [`TransformerBlock`](@ref),
+[`MhaResidualNode`](@ref), [`LnMlp1Node`](@ref), [`Mlp2ResidualNode`](@ref),
+[`EmbeddingNode`](@ref), [`VocabProjectionNode`](@ref), [`StorkeyHopfield`](@ref)). Methods
+(`forward`, `initialize_params`, `forward_and_latent_grads`, `forward_and_weight_grads`, …)
+dispatch on the concrete node type — the Julia analogue of upstream's `node_class`
+static-method dispatch.
+"""
 abstract type AbstractNode end
 
 node_name(n::AbstractNode) = n.name

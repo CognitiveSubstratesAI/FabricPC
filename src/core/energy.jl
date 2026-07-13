@@ -8,7 +8,40 @@
 # CrossEntropy / Laplacian / Huber / KL, each with analytic `grad_latent` (∂E/∂z)
 # AND `grad_mu` (∂E/∂z_mu) so the explicit node path generalizes with no autodiff.
 
+"""
+    AbstractEnergy
+
+Scores a node's local prediction error `E(z_latent, z_mu)`. Every concrete subtype
+([`GaussianEnergy`](@ref), [`BernoulliEnergy`](@ref), [`CrossEntropyEnergy`](@ref),
+[`LaplacianEnergy`](@ref), [`HuberEnergy`](@ref), [`KLDivergenceEnergy`](@ref)) implements
+`energy`/`grad_latent`/`grad_mu` via dispatch — there is no generic fallback.
+"""
 abstract type AbstractEnergy end
+
+"""
+    energy(e::AbstractEnergy, z_latent, z_mu) -> Vector
+
+Per-sample energy, shape `(batch,)`. Dispatches on the concrete `AbstractEnergy` subtype.
+"""
+function energy end
+
+"""
+    grad_latent(e::AbstractEnergy, z_latent, z_mu)
+
+`∂E/∂z_latent` (the node's self-latent gradient), same shape as `z_latent`. Dispatches on the
+concrete `AbstractEnergy` subtype.
+"""
+function grad_latent end
+
+"""
+    grad_mu(e::AbstractEnergy, z_latent, z_mu)
+
+`∂E/∂z_mu`, same shape as `z_mu`. An addition beyond a straight port of upstream (which gets
+this via autodiff at the call site) — every energy here has an explicit closed form so the
+node-local explicit-gradient path generalizes with no autodiff. Dispatches on the concrete
+`AbstractEnergy` subtype.
+"""
+function grad_mu end
 
 """
     GaussianEnergy(; precision = 1.0)

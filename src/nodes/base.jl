@@ -13,6 +13,15 @@
 # This file provides the behaviours shared by all node types.
 
 """
+    get_slots(node::AbstractNode) -> Dict{String,SlotSpec}
+
+Named input slots for this node type (e.g. `"in"`, `"skip"`/`"residual"` for nodes with a
+decoupled bypass edge). Dispatches on the concrete node type — every node implements its own;
+there is no generic fallback.
+"""
+function get_slots end
+
+"""
     energy_functional(node, state) -> NodeState
 
 Compute the node's per-sample energy `E(z_latent, z_mu)` and store it in

@@ -168,15 +168,16 @@ future reader hits the warning before shipping a non-Identity `TransformerBlock`
 
 ## 2. Fidelity findings — deliberate divergences (document, don't fix)
 
-No action this round. Unchanged from the original register.
+Written up as full decisions.md entries this round (D-04) — full rationale for each now
+lives in `docs/decisions.md` §21, not just the one-line table below.
 
 | ID | Item | Status |
 |----|------|--------|
-| X-01 | All-float clamp pipeline | OPEN |
-| X-02 | Mask slot removed from TransformerBlock | OPEN |
-| X-03 | rope_theta hardcoded 10000 | OPEN |
-| X-04 | num_heads default 8→4 | OPEN |
-| X-05 | GraphNamespace deferred | DECIDE |
+| X-01 | All-float clamp pipeline | DOCUMENTED (decisions.md §21) — locked in, safe under 2^24 |
+| X-02 | Mask slot removed from TransformerBlock | DOCUMENTED (decisions.md §21) — locked in |
+| X-03 | rope_theta hardcoded 10000 | DOCUMENTED (decisions.md §21) — parameterize opportunistically |
+| X-04 | num_heads default 8→4 | DOCUMENTED (decisions.md §21) — tripwire only, all callers explicit |
+| X-05 | GraphNamespace deferred | **RESOLVED (decisions.md §21).** Upstream's own multi-block assembly (`examples/transformer_demo.py:187,191`) doesn't use `GraphNamespace` either — plain f-string-suffixed names, matching Julia's existing `transformer_lm.jl` exactly. Zero `GraphNamespace` references in `transformer_v2.py`/`transformer_demo.py` (grep-verified). |
 
 ## 3. Verified-equivalent (no action — evidence on file)
 
@@ -298,8 +299,9 @@ is directly reusable.
 |----|------|--------|
 | D-01 | README.md badly stale ("Phase A scaffold") | **VERIFIED CLOSED** (`67a54da`) — rewritten to reflect actual shipped state (muPC, transformer + decomposed transformer_v2 family, Reactant/XLA JIT, StorkeyHopfield, AdamW, natural-gradient preconditioners). |
 | D-02 | `_tb_apply_rope` comment claimed a layout divergence that doesn't exist | **VERIFIED CLOSED** (`c8fb541`) — confirmed by spot-check that the math genuinely matches upstream (see §3); reworded the comment to say the convention coincides with upstream's rather than implying no match was attempted. |
-| D-03 | transformer_decomposed.jl header calls Embedding/VocabProjection "a separate follow-up" — they're implemented below it in the same file | OPEN (not touched this round) |
-| D-04 | decisions.md entries: X-01…X-05, layer map (A-02), backend roles | OPEN |
+| D-03 | transformer_decomposed.jl header calls Embedding/VocabProjection "a separate follow-up" — they're implemented below it in the same file | **VERIFIED CLOSED.** One-line comment fix, cross-referencing this ID. |
+| D-04 | decisions.md entries: X-01…X-05, layer map (A-02), backend roles | **VERIFIED CLOSED.** Three new decisions.md entries: §21 (X-01…X-05, full rationale per item, X-05 additionally resolved not just documented), §22 (layer map — the four execution "layers" and the gating rule for validating each against the one below), §23 (backend roles — Zygote/eager-Enzyme/Reactant+Enzyme, synthesizing §19 with today's J-01 scouting findings). |
+| D-05 | FabricPC.jl had no published documentation site (Documenter.jl + GitHub Pages) — every sibling package in the org (Core/MORK/PathMap/NGCSimLib) has one | **VERIFIED CLOSED.** `docs/make.jl`/`docs/Project.toml`/`docs/src/` set up via `Pkg.develop`+`Pkg.add`+`Pkg.compat` (no hand-typed UUIDs), mirroring NGCSimLib's exact pattern (verified against the sibling repo's actual `make.jl`/CI workflow, not guessed). Pages: Home (adapted from README), Getting Started (Installation/Quickstart/Architecture/JIT with Reactant), API Reference (`@docs` blocks grouped to match `src/FabricPC.jl`'s own export sections). `.github/workflows/Documenter.yml` added for the `gh-pages` deploy (mirrors NGCSimLib's workflow). Local build verified clean (`julia --project=docs docs/make.jl`) — zero unresolved `@ref`/missing-docstring errors after adding real docstrings to 4 node types (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`/`EmbeddingNode`/`VocabProjectionNode` had none at all — only section-header comments) and ~12 abstract-type/generic-dispatch symbols that had no docstring anywhere (`AbstractNode`/`AbstractEnergy`/`AbstractActivation`/`AbstractInitializer` + `energy`/`grad_latent`/`grad_mu`/`jacobian`/`jacobian_gain`/`variance_gain`/`initialize`/`get_slots`/`to_flat_params`/`to_flat_state`). Found and fixed one real pre-existing bug along the way: a `"""Learnable parameters of one node..."""` docstring in `core/types.jl` was orphaned onto the wrong struct (`SoA` instead of `NodeParams`) by an intervening comment block breaking Julia's docstring-to-next-expression binding — moved to `NodeParams` and gave `SoA` its own accurate docstring. |
 
 ## 8. Residual review queue
 
@@ -308,7 +310,7 @@ is directly reusable.
 | R-01 | train_autoregressive.jl vs .py (full) | Partially addressed as a side effect: full diff review during commit prep confirmed the Blue-reformat pass on this file was whitespace-only except for one formatter-introduced comment defect (cleaned up, `ecb031a`). The X-01 dtype-preservation question and the upstream `_generation_step` index-cast comparison itself are still OPEN — this was a formatting-safety check, not the R-01 review. |
 | R-02 | FabricPCZygoteExt / FabricPCEnzymeExt internals | OPEN |
 | R-03 | storkey_hopfield pair (resolves C-11 init question) | **ADDRESSED** as part of the C-11 close — see C-11. |
-| R-04 | transformer_v2.py (upstream HEAD after A-01) | OPEN (A-01 sync itself is done; the stage-boundary/GraphNamespace read is not) |
+| R-04 | transformer_v2.py (upstream HEAD after A-01) | **VERIFIED CLOSED** (decisions.md §21, X-05). GraphNamespace half: upstream's own `transformer_demo.py` doesn't use it either (grep-verified). Stage-boundary half: already closed by Tier B's byte-level fixture verification of `MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode` against upstream (section 6) — a boundary mismatch would show up as a fixture failure, and none did. |
 | R-05 | Spot-checks: SoftmaxActivation.jacobian, last-axis softmax on rank-3, graph_construction, natural_gradients pair | OPEN |
 
 ## 9. Execution sequence

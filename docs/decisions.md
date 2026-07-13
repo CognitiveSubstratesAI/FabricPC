@@ -569,3 +569,136 @@ structural pieces (explicit skip/mask nodes, FeedforwardStateInit, MuPCConfig, O
 and `feature/convolution` (ConvNode) are deferred until they merge to upstream main — porting
 unmerged-branch structure invites churn. test_transformer_lm 14/14; full suite 261/261.
 decisions.md #20.
+
+## 21. Five locked-in deliberate divergences (X-01…X-05, docs/AUDIT_REGISTER.md section 2)
+
+Date: 2026-07-13
+
+Five points where this port intentionally does not match upstream byte-for-byte. Each was
+raised by the original coverage audit; writing them here (not just the register's one-line
+table) so future work has the actual rationale, not just a label.
+
+**X-01 — all-float clamp pipeline.** Clamping force-casts every clamp value to `Float32`
+(`Float32.(val)`), and `EmbeddingNode` rounds it back to an integer index
+(`Int(round(idx))`) on read. Upstream 0.3.1 had a dtype-preservation contract with an
+explicit `_validate_clamp_dtypes` guard; that guard was never ported. Safe as long as token
+ids stay under `2^24` (Float32's exact-integer range) — true for every vocab size this port
+has ever used (BPE's ~11711 included). Locked in, not fixed: a real dtype-preservation
+refactor would touch every clamp call site for a risk that doesn't exist at any realistic
+vocab size. Revisit only if a vocab size anywhere near `2^24` becomes plausible.
+
+**X-02 — no `"mask"` graph slot on `TransformerBlock`.** Upstream exposes a `"mask"` slot:
+an arbitrary, per-sample `(batch,1,S,S)` mask clamped as its own graph node, with a
+mask-derived per-position variance compensation. Julia's `TransformerBlock` instead takes a
+constructor-time `causal::Bool`, applying a fixed, data-independent additive mask
+(`_tb_causal_mask`) baked in at graph-construction time — deliberately, so it's a
+Reactant-traceable compile-time constant rather than a traced input (see J-01/J-03's
+Reactant-tracing constraints elsewhere in this file). Consequence: arbitrary padding masks,
+block-sparse attention patterns, and upstream's two-slot (`"in"` + `"mask"`) topology are all
+inexpressible here. Adequate for autoregressive LM training (the only topology this port
+currently trains) — revisit if a padding-mask use case (e.g. variable-length batches) shows
+up.
+
+**X-03 — `rope_theta` hardcoded to `10000`.** Upstream exposes it as a constructor
+parameter; Julia's `_tb_rope_tables` hardcodes the standard value. Trivial to parameterize
+(thread a `rope_theta` kwarg through `TransformerBlock`/`MhaResidualNode`/`_tb_rope_tables`)
+whenever a caller actually needs a non-default value — no design constraint blocks it, just
+never requested. Parameterize opportunistically, not preemptively.
+
+**X-04 — `num_heads` default differs (upstream 8, Julia 4).** A differential-testing
+tripwire, not a real divergence: every fixture/test/example in this port sets `num_heads`
+explicitly, so the differing DEFAULT never silently activates. Convention going forward:
+always pass `num_heads` explicitly in new tests/examples rather than relying on either
+side's default.
+
+**X-05 — `GraphNamespace` (upstream's thread-local hierarchical node-naming scope,
+`core/topology.py`) never ported. RESOLVED, not just deferred**: grepped upstream's own
+real multi-block assembly, `examples/transformer_demo.py:187,191`
+(`create_transformer_lm`, the function `src/models/transformer_lm.jl`'s own header comment
+says it adapts) — it does NOT use `GraphNamespace` either. Per-block node names are built
+with plain f-string suffixes: `name=f"transformer_{i}"`, `name=f"skip_{i}"`. Zero
+`GraphNamespace`/`namespace` references anywhere in `transformer_v2.py` or
+`transformer_demo.py` (grep-verified). Julia's `transformer_lm.jl` already does the
+identical thing (`"transformer_$i"`, `"skip_$i"`) — matching upstream's OWN real-world
+practice, not just avoiding a feature upstream happens to expose. Closes R-04's
+GraphNamespace half; R-04's "stage-boundary" half is independently closed by Tier B's
+byte-level fixture verification of `MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode` against
+upstream (section 6 of the register) — a boundary mismatch would have shown up as a
+fixture-comparison failure, and none did. **R-04: CLOSED.**
+
+## 22. Layer map (A-02): what "layer" means in this codebase, and the gating rule
+
+Date: 2026-07-13
+
+Four distinct execution paths exist for the same PC computation, informally called
+"layers" in review discussion without ever being written down in one place:
+
+- **Layer 0 — eager Dict oracle.** `Dict{String,NodeState}`/`Dict{String,Matrix}`,
+  string-keyed lookups, `merge`-rebuilt each step. `run_inference`/`train_step`
+  (`src/core/inference.jl`, `src/training/train.jl`). Not traceable by Reactant. This is
+  the CORRECTNESS reference everything else is validated against (including upstream
+  conformance — Tiers A/B/C/D all fixture against what this layer, or upstream's JAX
+  equivalent of it, produces).
+- **Layer 1 — flat/positional.** Position-indexed `Vector`s, no Dicts in the hot loop
+  (`CompiledPlan`/`flat_run_inference`, `src/jit_flat.jl`). Validated bit-identical to
+  Layer 0 (`test/test_jit_flat.jl`). Still eager Julia, not yet compiled — the intermediate
+  representation Reactant traces.
+- **Layer 2 — Reactant/XLA compiled.** Layer 1 traced through `Reactant.@compile`
+  (`ext/FabricPCReactantExt.jl`'s `compile_inference`). Forward-inference JIT is real and
+  validated (`examples/jit_inference.jl`, ~9× on the MNIST-shaped MLP). Compiled GRADIENTS
+  (the J-01/J-02 arc) hit a real blocker: eager `Enzyme.autodiff` and
+  `Reactant`-compiled `Enzyme` cannot coexist in one process (§15 below) — unresolved,
+  parked.
+- **Layer 3 — muPC.** Not a separate execution path — a per-edge SCALING applied at any of
+  the layers above (`core/mupc.jl`/`core/scaling.jl`), orthogonal to which layer is running.
+  `scaling_config === nothing` ⇒ identity (§6).
+
+**Gating rule** (why this matters beyond taxonomy): each layer is validated against the one
+below it, never against upstream directly except Layer 0. Concretely: Layer 1 is fixtured
+against Layer 0 (this port's own eager code), NOT against upstream JAX; Layer 0 is what gets
+fixtured against upstream (Tiers A/B/C/D). This keeps failures localized — a Layer 1 test
+failure means "the flat lowering broke," not "the port diverged from upstream," and vice
+versa. Corollary: never land two layers' worth of change in one commit — if a fix touches
+both the eager math AND the flat/compiled mirror of it, that's evidence the fix belongs at a
+shared call site instead of being duplicated per layer.
+
+## 23. Backend roles: Zygote / Enzyme-eager / Reactant+Enzyme — who does what
+
+Date: 2026-07-13
+
+Three distinct roles get conflated under "autodiff backend" in casual discussion; writing
+down which one is which, synthesizing #19 (why Zygote was chosen for the seam) with what
+today's J-01 scouting pass (docs/AUDIT_REGISTER.md section 5) found about the Reactant side:
+
+- **Zygote — the production seam backend.** `nodes/autodiff.jl`'s generic Phase-D seam
+  (any node implementing only `compute_mu` gets `forward_and_latent_grads`/
+  `forward_and_weight_grads` for free) runs on Zygote in this codebase's actual test suite
+  and every shipped example — chosen in #19 because Enzyme aborts on the full multi-head
+  attention block on Julia 1.12 (`addToDiffe: unhandled accumulate with partial sizes`).
+  This is EAGER, Dict-based (Layer 0) — Zygote cannot trace `TracedRArray`s, so it has no
+  role inside a Reactant-traced region at all.
+- **Enzyme (eager) — opt-in, simple/dense nodes only.** The Enzyme extension implements the
+  identical seam hooks and is retained for nodes that don't hit the MHA crash (simple/dense
+  nodes, per #19). F-04's guard (`_register_ad_backend!`) enforces exactly one of
+  Zygote/Enzyme loaded per session — they'd silently last-wins override each other
+  otherwise. Not usable together with Reactant+Enzyme in the SAME process (see next point) —
+  effectively a separate, standalone eager lane, not a stepping stone to the compiled lane.
+- **Reactant + Enzyme (compiled) — the intended production perf path, currently blocked for
+  gradients.** Reactant uses Enzyme-MLIR internally for autodiff under `@compile` — this is
+  a THIRD, distinct thing from eager Enzyme above, despite sharing a package name. Forward
+  compilation (no gradients) works today and is validated (`compile_inference`, Layer 2
+  above). Gradient compilation (J-01) is blocked by a real, reproduced conflict: loading
+  eager `Enzyme` (even just the package, even without calling it) in the same process as a
+  `Reactant`+`Enzyme` `@compile` poisons the compile (`setfield!: immutable Tuple`,
+  decisions.md §15). The one working precedent (`benchmark/transformer_jit.jl`'s `wgrad`)
+  avoids this by never loading eager `Enzyme` in that process at all — calling
+  `Enzyme.autodiff` only ever inside a `Reactant.@compile`d closure, on a partial parameter
+  set (`x`+`W_q`, not the full 16-array TransformerBlock parameter set).
+
+**Practical rule**: a session either uses eager Zygote/Enzyme (Layer 0, the test suite's own
+convention) OR Reactant+Enzyme (Layer 2, benchmark-only today) — never both in one process.
+This is stricter than F-04's Zygote-vs-Enzyme guard (which only governs the eager pair) and
+is currently enforced by discipline/convention, not code — a real
+`FabricPCReactantEnzymeExt`-style guard analogous to `_register_ad_backend!` would be a
+reasonable small addition if this trips someone up in practice; not built yet since it
+hasn't (benchmark/ code is run standalone, never alongside the main test suite).

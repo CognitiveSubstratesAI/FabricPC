@@ -63,6 +63,14 @@ struct FlatNodeParams{W, B}
     b::B
 end
 
+"""
+    to_flat_params(plan::CompiledPlan, params::GraphParams) -> Vector{FlatNodeParams}
+
+Bridge `GraphParams` (Dict-of-Dicts) to position-indexed `FlatNodeParams`, one per
+`plan.names` entry. Eager-only (builds `Union{Nothing,Matrix{Float32}}` vectors — not itself
+traceable; run before `Reactant.@compile`, not inside it — see [`flatten_param_arrays`](@ref)/
+[`repack_params`](@ref) for the traced bridge).
+"""
 function to_flat_params(plan::CompiledPlan, params::GraphParams)
     out = FlatNodeParams[]
     for (i, name) in enumerate(plan.names)
@@ -84,6 +92,12 @@ function to_flat_params(plan::CompiledPlan, params::GraphParams)
     return out
 end
 
+"""
+    to_flat_state(plan::CompiledPlan, state::GraphState) -> Vector{NodeState}
+
+Bridge `GraphState` (a `Dict{String,NodeState}`) to a position-indexed `Vector{NodeState}`,
+ordered to match `plan.names`.
+"""
 to_flat_state(plan::CompiledPlan, state::GraphState) =
     NodeState[state.nodes[n] for n in plan.names]
 

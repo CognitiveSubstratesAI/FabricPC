@@ -9,7 +9,25 @@
 # Kaiming/He (normal+uniform), Ones, Uniform. (Deferred: GlobalState /
 # NodeDistribution state inits — those are state, not weight, initializers.)
 
+"""
+    AbstractInitializer
+
+Context-agnostic tensor initializer (weights or latent states — the caller picks the shape).
+Every concrete subtype implements `initialize(rng, shape, init)` via dispatch. Threads a plain
+`AbstractRNG` (not a JAX-style `PRNGKey`) — bit-parity with upstream's RNG stream is neither
+possible nor a goal; within-Julia determinism under a seeded RNG is what's tested.
+"""
 abstract type AbstractInitializer end
+
+"""
+    initialize(rng::AbstractRNG, shape::Tuple, init::AbstractInitializer) -> Array{Float32}
+
+Sample an array of the given `shape` under the given initializer. Dispatches on the concrete
+`AbstractInitializer` subtype ([`ZerosInitializer`](@ref), [`NormalInitializer`](@ref),
+[`MuPCInitializer`](@ref), [`XavierInitializer`](@ref), [`KaimingInitializer`](@ref),
+[`OnesInitializer`](@ref), [`UniformInitializer`](@ref)).
+"""
+function initialize end
 
 """
     ZerosInitializer()
