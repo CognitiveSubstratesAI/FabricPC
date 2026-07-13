@@ -94,6 +94,20 @@ function graph(
     scaling::Union{Nothing, MuPCConfig}=nothing
 )
     # 1. Build EdgeInfo objects (preserve edge-list order).
+    #
+    # R-05b (docs/AUDIT_REGISTER.md section 8): `edge_keys_ordered` exists only because
+    # Julia's `Dict` doesn't guarantee iteration order the way Python's does (upstream's
+    # `edge_infos` dict — graph_construction.py:137-145 — is itself the ordered source of
+    # truth: `in_edges = {k: e for k,e in edge_infos.items() if e.target==name}`). A literal
+    # duplicate edge (same source/target/slot submitted twice) must therefore behave exactly
+    # like a Python dict: the LATER `EdgeInfo` overwrites the value at the key's ORIGINAL
+    # position, not append a second position — `push!` only on the key's first occurrence,
+    # matching that semantics, so `in_keys`/`out_keys` below (and therefore `NodeInfo.in_edges`
+    # /`in_degree`) count each unique (source,target,slot) triple once, not once per submission.
+    # A missing `haskey` guard here previously let a duplicate edge inflate `in_degree`/
+    # `in_edges`, silently double-counting the edge's forward/gradient contribution in the
+    # JIT flat path (`jit_flat.jl`'s `CompiledPlan`, which is NOT dict-rekeyed and so has no
+    # accidental dedup safety net the eager Dict-based consumers have).
     edge_infos = Dict{String, EdgeInfo}()
     edge_keys_ordered = String[]
     for edge in edges
@@ -101,8 +115,8 @@ function graph(
         target = edge.target_node.name
         slot = edge.target_slot
         key = "$(source)->$(target):$(slot)"
+        haskey(edge_infos, key) || push!(edge_keys_ordered, key)
         edge_infos[key] = EdgeInfo(key, source, target, slot)
-        push!(edge_keys_ordered, key)
     end
 
     node_names = String[node.name for node in nodes]

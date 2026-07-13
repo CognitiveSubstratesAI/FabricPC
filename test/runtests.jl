@@ -11,6 +11,7 @@ using Zygote
     @testset "scaffold" begin
         @test FabricPC.FABRICPC_VERSION == v"0.1.0"
     end
+    include("test_graph_construction.jl")        # R-05b: duplicate-edge handling
     include("test_phase_b.jl")
     include("test_residual.jl")
     include("test_mupc.jl")
