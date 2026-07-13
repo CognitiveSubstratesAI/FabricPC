@@ -110,9 +110,22 @@ end
 Main PC autoregressive training loop. `batches` is any iterable of task→array `Dict`s (each with at
 least `"x"`/`"y"`). Per epoch, runs `train_step_autoregressive` over every batch, accumulating the
 per-batch energy and the CE/perplexity metric; `epoch_callback(epoch, params, structure)` runs
-after each epoch. Port of `train_autoregressive` (train_autoregressive.py:175). Eager (no
-`jax.jit`); fractional epochs and gradient-accumulation (an upstream read-but-unused stub) are not
-ported — integer epochs.
+after each epoch. Port of `train_autoregressive` (train_autoregressive.py:197-331). Eager (no
+`jax.jit`).
+
+R-01 (docs/AUDIT_REGISTER.md section 8) full-driver comparison found this docstring previously
+MISCHARACTERIZED one upstream feature as an "unused stub" alongside a genuinely unused one — see
+X-06 (docs/AUDIT_REGISTER.md section 2) for the corrected, complete picture: `num_epochs` here is
+`Integer`-only (upstream's `frac`/`max_batches` fractional-epoch truncation, train_autoregressive.py:
+238-263, is REAL and reachable, not a stub — unit-tested upstream, `tests/test_fabricpc.py:520-549`);
+`gradient_accumulation_steps` genuinely IS a dead read (upstream reads it, never uses it again) — the
+only part of the old docstring's claim that was accurate; `iter_callback` (per-batch, upstream
+train_autoregressive.py:298-301) has no equivalent here at all, despite the identical pattern already
+existing elsewhere in this package (`train_pcn`, `training/train.jl`); `epoch_callback` here takes
+only `(epoch, params, structure)` vs upstream's `(epoch_idx, params, structure, config, rng_key;
+energy, ce_loss)`. All three are currently dormant in this port (no example/test needs them) but
+`fabricpc/tuning/bayesian_tuner.py` (C-10, deferred) is a live upstream consumer of both — porting
+BayesianTuner is currently structurally blocked on this gap, not just stylistically divergent from it.
 """
 function train_autoregressive(params::GraphParams, structure::GraphStructure, batches,
     opt, num_epochs::Integer, rng::AbstractRNG;
