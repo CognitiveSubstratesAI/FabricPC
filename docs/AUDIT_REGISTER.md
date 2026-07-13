@@ -330,9 +330,100 @@ diff) and reconfirmed at 100/100 before reporting CORRECT. This is a materially 
 than "100/100 green" alone: the tests were *observed to fail* on the specific code paths they
 claim to cover, not merely observed to pass once.
 
-**Tier D — OPEN, not started.** End-to-end (fixed-seed MNIST-MLP + small transformer LM)
-remains per the original register's design — the venv/fixture-generation/NPZ.jl-loading
-infrastructure (now proven across three tiers) is directly reusable.
+**Tier D — MNIST-MLP track VERIFIED CLOSED, transformer-LM track OPEN.** End-to-end (not
+just one loop, that was Tier C's job): a real multi-step training run on two assembled
+graphs. Landed via the same reflective multi-agent workflow pattern as Tier C, run as two
+independent pipelined tracks (Draft → Verify Draft → Fix & Generate → Julia Test →
+Adversarial Re-verify each), so neither track waited on the other.
+
+**MNIST-MLP track — VERIFIED CLOSED.** `scripts/generate_tier_d_mnist_fixtures.py` builds
+the `examples/mnist_pc.jl` architecture (`x(784) → h(128, tanh) → y(10)`, plain non-muPC
+config) fed a SYNTHETIC batch (not real MNIST — TFDS is unavailable in the fixtures venv;
+the fixture's claim is "the PC training loop computes the same thing given the same input,"
+not TFDS/real-MNIST parity, documented explicitly in the generator's docstring so a future
+reader can't assume otherwise), chained across **5 real train_steps on 5 distinct batches**
+— the property that distinguishes this from Tier C's single-step scope.
+`test/conformance/fixtures/tier_d_mnist.npz` (41 arrays) →
+`test/conformance/test_tier_d_mnist.jl` (rtol/atol 1e-4, `allclose_d`/`FIX_D`, comment citing
+"Float32 BLAS associativity across multiple inference steps" as the reason for the looser-
+than-Tier-C bound) asserts params0, all 5 step energies, final trained params, and the full
+final `GraphState`. **31/31 assertions passed; full-suite regression 703/703 green.**
+
+Verify Draft caught a real, reproduced crash before generation: the terminal "x" node
+defaulted to `use_bias=True`, giving `params.nodes["x"]` a non-empty `{"b": ...}` biases
+dict, but `compute_local_weight_gradients` unconditionally returns an EMPTY grads dict for
+any in-degree-0 node — so `optax.apply_updates` hit a pytree-structure mismatch and crashed
+on the first `train_step`. Fixed to `use_bias=False`, matching Tier C's own established
+precedent for terminal source nodes exactly. Adversarial Re-verify repeated Tier C's
+mutation-proof standard: a 10× learning-rate mutation produced an **11-pass/20-fail split
+that was independently predicted from reading `forward_and_latent_grads` before running**
+(the 11 passes are exactly node "x"'s 6 state fields + `params0`'s 4 LR-invariant arrays,
+mathematically LR-invariant since "x" carries no trainable params) — ruling out both a
+vacuous test (nothing failed) and an over-brittle one (everything failed regardless of
+relevance). File restored byte-identical (md5-verified) and reconfirmed green afterward.
+
+**Transformer-LM track — OPEN, 146/175, gated out of the default suite.**
+`scripts/generate_tier_d_transformer_fixtures.py` assembles the real
+`src/models/transformer_lm.jl` topology (`seq_len=8, vocab_size=10, embed_dim=8,
+num_heads=2, num_blocks=1`: `input → embed → transformer_0 → skip_0 → output`, all four
+node types Tier B already validated in isolation) plus one upstream-only addition — an
+explicit mask node (`IdentityNode`, clamped via a third `TaskMap` task `causal_mask`) feeding
+`TransformerBlock`'s "mask" slot, since Julia's `TransformerBlock` has no such slot at all
+(inline `causal::Bool` instead) — a real, intentional, documented topology divergence, not a
+bug. `VocabProjectionNode` is explicitly built `activation=IdentityActivation(),
+energy=GaussianEnergy()` to match Julia's actual defaults rather than upstream's own
+differing default (`SoftmaxActivation`/`CrossEntropyEnergy`) — using upstream's defaults
+would have silently compared two different energy functionals. One training step only
+(`initialize_graph_state → run_inference (12 steps) → get_graph_param_gradient → one
+train_step`) — proving the assembled graph computes correctly, not that a long training
+trajectory converges identically (that would mostly re-test Tier C's already-proven per-step
+numerics at much higher attention-relaxation cost for little new signal).
+
+All three Verify Draft lenses (API fidelity, tolerance-and-comment discipline, and a 4th
+lens specifically checking the fixture's topology against `transformer_lm.jl` line-by-line —
+node sequence, edge-key naming, the mask-node/`causal_mask` wiring, the `VocabProjectionNode`
+override, `rope_theta`/`internal_activation` defaults, the 0-based/1-based token-id
+convention Tier B established) verdicted CORRECT before generation.
+
+**Result: 146/175 — NOT green, and not forced green.** Every pre-relaxation assertion is
+bit-exact (`params0` 19/19, `initialize_graph_state` 29/29 — confirming graph construction,
+embedding lookup, RoPE, causal masking, LayerNorm, GELU MLP, and the residual/vocab-
+projection stack are all correct pre-relaxation). All 29 failures are post-relaxation, after
+real 12-step multi-head-attention loops (`run_inference` 23/29, `get_graph_param_gradient`
+32/49, `train_step` 43/49). One real, legitimate bug was found and fixed along the way
+(not a tolerance workaround): upstream's `VocabProjectionNode.forward` never assigns
+`pre_activation` at all (only `z_mu`/`error`), diverging from `NodeBase`'s own general
+contract — that one field for that one node is excluded with a documented reason, matching
+`test_tier_b.jl`'s own established precedent of never asserting it either. Beyond that,
+substantial further investigation found no additional bug: the Zygote autodiff seam was
+FD-validated directly on an isolated `causal=true` `TransformerBlock` (ratio ~1.00–1.01 vs
+central differences), and a line-by-line source comparison confirmed exact formula agreement
+for RoPE, causal masking, the per-position `sqrt(effective-context)` variance compensation,
+LayerNorm eps, and GELU. Per-element failure inspection shows margins consistently
+**~1.3–1.7× over the 1e-4 threshold for a minority of elements — never gross, NaN, or
+wrong-signed — and growing with iteration count**, matching the tolerance comment's own
+documented rationale (Float32 BLAS-associativity drift compounding through a real 12-step
+relaxation, not a discrete logic error) rather than refuting it. No tolerance was loosened
+and no assertion was dropped to force a pass.
+
+Adversarial Re-verify's mutation-proof lens repeated Tier C's standard on the live (still-
+red) file: an LR mutation (0.05→0.06) broke exactly the LR-dependent `train_step` sub-testset
+(6→25 of 49 failing) while every LR-independent testset's pass/fail counts stayed byte-for-
+byte identical — proving the 146 passing assertions are genuinely live comparisons, not
+tautological, even though the track overall remains open. The regression lens confirmed zero
+collateral damage: full suite with both new tracks wired in is **849/878** (672 pre-Tier-D +
+31 MNIST + 146 transformer = 849 pass; the 29 fails are *entirely* the transformer track's
+own open gap, not a single previously-green test newly broke).
+
+**Disposition**: `test/conformance/test_tier_d_transformer.jl` is committed (the fixture,
+the FD-validation, and the line-by-line source comparison are real, reusable investigative
+work) but gated behind `FABRICPC_TIER_D_TRANSFORMER=1` in `runtests.jl` — NOT run by
+`julia test/runtests.jl`'s default invocation — so the health-gate/default suite stays green
+(**703/703** with the gate off) while this track stays open. Revisit by either (a)
+differential-debugging against intermediate, currently-undumped upstream steps to either
+confirm the BLAS-noise hypothesis definitively or find a real remaining bug, or (b), if the
+per-element evidence is judged sufficient on its own, documenting and adopting a specifically
+justified looser bound for this track only.
 
 ## 7. Documentation debt
 

@@ -19,6 +19,8 @@ LocalPreferences.toml
 # Scratch
 /tmp/
 *.tmp
+__pycache__/
+*.pyc
 # Secrets / credentials — never commit
 .env
 .env.*
