@@ -32,20 +32,36 @@ FabricPC builds PC networks from:
 - **muPC** — μP-style per-edge scaling (from graph topology) that keeps
   activations, errors, and gradients O(1) at arbitrary width and depth.
 
-## Status — Phase A (scaffold, v0.1.0)
+## Status — substrate essentially complete
 
-Design + scope are in [docs/DESIGN.md](docs/DESIGN.md). The phased plan:
+Design + phase history are in [docs/DESIGN.md](docs/DESIGN.md) and
+[docs/decisions.md](docs/decisions.md) (the load-bearing porting decisions, read
+before extending). Shipped:
 
-- **B** — core types + AD-free linear PC graph + train loop (a 3-layer linear PC
-  network learns a small task). *In progress.*
-- **C** — muPC scaling (width/depth stability).
-- **D** — Enzyme autodiff fallback + non-linear activations.
-- **E** — exhibits (MNIST-style PC classifier), then deferred reach.
-
-A defining property of the port: a minimal **trainable** PC graph needs **no
-reverse-mode autodiff** — PC's local learning rule is closed-form (the
-explicit-gradient Gaussian path). Enzyme is deferred to the non-linear / generic
-node path (Phase D).
+- **Core PC engine** — closed-form explicit-gradient nodes (Linear, Identity,
+  SkipConnection, LinearResidual) need **no reverse-mode autodiff**: PC's local
+  learning rule is closed-form, so a minimal trainable graph is autodiff-free.
+- **muPC scaling** (`core/mupc.jl`) — μP-style per-edge scaling that keeps
+  activations/errors/gradients O(1) across width and depth (residual-depth-aware).
+- **Phase-D autodiff seam** (`nodes/autodiff.jl`) — a node that implements only
+  `compute_mu` gets its local PC gradients for free via Zygote or Enzyme
+  (exactly ONE backend per session — see decisions.md #19). This is what makes
+  transformer/attention/Storkey-Hopfield nodes expressible without hand-derived
+  gradients; it is still pure PC, never backprop through the network.
+- **Node set**: Linear/Identity/SkipConnection/LinearResidual (closed-form),
+  TransformerBlock (monolithic PC-transformer with RoPE + causal masking),
+  the decomposed transformer_v2 node family (MhaResidual/LnMlp1/Mlp2Residual/
+  Embedding/VocabProjection — PC at every sub-component), StorkeyHopfield
+  (composite PC + associative-memory energy).
+- **Training**: SGD and AdamW (the muPC training recipe needs an adaptive
+  optimizer), causal autoregressive next-token training (`train_autoregressive`),
+  natural-gradient (Fisher) preconditioners.
+- **Reactant/XLA JIT** — the inference path (and the TransformerBlock forward +
+  local gradient) compile to XLA via Reactant, validated bit-identical to eager.
+- Not ported (deliberately): a backprop training baseline (`train_backprop.py` —
+  PC needs no backprop, so this stays the never-ported anti-thesis reference),
+  multi-GPU/pmap, spatial convolution nodes, dashboards/tuning infra. See
+  decisions.md for the full, current list of what's deferred and why.
 
 ## Development
 

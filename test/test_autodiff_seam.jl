@@ -12,8 +12,10 @@
 #      arbitrary node forwards (transformer/attention next) with local PC, no
 #      backprop.
 #
-# `using Enzyme` activates the weakdep extension; without it these methods raise a
-# load hint (so the base package stays autodiff-free, decisions.md #8).
+# `using Zygote` or `using Enzyme` activates the weakdep extension (exactly ONE per
+# session — decisions.md #19, F-04); without either loaded these methods raise a
+# load hint (so the base package stays autodiff-free, decisions.md #8). This suite
+# runs on Zygote (the backend that also handles transformer/attention nodes).
 
 using FabricPC
 using FabricPC: NodeParams, NodeState, NodeInfo, SlotInfo, AbstractNode, compute_mu
