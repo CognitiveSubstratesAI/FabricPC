@@ -33,4 +33,5 @@ using Zygote
     include("test_inference_normclip.jl")       # C-05: InferenceSGDNormClip
     include("conformance/test_tier_a.jl")        # Tier A: primitives vs upstream JAX fixtures
     include("conformance/test_tier_b.jl")        # Tier B: node-local vs upstream JAX fixtures
+    include("conformance/test_tier_c.jl")        # Tier C: loop-level vs upstream JAX fixtures
 end

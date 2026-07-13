@@ -212,7 +212,7 @@ genuinely matches upstream bit-for-bit; only the `_tb_apply_rope` comment was mi
 | J-01 | Flat gradient seam: Enzyme-under-Reactant | **OPEN — real blocker, not just missing code.** A scout of `src/jit_flat.jl`/`ext/FabricPCReactantExt.jl`/`benchmark/transformer_jit.jl`/`docs/decisions.md` found the only existing precedent (`benchmark/transformer_jit.jl`'s `wgrad`, benchmark-only, differentiates just `x`+`W_q` not the full parameter set) and a **documented, unresolved architectural conflict** (`decisions.md:387-415`, §15): eager `Enzyme.autodiff` and `Reactant`-compiled `Enzyme` cannot coexist in one process ("a prior eager autodiff poisons the subsequent compile"). Parked pending a deliberate design decision on that conflict, not attempted this round. |
 | J-02 | Compile full `train_step` | **BLOCKED on J-01** (needs a working flat weight-gradient first; `compute_local_weight_gradients` remains entirely eager/Dict-based, no flat/traced counterpart exists). |
 | J-03 | Extend flat lane to seam nodes | **PARTIAL — TransformerBlock forward wired, backward parked.** `flat_forward(::TransformerBlock, ...)` (`src/jit_flat.jl`) wires the already-validated `_tb_block_flat` kernel (`src/nodes/transformer.jl:296-338`, previously a standalone, disconnected kernel + benchmark) into `CompiledPlan`'s dispatch — `to_flat_params` special-cased to bridge via the existing `flat_block_args` (TransformerBlock's weights are keyed by NAME, not by edge key like every other node here). Verified byte-equivalent to eager `compute_mu` (`test/test_jit_flat.jl`, new testset) on a graph where TransformerBlock is the unclamped terminal node (`flat_latent_grads`'s `out_degree==0 && !is_clamped` branch — forward only). **No `_flat_input_grads(::TransformerBlock, ...)` method exists** — the attention+FFN backward pass needed for TransformerBlock as an interior or clamped node — same category of problem as J-01 (needs Enzyme-under-Reactant, or a substantial hand-derived closed-form gradient verified against Zygote's already-upstream-validated gradient); verified this fails loudly with a clean `MethodError`, not silently wrong output, rather than asserting it in CI (a `MethodError` from a private multi-arg dispatch is a brittle thing to `@test_throws` on). Decomposed nodes (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`/`EmbeddingNode`/`VocabProjectionNode`) and `StorkeyHopfield` remain untouched — zero flat-lane work for any of them. |
-| J-04 | Benchmark harness | OPEN — explicitly gated on Tier C passing (register's own rule: "Only meaningful after Tier C passes"), not started. |
+| J-04 | Benchmark harness | OPEN — gating prerequisite MET (Tier C VERIFIED CLOSED, section 6, 100/100 + full-suite 672/672), but still BLOCKED on J-01/J-02 (no compiled `train_step` exists yet to benchmark against `jax.jit`); not started. |
 | J-05 | Hand-derived attention VJP as explicit Layer-1 gradient | DEFERRED (optional, post-J-03) — unchanged. |
 | J-06 | `NodeState` parametric types `{T<:AbstractArray}` | OPEN (post-Batch 3) — unchanged, "a real refactor — schedule deliberately." |
 | J-07 | Slot-name resolution out of node forwards | OPEN (with J-03) — unchanged. |
@@ -289,10 +289,50 @@ Substantive findings:
   output against a from-scratch manual scatter-add (matched), and Julia's own hand-written
   scatter-add matches that same upstream ground truth.
 
-**Tier C/D — OPEN, not started.** Loop-level (inference_step → run_inference → one train_step)
-and end-to-end (fixed-seed MNIST-MLP + small transformer LM) remain per the original register's
-design — the venv/fixture-generation/NPZ.jl-loading infrastructure (now proven across two tiers)
-is directly reusable.
+**Tier C — VERIFIED CLOSED.** `scripts/generate_tier_c_fixtures.py` dumps
+`test/conformance/fixtures/tier_c.npz` (106 arrays): LOOP-LEVEL conformance — not an isolated
+node (Tier B) but a real *assembled* 3-node graph, `x(4) → h(6, tanh) → y(3)`, run through
+`initialize_graph_state → inference_step → run_inference (8 steps to convergence) →
+get_graph_param_gradient → one train_step` (SGD via `optax.sgd`). Params/batch are
+JAX-generated arrays injected directly into `GraphParams`/clamps (RNG trap, same discipline as
+Tier A/B); the terminal source node "x" is built as plain upstream `Linear` rather than
+`LinearExplicitGrad` specifically because `LinearExplicitGrad.forward_and_latent_grads` does
+NOT reimplement `NodeBase`'s in-degree-0 terminal special case and would silently compute a
+wrong nonzero energy from an unconnected bias — verified by reading both class bodies in full,
+not assumed. `test/conformance/test_tier_c.jl` (rtol/atol 1e-5, its own `allclose_c`/`FIX_C`)
+asserts all 106 dumped quantities (every `GraphState` field × 3 nodes × 5 phases, h/y
+weights+biases at `params0`/`grad`/`trained`, both scalar energies). **100/100 assertions
+passed**; full-suite regression run (all 22 test files, not just conformance) **672/672
+green** — the one-line `runtests.jl` include caused zero collateral breakage.
+
+Landed via a 4-phase reflective multi-agent workflow (Verify Draft → Fix & Generate → Julia
+Test → Adversarial Re-verify), mirroring Tier B's parallel-agent drafting precedent. Verify
+Draft ran 3 independent adversarial reviewers against the draft generator before it was ever
+executed: two verdicted CORRECT (the `Linear`-vs-`LinearExplicitGrad` node-class reasoning
+above, and the state-init RNG-safety argument — a minor wording nuance was flagged but the
+underlying safety claim held under full trace); the third caught a real issue — two scalar
+energy dumps (`energy_pretrain`, `energy_trainstep`) were bare 0-d JAX arrays, inconsistent
+with Tier B's own documented convention of reshaping every scalar to `(1,)` before `put()`
+(a 0-d array round-trips through NPZ.jl as a bare `Float32`, not an `Array`, breaking type
+uniformity with every other dumped field) — fixed before the fixture was ever generated.
+
+**The Adversarial Re-verify phase went beyond "the assertions look non-trivial" and empirically
+proved discrimination by mutation**: with the harness at 100/100 green, the reviewer changed
+`train_step`'s learning rate 0.05→0.06 and re-ran — exactly the 4 "trained"-params assertions
+failed and nothing else (96/100), isolating the params-check path as a real, independent
+comparison rather than a tautology. It then changed `InferenceSGD`'s `eta_infer` 0.1→0.13 and
+re-ran — `initialize_graph_state`'s 18/18 correctly stayed green (state-init doesn't depend on
+`eta_infer`) while the failure correctly cascaded through
+`inference_step → run_inference → get_graph_param_gradient → train_step` (41/100 fail),
+isolating the state-check path (90 of the 100 assertions) as genuinely live rather than
+cached/stale. The file was then restored to its original content (verified byte-identical via
+diff) and reconfirmed at 100/100 before reporting CORRECT. This is a materially stronger claim
+than "100/100 green" alone: the tests were *observed to fail* on the specific code paths they
+claim to cover, not merely observed to pass once.
+
+**Tier D — OPEN, not started.** End-to-end (fixed-seed MNIST-MLP + small transformer LM)
+remains per the original register's design — the venv/fixture-generation/NPZ.jl-loading
+infrastructure (now proven across three tiers) is directly reusable.
 
 ## 7. Documentation debt
 
