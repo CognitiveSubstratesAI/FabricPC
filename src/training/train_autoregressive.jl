@@ -28,27 +28,31 @@ over the batch. Port of `train_autoregressive.py:40`.
 - `:mse` — `mean((pred − targets)²)`.
 """
 function compute_loss(state::GraphState, targets, output_node::AbstractString;
-                      loss_type::Symbol = :cross_entropy)
+    loss_type::Symbol=:cross_entropy)
     pred = state.nodes[output_node].z_mu
     if loss_type === :cross_entropy
         d = ndims(pred)
         # `pred` may be probabilities (a softmax-output node) or raw LOGITS (e.g. VocabProjection,
         # which emits unnormalized scores). Use log-softmax when it is not a valid distribution so
         # `log` never sees a negative (DomainError) and the metric is correct either way.
-        is_prob = all(>=(0.0f0), pred) && all(<(1.0f-2), abs.(sum(pred; dims = d) .- 1.0f0))
+        is_prob = all(>=(0.0f0), pred) && all(<(1.0f-2), abs.(sum(pred; dims=d) .- 1.0f0))
         logp = if is_prob
             log.(pred .+ 1.0f-10)
         else
-            m = maximum(pred; dims = d)
-            (pred .- m) .- log.(sum(exp.(pred .- m); dims = d))        # numerically-stable log-softmax
+            m = maximum(pred; dims=d)
+            (pred .- m) .- log.(sum(exp.(pred .- m); dims=d))        # numerically-stable log-softmax
         end
-        s = sum(targets .* logp; dims = d)                             # Σ over vocab axis (kept dim)
+        s = sum(targets .* logp; dims=d)                             # Σ over vocab axis (kept dim)
         return -Float32(sum(s) / length(s))                            # mean over batch[, seq]
     elseif loss_type === :mse
         d = (pred .- targets) .^ 2
         return Float32(sum(d) / length(d))
     else
-        throw(ArgumentError("compute_loss: unknown loss_type $loss_type (use :cross_entropy or :mse)"))
+        throw(
+            ArgumentError(
+                "compute_loss: unknown loss_type $loss_type (use :cross_entropy or :mse)"
+            )
+        )
     end
 end
 
@@ -66,9 +70,11 @@ DIVERGENCE (intentional — not a 1:1 transplant): upstream clamps a causal-mask
 We also use the stateful `AdamW`/lr optimizer rather than threading an optax `opt_state`.
 """
 function train_step_autoregressive(params::GraphParams, opt, batch::AbstractDict,
-                                   structure::GraphStructure, rng::AbstractRNG)
+    structure::GraphStructure, rng::AbstractRNG)
     params, energy, final_state = _pcn_step(params, opt, batch, structure, rng)
-    ce = compute_loss(final_state, batch["y"], structure.task_map["y"]; loss_type = :cross_entropy)
+    ce = compute_loss(
+        final_state, batch["y"], structure.task_map["y"]; loss_type=:cross_entropy
+    )
     return params, energy, ce, final_state
 end
 
@@ -84,15 +90,22 @@ after each epoch. Port of `train_autoregressive` (train_autoregressive.py:175). 
 ported — integer epochs.
 """
 function train_autoregressive(params::GraphParams, structure::GraphStructure, batches,
-                              opt, num_epochs::Integer, rng::AbstractRNG;
-                              verbose::Bool = true, epoch_callback = nothing)
+    opt, num_epochs::Integer, rng::AbstractRNG;
+    verbose::Bool=true, epoch_callback=nothing)
     iter_energies = Vector{Vector{Float32}}()
     epoch_results = Vector{Any}()
     for epoch in 1:num_epochs
-        batch_e = Float32[]; tot_e = 0.0f0; tot_ce = 0.0f0; n = 0
+        batch_e = Float32[];
+        tot_e = 0.0f0;
+        tot_ce = 0.0f0;
+        n = 0
         for batch in batches
-            params, energy, ce, _ = train_step_autoregressive(params, opt, batch, structure, rng)
-            tot_e += energy; tot_ce += ce; n += 1
+            params, energy, ce, _ = train_step_autoregressive(
+                params, opt, batch, structure, rng
+            )
+            tot_e += energy;
+            tot_ce += ce;
+            n += 1
             push!(batch_e, Float32(energy))
         end
         push!(iter_energies, batch_e)
@@ -100,14 +113,16 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
             epoch_callback === nothing ? nothing : epoch_callback(epoch, params, structure))
         if verbose && n > 0
             avg_ce = tot_ce / n
-            @info "train_autoregressive" epoch="$epoch/$num_epochs" energy=round(tot_e / n; digits=4) ce=round(avg_ce; digits=4) perplexity=round(exp(avg_ce); digits=2)
+            @info "train_autoregressive" epoch="$epoch/$num_epochs" energy=round(
+                tot_e / n; digits=4
+            ) ce=round(avg_ce; digits=4) perplexity=round(exp(avg_ce); digits=2)
         end
     end
     return params, iter_energies, epoch_results
 end
 
-_softmax_vec(v) = (m = maximum(v); e = exp.(v .- m); e ./ sum(e))
-_softmax_rows(m) = (e = exp.(m .- maximum(m; dims = 2)); e ./ sum(e; dims = 2))   # row-wise softmax (B,V)
+_softmax_vec(v) = (m=maximum(v); e=exp.(v .- m); e ./ sum(e))
+_softmax_rows(m) = (e=exp.(m .- maximum(m; dims=2)); e ./ sum(e; dims=2))   # row-wise softmax (B,V)
 
 """
     _sample_next(probs, rng; temperature=1.0, top_k=nothing, top_p=nothing) -> Vector{Int}
@@ -122,21 +137,21 @@ sampling (≡ `jax.random.categorical`). Factored out of the generation step (up
 - top_p: keep the smallest set whose cumulative softmax mass ≥ top_p (≥1 token always kept).
 """
 function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
-                      temperature::Real = 1.0, top_k::Union{Nothing,Integer} = nothing,
-                      top_p::Union{Nothing,Real} = nothing)
+    temperature::Real=1.0, top_k::Union{Nothing, Integer}=nothing,
+    top_p::Union{Nothing, Real}=nothing)
     B, V = size(probs)
     logits = log.(probs .+ 1.0f-10) ./ Float32(temperature)
     out = Vector{Int}(undef, B)
     for b in 1:B
         row = collect(@view logits[b, :])
         if top_k !== nothing && top_k < V
-            thresh = partialsort(row, top_k; rev = true)        # k-th largest logit
+            thresh = partialsort(row, top_k; rev=true)        # k-th largest logit
             @inbounds for v in 1:V
                 row[v] < thresh && (row[v] = -Inf32)
             end
         end
         if top_p !== nothing
-            order = sortperm(row; rev = true)
+            order = sortperm(row; rev=true)
             c = cumsum(_softmax_vec(row[order]))
             keep = falses(V)
             @inbounds for (rank, idx) in enumerate(order)
@@ -148,12 +163,13 @@ function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
             end
         end
         # Gumbel-max categorical: argmax(logits + Gumbel) (= jax.random.categorical)
-        best = 0; bestval = -Inf32
+        best = 0;
+        bestval = -Inf32
         @inbounds for v in 1:V
             (row[v] == -Inf32 || isnan(row[v])) && continue          # skip masked AND NaN logits
             g = -log(-log(rand(rng, Float32) + 1.0f-20) + 1.0f-20)
             val = row[v] + g
-            val > bestval && (bestval = val; best = v)
+            val > bestval && (bestval=val; best=v)
         end
         # fallback: if every logit was masked/NaN (e.g. an untrained model emitting NaN), pick the
         # argmax of the row so we always return a valid 1..V token — never 0 (which is out of range
@@ -165,7 +181,9 @@ function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
 end
 
 _one_hot(idx::AbstractMatrix{<:Integer}, V::Integer) =
-    Float32[idx[b, s] == v ? 1.0f0 : 0.0f0 for b in axes(idx, 1), s in axes(idx, 2), v in 1:V]
+    Float32[
+        idx[b, s] == v ? 1.0f0 : 0.0f0 for b in axes(idx, 1), s in axes(idx, 2), v in 1:V
+    ]
 
 """
     generate_autoregressive(params, structure, prompt, max_new_tokens, rng;
@@ -180,9 +198,9 @@ was 1-D). Port of `generate_autoregressive` (train_autoregressive.py:407); eager
 `jax.lax.scan` + `jax.jit`), no fixed-size output buffer needed.
 """
 function generate_autoregressive(params::GraphParams, structure::GraphStructure, prompt,
-                                 max_new_tokens::Integer, rng::AbstractRNG;
-                                 temperature::Real = 1.0, top_k::Union{Nothing,Integer} = nothing,
-                                 top_p::Union{Nothing,Real} = nothing)
+    max_new_tokens::Integer, rng::AbstractRNG;
+    temperature::Real=1.0, top_k::Union{Nothing, Integer}=nothing,
+    top_p::Union{Nothing, Real}=nothing)
     unbatch = ndims(prompt) == 1
     p = unbatch ? reshape(prompt, 1, :) : prompt
     B, prompt_len = size(p)
@@ -194,20 +212,25 @@ function generate_autoregressive(params::GraphParams, structure::GraphStructure,
     seq_len = in_shape[1]
     vocab_size = structure.infos[output_node].shape[end]
 
-    context = prompt_len >= seq_len ? p[:, (end - seq_len + 1):end] :
-              hcat(ones(Int, B, seq_len - prompt_len), p)         # left-pad with token 1 (1-based;
-                                                                  # upstream pads 0 in 0-based JAX)
+    context = if prompt_len >= seq_len
+        p[:, (end - seq_len + 1):end]
+    else
+        # left-pad with token 1 (1-based; upstream pads 0 in 0-based JAX)
+        hcat(ones(Int, B, seq_len - prompt_len), p)
+    end
     generated = Matrix{Int}(undef, B, max_new_tokens)
     for t in 1:max_new_tokens
         input_data = length(in_shape) == 1 ? context : _one_hot(context, vocab_size)
-        clamps = Dict{String,Any}(input_node => input_data)
-        st = initialize_graph_state(structure, B, rng; clamps = clamps, params = params)
+        clamps = Dict{String, Any}(input_node => input_data)
+        st = initialize_graph_state(structure, B, rng; clamps=clamps, params=params)
         fs = run_inference(params, st, clamps, structure)
         # VocabProjectionNode now emits SOFTMAX PROBABILITIES (Softmax+CrossEntropy, per upstream
         # transformer_v2), so the last position is already a distribution — feed it straight to
         # _sample_next (no re-softmax, which would double-normalize).
         last_probs = fs.nodes[output_node].z_mu[:, end, :]                  # (B, V) — already probs
-        nxt = _sample_next(last_probs, rng; temperature = temperature, top_k = top_k, top_p = top_p)
+        nxt = _sample_next(
+            last_probs, rng; temperature=temperature, top_k=top_k, top_p=top_p
+        )
         generated[:, t] = nxt
         context = hcat(context[:, 2:end], reshape(nxt, B, 1))      # slide window + append
     end
