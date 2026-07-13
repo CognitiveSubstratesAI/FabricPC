@@ -62,7 +62,18 @@ end
 One PC training step for sequence/autoregressive data: clamp the batch tasks via `task_map`, relax
 the graph by inference, apply local weight gradients (`opt` = an `AdamW` or a plain-SGD learning
 rate), and additionally return the output cross-entropy (perplexity metric — NOT used for the
-update). Port of `train_step_autoregressive` (train_autoregressive.py:76).
+update). Port of `train_step_autoregressive` (train_autoregressive.py:81).
+
+`batch["y"]` may be raw integer token ids `(B, S)` (the loader contract — see `_TokenSequenceLoader`
+docstring, dataloader.py) OR pre-shaped one-hot `(B, S, V)`. Raw ids are one-hot-expanded HERE (via
+`_one_hot`, vocab size from `structure.infos[task_map["y"]].shape[end]`) *before* `_pcn_step` builds
+clamps, so the clamped output node — not `compute_loss` alone — sees the expanded array. Port of the
+`y.ndim`/`jax.nn.one_hot` block (train_autoregressive.py:127-139). DIVERGENCE (intentional): upstream
+raises unless `y.ndim == 2` (it always one-hots); this also passes already-one-hot `y` through
+unchanged (`ndim` already matching the prediction), so callers that pass ready-made one-hot batches
+(e.g. `test_sequence_training.jl`'s plain-classifier step) keep working. `compute_loss` itself keeps
+no ndim-check of its own (unlike upstream's, train_autoregressive.py:67-68): expansion happens
+exactly once, here, so `compute_loss` can assume already-shaped targets.
 
 DIVERGENCE (intentional — not a 1:1 transplant): upstream clamps a causal-mask NODE
 (`task_map["causal_mask"]`, broadcast to (B,1,S,S)). Our `TransformerBlock` masks INLINE via its
@@ -71,10 +82,24 @@ We also use the stateful `AdamW`/lr optimizer rather than threading an optax `op
 """
 function train_step_autoregressive(params::GraphParams, opt, batch::AbstractDict,
     structure::GraphStructure, rng::AbstractRNG)
+    output_node = structure.task_map["y"]
+    onehot_ndims = length(structure.infos[output_node].shape) + 1     # (B, S..., V)
+    y = batch["y"]
+    if ndims(y) == onehot_ndims - 1
+        vocab_size = structure.infos[output_node].shape[end]
+        y = _one_hot(y, vocab_size)
+        batch = copy(batch)
+        batch["y"] = y
+    elseif ndims(y) != onehot_ndims
+        throw(
+            ArgumentError(
+                "train_step_autoregressive: batch[\"y\"] has $(ndims(y)) dims; expected " *
+                "$(onehot_ndims - 1) (raw token ids) or $onehot_ndims (one-hot)"
+            )
+        )
+    end
     params, energy, final_state = _pcn_step(params, opt, batch, structure, rng)
-    ce = compute_loss(
-        final_state, batch["y"], structure.task_map["y"]; loss_type=:cross_entropy
-    )
+    ce = compute_loss(final_state, y, output_node; loss_type=:cross_entropy)
     return params, energy, ce, final_state
 end
 
@@ -180,7 +205,7 @@ function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
     return out
 end
 
-_one_hot(idx::AbstractMatrix{<:Integer}, V::Integer) =
+_one_hot(idx::AbstractMatrix{<:Real}, V::Integer) =
     Float32[
         idx[b, s] == v ? 1.0f0 : 0.0f0 for b in axes(idx, 1), s in axes(idx, 2), v in 1:V
     ]

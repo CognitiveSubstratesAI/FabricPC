@@ -35,9 +35,44 @@ import FabricPC: run_inference, initialize_graph_state
     @test size(zmu) == (B, S, V)
     @test all(isfinite, zmu)
 
+    # F-05: raw-id one-hot expansion (train_autoregressive.py:127-139). A throwaway single step on
+    # deep-copied params/rng so it doesn't perturb the 50-step run below.
+    let
+        output_node = structure.task_map["y"]
+        y_onehot = Float32[
+            tokens[b, s] == v ? 1.0f0 : 0.0f0 for b in 1:B, s in 1:S, v in 1:V
+        ]
+        batch_raw = Dict{String, Any}("x" => Float32.(tokens), "y" => Float32.(tokens))
+        batch_1h = Dict{String, Any}("x" => Float32.(tokens), "y" => y_onehot)
+        _, e_raw, ce_raw, fs_raw = train_step_autoregressive(
+            deepcopy(params), 0.05, batch_raw, structure, MersenneTwister(13)
+        )
+        _, e_1h, ce_1h, fs_1h = train_step_autoregressive(
+            deepcopy(params), 0.05, batch_1h, structure, MersenneTwister(13)
+        )
+        # the clamped output node's LATENT (z_latent — the held-fixed target; z_mu is the network's
+        # own prediction, not the clamp) must be the EXPANDED one-hot array, not the raw ids — this
+        # is exactly what a compute_loss-only fix could never guarantee (it only sees the CE metric,
+        # computed after clamping/inference already happened on whatever was clamped).
+        @test fs_raw.nodes[output_node].z_latent ≈ y_onehot
+        @test ce_raw ≈ compute_loss(fs_raw, y_onehot, output_node)
+        # pre-shaped one-hot batch ⇒ pass-through, not re-expanded ⇒ identical step.
+        @test e_raw ≈ e_1h
+        @test ce_raw ≈ ce_1h
+        @test fs_raw.nodes[output_node].z_mu ≈ fs_1h.nodes[output_node].z_mu
+        # neither raw (ndims==2) nor one-hot (ndims==3) ⇒ reject loudly, not silently misshape.
+        bad = Dict{String, Any}(
+            "x" => Float32.(tokens), "y" => reshape(y_onehot, B, S, V, 1)
+        )
+        @test_throws ArgumentError train_step_autoregressive(
+            deepcopy(params), 0.05, bad, structure, MersenneTwister(13)
+        )
+    end
+
     # (b) train_step_autoregressive over ~50 steps reduces energy; CE stays finite.
-    onehot(t) = Float32[t[b, s] == v ? 1.0f0 : 0.0f0 for b in 1:B, s in 1:S, v in 1:V]
-    batch = Dict{String, Any}("x" => Float32.(tokens), "y" => onehot(tokens))
+    # F-05: "y" is raw token ids (B, S), matching the loader contract — train_step_autoregressive
+    # one-hot-expands it internally (train_autoregressive.py:127-139) before clamping/scoring.
+    batch = Dict{String, Any}("x" => Float32.(tokens), "y" => Float32.(tokens))
     trng = MersenneTwister(3)
     # Train with AdamW(1e-3) — upstream's canonical optimizer (optax.adamw(0.001, weight_decay=0.1);
     # ab_experiment.py:12, every train_*.py docstring). Plain SGD at lr=0.02 DIVERGES on a transformer

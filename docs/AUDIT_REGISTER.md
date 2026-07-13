@@ -34,6 +34,7 @@ tests. Coverage gaps remain concentrated in conv/pooling, JIT breadth, and Pytho
 | F-02 | MEDIUM (revised from claimed HIGH) | MhaResidualNode skip-slot not decoupled | **VERIFIED CLOSED** (`c8fb541`) |
 | F-03 | MEDIUM | Optimizer key-set asymmetry | **VERIFIED CLOSED** (`c8fb541`) |
 | F-04 | MEDIUM (revised from claimed LOW) | Dual AD-backend footgun | **VERIFIED CLOSED** (`c8fb541`) |
+| F-05 | MEDIUM | `compute_loss`/clamp one-hot contract divergence | **VERIFIED CLOSED** |
 
 ### F-01 — muPC LayerNorm gradient compensation — VERIFIED CLOSED
 
@@ -103,6 +104,41 @@ gotcha" fallback (`_ENZYME_HINT`), which can only fire when *neither* backend ha
 both `FabricPCZygoteExt` and `FabricPCEnzymeExt` call it at module-load time and it raises
 immediately, with an actionable message, if the other backend tries to load afterward in the same
 session — catches the mistake at `using X` time instead of at an arbitrary later call site.
+
+### F-05 — `compute_loss`/clamp one-hot contract divergence — VERIFIED CLOSED
+
+**Found during C-03 implementation** (not by either prior audit pass): while scoping the char
+dataloader, upstream's own loader contract (`_TokenSequenceLoader` docstring, `dataloader.py`) turned
+out to require reading `train_autoregressive.py` directly, which neither the original coverage audit
+nor the reflective cross-check had done at the function-body level. Source-verified against
+`train_autoregressive.py:127-138` (`train_step_autoregressive`'s `y.ndim`/`jax.nn.one_hot` block) and
+`:63-68` (`compute_loss`'s own ndim-check).
+
+**CONFIRMED**: upstream's loaders yield raw integer token ids `(B, S)` for `y` — one-hot expansion to
+`(B, S, V)` happens inside the training step, not the loader (host→device transfer stays compact).
+The Julia port's `compute_loss` assumed `targets` already one-hot, with no such fallback — so raw-id
+batches would silently miscompute the CE metric via shape-broadcasting rather than erroring. Worse:
+`train_step_autoregressive` (Julia) delegates clamp-construction to the *shared*
+`_pcn_step`/`train_step`/`train_step!` (`train.jl`, common to every non-autoregressive example too),
+which has no `y`-specific handling — so a `compute_loss`-only fix would leave the actual clamp
+shape-mismatched regardless, never reaching `compute_loss` at all.
+
+**Fix** (scoped to `train_autoregressive.jl` only — `train.jl`'s shared clamp machinery is untouched):
+`train_step_autoregressive` now inspects `ndims(batch["y"])` against the output node's declared shape
+and, for raw ids, one-hot-expands via the file's existing `_one_hot` helper (widened from
+`AbstractMatrix{<:Integer}` to `AbstractMatrix{<:Real}` to accept the Float32-encoded ids used
+elsewhere in this codebase) *before* calling `_pcn_step`, so the clamped node — not just the CE
+metric — sees the expanded array. Already-one-hot `y` passes through unchanged. DIVERGENCE
+(intentional): upstream raises unless `y.ndim == 2`; the Julia port additionally accepts pre-shaped
+one-hot `y` so existing non-loader callers (e.g. `test_sequence_training.jl`'s plain-classifier step)
+keep working, and drops `compute_loss`'s own now-redundant ndim-check (expansion happens exactly
+once, at the clamp site).
+
+Regression tests: `test/test_transformer_lm.jl` — raw-id batch's clamped `z_latent` matches a manually
+one-hotted target exactly; raw-id and pre-one-hotted batches produce identical energy/CE/state
+(pass-through equivalence); a wrong-ndim batch raises `ArgumentError`. Existing tests
+(`test_transformer_lm.jl`) updated to pass raw ids for `"y"` instead of manual pre-one-hotting,
+matching the real loader contract this fix unblocks (C-03).
 
 ---
 
@@ -183,9 +219,11 @@ and the two bugs were independently fixable/testable, not a coupled unit. F-01 (
 + F-02 + F-03 + F-04 landed as one batch (`c8fb541`) with independent, targeted regression tests
 rather than a combined fixture-gated test. No fixture generator was needed to close Batch 1.
 
-**Batch 2 — validated showcase: IN PROGRESS.** C-05 (InferenceSGDNormClip) → C-06
-(evaluate_autoregressive) → C-03 (Tiny Shakespeare char dataloader) queued next, proceeding in
-parallel with (not blocked by) the conformance-harness track. Per A-01/C-09: before assuming no
+**Batch 2 — validated showcase: IN PROGRESS.** C-03 (Tiny Shakespeare char dataloader) → C-05
+(InferenceSGDNormClip) → C-06 (evaluate_autoregressive) queued next, proceeding in parallel with
+(not blocked by) the conformance-harness track. Dataloader first: highest ROI (turns the
+already-mature LM stack from synthetic-only to demonstrably working on real text) and unblocks C-06
+being meaningful (nothing to evaluate perplexity on without real data). Per A-01/C-09: before assuming no
 correctness exposure, confirm whether this work turns on `MuPCConfig` together with
 `TransformerBlock`/the decomposed family — if it does, F-01/F-02's fix already covers
 TransformerBlock; MhaResidualNode/LnMlp1Node under real muPC scaling remains untested (C-09).
