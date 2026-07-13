@@ -108,3 +108,76 @@ import FabricPC: run_inference, initialize_graph_state
     @test size(g2) == (2, 3 + 4)
     @test g2[:, 1:3] == prompt2
 end
+
+@testset "evaluate_autoregressive (C-06, train_autoregressive.py:595-710)" begin
+    S, V, E, H, B = 4, 6, 12, 2, 3
+    structure = transformer_lm(;
+        seq_len=S, vocab_size=V, embed_dim=E, num_heads=H,
+        num_blocks=1, infer_steps=8, eta_infer=0.1
+    )
+    params = initialize_params(structure, MersenneTwister(21))
+
+    drng = MersenneTwister(22)
+    tokens1 = rand(drng, 1:V, B, S)
+    tokens2 = rand(drng, 1:V, B, S)
+    onehot(t) = Float32[t[b, s] == v ? 1.0f0 : 0.0f0 for b in 1:B, s in 1:S, v in 1:V]
+    test_loader_raw = [
+        Dict{String, Any}("x" => Float32.(tokens1), "y" => Float32.(tokens1)),
+        Dict{String, Any}("x" => Float32.(tokens2), "y" => Float32.(tokens2))
+    ]
+    test_loader_1h = [
+        Dict{String, Any}("x" => Float32.(tokens1), "y" => onehot(tokens1)),
+        Dict{String, Any}("x" => Float32.(tokens2), "y" => onehot(tokens2))
+    ]
+
+    @testset "basic metrics: shape, range, perplexity == exp(loss)" begin
+        metrics = evaluate_autoregressive(
+            params, structure, test_loader_raw, MersenneTwister(1)
+        )
+        @test Set(keys(metrics)) == Set(["loss", "perplexity", "accuracy", "num_batches"])
+        @test metrics["num_batches"] == length(test_loader_raw) == 2
+        @test isfinite(metrics["loss"])
+        @test metrics["perplexity"] ≈ exp(metrics["loss"])
+        @test 0.0 <= metrics["accuracy"] <= 1.0
+    end
+
+    @testset "raw ids vs pre-one-hotted ⇒ identical metrics" begin
+        m_raw = evaluate_autoregressive(
+            params, structure, test_loader_raw, MersenneTwister(9)
+        )
+        m_1h = evaluate_autoregressive(
+            params, structure, test_loader_1h, MersenneTwister(9)
+        )
+        @test m_raw["loss"] ≈ m_1h["loss"]
+        @test m_raw["accuracy"] ≈ m_1h["accuracy"]
+    end
+
+    @testset "debug=true doesn't change metrics (only adds logging)" begin
+        m_plain = evaluate_autoregressive(
+            params, structure, test_loader_raw, MersenneTwister(4)
+        )
+        m_debug = evaluate_autoregressive(
+            params, structure, test_loader_raw, MersenneTwister(4); debug=true
+        )
+        @test m_plain == m_debug
+    end
+
+    @testset "empty test_loader ⇒ zeros, no crash" begin
+        metrics = evaluate_autoregressive(
+            params, structure, Dict{String, Any}[], MersenneTwister(1)
+        )
+        @test metrics["num_batches"] == 0
+        @test metrics["loss"] == 0.0
+        @test metrics["accuracy"] == 0.0
+    end
+end
+
+@testset "_count_correct: exact ground truth" begin
+    predictions = zeros(Float32, 1, 2, 3)
+    predictions[1, 1, :] = Float32[0.1, 0.7, 0.2]        # argmax = 2
+    predictions[1, 2, :] = Float32[0.9, 0.05, 0.05]      # argmax = 1
+    y = zeros(Float32, 1, 2, 3)
+    y[1, 1, :] = Float32[0, 1, 0]                        # target = 2, matches
+    y[1, 2, :] = Float32[0, 0, 1]                        # target = 3, mismatch (pred = 1)
+    @test FabricPC._count_correct(predictions, y) == 1
+end

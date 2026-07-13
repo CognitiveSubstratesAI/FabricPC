@@ -146,6 +146,129 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
     return params, iter_energies, epoch_results
 end
 
+"""
+    _eval_step_autoregressive(params, structure, batch, rng) -> (ce, predictions, y)
+
+Single evaluation step: clamp ONLY `"x"` (unlike training, `"y"` is never clamped — the network
+predicts freely) and relax by inference; `batch["y"]` is one-hot-expanded exactly as
+`train_step_autoregressive` does (F-05: raw ids `(B, S)` or pre-shaped one-hot `(B, S, V)`) and
+returned alongside so the caller doesn't repeat the ndim-check. Port of
+`_eval_step_autoregressive` (train_autoregressive.py:541-592). DIVERGENCE: no external
+causal-mask clamp branch — see `train_step_autoregressive`'s docstring (`TransformerBlock` masks
+inline, so there is no mask node to clamp here either); no `jax.jit` wrapper (this stack is
+eager throughout).
+"""
+function _eval_step_autoregressive(
+    params::GraphParams, structure::GraphStructure, batch::AbstractDict, rng::AbstractRNG
+)
+    output_node = structure.task_map["y"]
+    clamps = Dict{String, Any}(structure.task_map["x"] => batch["x"])
+    state = initialize_graph_state(
+        structure, size(batch["x"], 1), rng; clamps=clamps, params=params
+    )
+    final_state = run_inference(params, state, clamps, structure)
+
+    y = batch["y"]
+    onehot_ndims = length(structure.infos[output_node].shape) + 1     # (B, S..., V)
+    if ndims(y) == onehot_ndims - 1
+        y = _one_hot(y, structure.infos[output_node].shape[end])
+    elseif ndims(y) != onehot_ndims
+        throw(
+            ArgumentError(
+                "_eval_step_autoregressive: batch[\"y\"] has $(ndims(y)) dims; expected " *
+                "$(onehot_ndims - 1) (raw token ids) or $onehot_ndims (one-hot)"
+            )
+        )
+    end
+    ce = compute_loss(final_state, y, output_node; loss_type=:cross_entropy)
+    predictions = final_state.nodes[output_node].z_mu
+    return ce, predictions, y
+end
+
+"""
+    _count_correct(predictions, y) -> Int
+
+Count next-token predictions where `argmax` over the vocab axis (3rd dim, `(B, S, V)`) agrees
+between `predictions` and the (possibly one-hot) target `y`. Factored out of
+`evaluate_autoregressive` so the accuracy computation is unit-testable on its own — same rationale
+as `_sample_next` above (upstream inlines this, train_autoregressive.py:688-696).
+"""
+function _count_correct(predictions::AbstractArray{<:Real, 3}, y::AbstractArray{<:Real, 3})
+    B, S, _ = size(predictions)
+    correct = 0
+    for b in 1:B, s in 1:S
+        correct += (argmax(@view predictions[b, s, :]) == argmax(@view y[b, s, :])) ? 1 : 0
+    end
+    return correct
+end
+
+"""
+    evaluate_autoregressive(params, structure, test_loader, rng; debug=false)
+        -> Dict{String,Float64}
+
+Evaluate a trained autoregressive model on held-out data: mean cross-entropy loss, perplexity
+(`exp(loss)`), and next-token accuracy, over every batch in `test_loader` (any iterable of
+task→array `Dict`s with `"x"`/`"y"` — e.g. `CharDataLoader`, `examples/char_lm_pc.jl`, matching
+`train_autoregressive`'s own loader contract). `debug=true` prints the same first-batch
+diagnostics as upstream (per-token CE, per-token intrinsic perplexity, probability mass on the
+correct token). Port of `evaluate_autoregressive` (train_autoregressive.py:595-710). DIVERGENCE:
+no `config`/`use_causal_mask` parameter — the upstream causal-mask clamp branch this fed is dead
+code in this port (see `_eval_step_autoregressive` above); `rng` is threaded sequentially
+(Julia's mutable-state RNG idiom, matching `train_autoregressive`'s own signature) rather than
+pre-split via `jax.random.split` (a JIT-specific pattern with no Julia-eager equivalent); no
+`jax.jit` wrapper.
+"""
+function evaluate_autoregressive(
+    params::GraphParams, structure::GraphStructure, test_loader, rng::AbstractRNG;
+    debug::Bool=false
+)
+    haskey(structure.task_map, "y") ||
+        throw(
+            ArgumentError("evaluate_autoregressive: structure must have \"y\" in task_map")
+        )
+
+    total_loss = 0.0f0
+    total_correct = 0
+    total_tokens = 0
+    num_batches = 0
+
+    for (batch_idx, batch) in enumerate(test_loader)
+        ce, predictions, y = _eval_step_autoregressive(params, structure, batch, rng)
+        total_loss += ce
+
+        if debug && batch_idx == 1
+            logp = log.(predictions .+ 1.0f-10)
+            per_token_loss = -dropdims(sum(y .* logp; dims=3); dims=3)
+            intrinsic_ppl = exp.(-dropdims(sum(predictions .* logp; dims=3); dims=3))
+            correct_probs = dropdims(sum(y .* predictions; dims=3); dims=3)
+            @info "evaluate_autoregressive debug (batch 1)" per_token_ce=(
+                min=minimum(per_token_loss), max=maximum(per_token_loss),
+                mean=sum(per_token_loss) / length(per_token_loss)
+            ) intrinsic_perplexity=(
+                min=minimum(intrinsic_ppl), max=maximum(intrinsic_ppl),
+                mean=sum(intrinsic_ppl) / length(intrinsic_ppl)
+            ) correct_token_prob=(
+                min=minimum(correct_probs), max=maximum(correct_probs),
+                mean=sum(correct_probs) / length(correct_probs)
+            ) batch_loss=ce
+        end
+
+        total_correct += _count_correct(predictions, y)
+        total_tokens += size(predictions, 1) * size(predictions, 2)
+        num_batches += 1
+    end
+
+    # Promote to Float64 before dividing/exponentiating so the reported "perplexity" is exactly
+    # exp("loss") to full Float64 precision, not exp(Float32 avg) rounded into a Float64 slot.
+    avg_loss = num_batches > 0 ? Float64(total_loss) / num_batches : 0.0
+    return Dict{String, Float64}(
+        "loss" => avg_loss,
+        "perplexity" => exp(avg_loss),
+        "accuracy" => total_tokens > 0 ? total_correct / total_tokens : 0.0,
+        "num_batches" => num_batches
+    )
+end
+
 _softmax_vec(v) = (m=maximum(v); e=exp.(v .- m); e ./ sum(e))
 _softmax_rows(m) = (e=exp.(m .- maximum(m; dims=2)); e ./ sum(e; dims=2))   # row-wise softmax (B,V)
 
