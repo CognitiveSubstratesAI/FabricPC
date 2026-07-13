@@ -18,7 +18,7 @@ _softplus(x) = log1p(exp(-abs(x))) + max(x, 0.0f0)    # numerically-stable softp
 """
     StorkeyHopfield(shape, name; activation = TanhActivation(), energy = GaussianEnergy(),
                     hopfield_strength = nothing, use_bias = true, enforce_symmetry = true,
-                    zero_diagonal = false, weight_init = ZerosInitializer(),
+                    zero_diagonal = false, weight_init = XavierInitializer(),
                     latent_init = NormalInitializer())
 
 Hopfield associative-memory PC node. `shape = (D,)`. `hopfield_strength = nothing`
@@ -49,7 +49,7 @@ function StorkeyHopfield(
     use_bias::Bool=true,
     enforce_symmetry::Bool=true,
     zero_diagonal::Bool=false,
-    weight_init::AbstractInitializer=ZerosInitializer(),
+    weight_init::AbstractInitializer=XavierInitializer(),
     latent_init::AbstractInitializer=NormalInitializer()
 )
     return StorkeyHopfield(
