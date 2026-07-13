@@ -185,12 +185,30 @@ No action this round. Unchanged from the original register (J-01 through J-07, a
 
 ## 6. Conformance harness
 
-**Status: parallel track, not yet started.** The reflective cross-check confirmed "fixtures before
-fixes" was correctly killed as a *gate* (F-02's property test is analytic, F-01's expected gradient
-is closed-form `autodiff_grad × a` — neither needed a JAX fixture to land). The harness remains the
-milestone artifact for proving JAX-equivalence and should still be built — fixtures generated from
-upstream HEAD (`316367c`), per the A-01 resolution (the tree is already synced; no re-sync step
-needed first). Tier A/B/C/D design unchanged from the original register.
+**Tier A — VERIFIED CLOSED.** `scripts/generate_tier_a_fixtures.py` (run against an isolated
+`jax[cpu]` venv, upstream HEAD `316367c`, no re-sync needed per A-01) dumps
+`test/conformance/fixtures/tier_a.npz` (69 arrays, 28 KB): every activation's forward+derivative
+(`SoftplusActivation` excluded — grep-verified it has no upstream counterpart at all, a Julia-only
+addition), Softmax's full Jacobian + an outlier-input numerical-stability case, every energy's
+energy+grad_latent+grad_mu (`grad_mu` checked via `jax.grad` autodiff ground truth — upstream has
+no hand-written closed form for it; only Julia does), RoPE's cos/sin tables + rotation output +
+a single-nonzero-pair discriminator (pins down both position-indexing and pairing-convention),
+and LayerNorm (standard + an outlier case). `test/conformance/test_tier_a.jl` loads it via NPZ.jl
+and compares with a per-element `numpy.allclose`-style check (rtol 1e-6, atol 1e-6 — NOT Julia's
+built-in array `≈`, which is a single norm-based check, too weak for this purpose). **43/44
+assertions passed on the first real run** (one failure was a fixture-generator bug — the softmax
+jacobian was accidentally computed from a different random draw than the saved input — fixed,
+not a Julia port issue). The one substantive finding: `_tb_apply_rope`'s "GELU" comment (see D-02
+sibling) claimed upstream's forward used erf-GELU by default vs Julia's tanh-approximation,
+framing it as a resolved inconsistency; `jax.nn.gelu`'s actual default is `approximate=True` (the
+tanh form) — there was never an inconsistency. Comment corrected in this commit.
+
+**Tier B/C/D — OPEN, not started.** Node-local (block forward + both grad paths per node,
+closed-form AND seam, including the muPC-scaled T3-extended case), loop-level (inference_step →
+run_inference → one train_step), and end-to-end (fixed-seed MNIST-MLP + small transformer LM)
+remain per the original register's design — Tier A's fixture-generation infrastructure
+(`scripts/generate_tier_a_fixtures.py`'s venv/import pattern, `test/conformance/`'s NPZ.jl-loading
++ `allclose` pattern) is now proven and directly reusable for these.
 
 ## 7. Documentation debt
 

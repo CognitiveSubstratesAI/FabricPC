@@ -99,9 +99,12 @@ derivative(::SoftplusActivation, x) = 1.0f0 ./ (1.0f0 .+ exp.(-x))
 
 """
 GELU (tanh approximation): f(x) = 0.5·x·(1 + tanh(√(2/π)(x + 0.044715x³))).
-Upstream's `derivative` is for this tanh approximation, so we use the tanh form
-for `forward` too — keeping f and f' self-consistent for the explicit path
-(upstream's forward calls erf-GELU, a minor inconsistency we resolve here).
+Matches upstream exactly: `jax.nn.gelu`'s default is `approximate=True` (the tanh form),
+and `derivative` is hand-derived for the same approximation — conformance-verified
+bit-for-bit against upstream, rtol 1e-6 (test/conformance/test_tier_a.jl). An earlier
+version of this comment claimed upstream's forward used erf-GELU by default; it does not
+(`inspect.signature(jax.nn.gelu)` confirms `approximate: bool = True`) — there was never
+an inconsistency to resolve here.
 """
 struct GeluActivation <: AbstractActivation end
 const _GELU_C = Float32(sqrt(2.0 / π))
