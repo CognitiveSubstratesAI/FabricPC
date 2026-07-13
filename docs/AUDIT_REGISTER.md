@@ -203,12 +203,60 @@ sibling) claimed upstream's forward used erf-GELU by default vs Julia's tanh-app
 framing it as a resolved inconsistency; `jax.nn.gelu`'s actual default is `approximate=True` (the
 tanh form) — there was never an inconsistency. Comment corrected in this commit.
 
-**Tier B/C/D — OPEN, not started.** Node-local (block forward + both grad paths per node,
-closed-form AND seam, including the muPC-scaled T3-extended case), loop-level (inference_step →
-run_inference → one train_step), and end-to-end (fixed-seed MNIST-MLP + small transformer LM)
-remain per the original register's design — Tier A's fixture-generation infrastructure
-(`scripts/generate_tier_a_fixtures.py`'s venv/import pattern, `test/conformance/`'s NPZ.jl-loading
-+ `allclose` pattern) is now proven and directly reusable for these.
+**Tier B — VERIFIED CLOSED.** `scripts/generate_tier_b_fixtures.py` dumps
+`test/conformance/fixtures/tier_b.npz` (217 arrays): forward + BOTH gradient paths
+(closed-form and/or the Phase-D autodiff seam), isolated node-level (hand-built
+NodeParams/NodeState/NodeInfo, no `graph()` — mirroring the existing F-01 regression test's own
+pattern), for every node type FabricPC.jl has: Linear (↔ upstream `LinearExplicitGrad`) +
+LinearResidual, IdentityNode + SkipConnection, TransformerBlock (forward/latent-grads seam +
+the T3-extended muPC-on/off weight-grad case — see below), MhaResidualNode + LnMlp1Node +
+Mlp2ResidualNode, EmbeddingNode + VocabProjectionNode, StorkeyHopfield.
+`test/conformance/test_tier_b.jl` (rtol/atol 1e-5, its own `allclose_b`/`FIX_B` — kept separate
+from Tier A's `allclose`/`FIX` since both files share `Main` scope once `include`d).
+**151/151 assertions passed** (verified by an isolated re-run of the file alone, not just the
+full-suite aggregate, since a very long full-suite run's output was truncated to its final
+summary line — a display/capture artifact, not a correctness question; the isolated run shows
+the full per-node breakdown).
+
+Drafted by a 6-way parallel research workflow (one agent per node group, each reading the
+upstream Python class and the Julia implementation directly and self-testing its own
+fixture-generation code against the real venv before returning it), then assembled and
+Julia-verified by hand. One real bug caught during assembly (not by any agent's self-test, which
+only exercised the Python side): `TransformerBlock`'s `b_ff1` bias is reshaped internally via
+`size(bias, 2)` (transformer.jl), unlike its sibling gamma/beta/other-biases which reshape via a
+fixed literal `E` — loading the fixture's raw `(1,1,32)` array directly for `b_ff1` throws a
+`DimensionMismatch`; fixed by reshaping to `(1,32)` before constructing `NodeParams`, and
+flattening (`vec`) both sides of the bias-gradient comparison to sidestep the resulting
+non-matching-ndims broadcast. The same `size(bias,2)` hazard exists for `LnMlp1Node`'s `b_ff1`,
+`Mlp2ResidualNode`'s `b_ff2`, and `VocabProjectionNode`'s `b_out` — those three node groups'
+own agents independently found and correctly handled it in their first drafts.
+
+Substantive findings:
+- **F-01/F-02 re-validated against REAL upstream numbers**, not just internal Julia-side formula
+  matching (all the existing regression test could do): the muPC LayerNorm weight-grad
+  compensation (`a` applied to weights, NOT biases) now has byte-level upstream ground truth on
+  both the muPC-on and muPC-off (negative control) cases.
+- New, dormant, low-severity finding (not previously in this register): upstream's
+  `TransformerBlock.forward()` never applies `node_info.activation` to its output (grep-verified
+  against `fabricpc/nodes/transformer.py` — no reference anywhere in the file); Julia's
+  `compute_mu` does apply it. Harmless today (both default to `IdentityActivation`, a no-op) but
+  would silently diverge if a future caller ever constructed a `TransformerBlock` with a
+  non-identity output activation. Tracked here; not fixed (dormant, no live caller).
+- `LinearResidual`: upstream has no closed-form gradient override at all (only `forward()`,
+  falling through to `NodeBase`'s generic autodiff) while Julia's `LinearResidual` is
+  hand-fused-closed-form — same "autodiff-of-upstream's-own-forward is the legitimate ground
+  truth" rationale Tier A used for `grad_mu`, applied here to a whole node's gradients, not just
+  one energy function.
+- `EmbeddingNode`: confirmed upstream's weight gradient is NOT a hand-written scatter-add (no
+  override exists) — it's `jax.value_and_grad` differentiating the fancy-index gather directly,
+  which JAX's autodiff turns into a scatter-add automatically. Independently verified upstream's
+  output against a from-scratch manual scatter-add (matched), and Julia's own hand-written
+  scatter-add matches that same upstream ground truth.
+
+**Tier C/D — OPEN, not started.** Loop-level (inference_step → run_inference → one train_step)
+and end-to-end (fixed-seed MNIST-MLP + small transformer LM) remain per the original register's
+design — the venv/fixture-generation/NPZ.jl-loading infrastructure (now proven across two tiers)
+is directly reusable.
 
 ## 7. Documentation debt
 
