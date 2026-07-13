@@ -243,7 +243,11 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
     ffa = forward(node.internal_activation, ff1)
     ff2 = _tb_dense(ffa, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, E))
     z_mu = inv2 .* (xres1 .+ ff2)
-    return forward(node.activation, z_mu)            # output activation (Identity by default)
+    # DIVERGENCE (F-06, dormant, docs/AUDIT_REGISTER.md): upstream's TransformerBlock.forward()
+    # never applies node_info.activation at all (dead constructor param there) — this line has no
+    # upstream counterpart. Harmless while every caller uses the IdentityActivation default (a
+    # no-op); would silently diverge from upstream for any non-Identity output activation.
+    return forward(node.activation, z_mu)
 end
 
 # muPC LayerNorm gradient compensation (port of upstream transformer.py

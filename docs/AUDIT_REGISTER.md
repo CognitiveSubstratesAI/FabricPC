@@ -35,6 +35,7 @@ tests. Coverage gaps remain concentrated in conv/pooling, JIT breadth, and Pytho
 | F-03 | MEDIUM | Optimizer key-set asymmetry | **VERIFIED CLOSED** (`c8fb541`) |
 | F-04 | MEDIUM (revised from claimed LOW) | Dual AD-backend footgun | **VERIFIED CLOSED** (`c8fb541`) |
 | F-05 | MEDIUM | `compute_loss`/clamp one-hot contract divergence | **VERIFIED CLOSED** |
+| F-06 | LOW (dormant) | `TransformerBlock` output-activation divergence | **OPEN** — found by Tier B (section 6) |
 
 ### F-01 — muPC LayerNorm gradient compensation — VERIFIED CLOSED
 
@@ -139,6 +140,29 @@ one-hotted target exactly; raw-id and pre-one-hotted batches produce identical e
 (pass-through equivalence); a wrong-ndim batch raises `ArgumentError`. Existing tests
 (`test_transformer_lm.jl`) updated to pass raw ids for `"y"` instead of manual pre-one-hotting,
 matching the real loader contract this fix unblocks (C-03).
+
+### F-06 — `TransformerBlock` output-activation divergence — OPEN
+
+Found incidentally by Tier B's fixture-drafting workflow (section 6), not by a targeted audit
+pass. Upstream's `TransformerBlock.forward()` (`fabricpc/nodes/transformer.py`) never applies
+`node_info.activation` anywhere in its body — grep-verified, zero references to
+`node_info.activation`/`self.activation` in the whole file — so the `activation:
+Optional[ActivationBase] = IdentityActivation()` constructor parameter is dead code upstream.
+Julia's `compute_mu` (`src/nodes/transformer.jl`) DOES apply it: `return forward(node.activation,
+z_mu)`.
+
+**Not a deliberate divergence** (neither side chose this on purpose — upstream's parameter looks
+like unfinished wiring, not a design decision), so this is classified as a latent fidelity gap,
+not filed under section 2. **Currently dormant**: every shipped example/test constructs
+`TransformerBlock` with the default `IdentityActivation()` (a no-op) on both sides, so Tier B's
+byte-level fixture comparisons pass regardless — the divergence has no observable effect yet.
+**Would surface** the moment any caller passes a non-Identity `activation` to `TransformerBlock`:
+Julia would apply it to the output, upstream would silently ignore it, and the two would diverge
+with no error or warning. Left unfixed pending a real caller (per this register's own "measured
+need" convention) — fixing now would mean choosing between matching upstream's (arguably buggy)
+dead parameter or diverging on purpose, a decision better made when something actually depends on
+it. Flagged with a one-line pointer in `compute_mu`'s call site (`src/nodes/transformer.jl`) so a
+future reader hits the warning before shipping a non-Identity `TransformerBlock`.
 
 ---
 
