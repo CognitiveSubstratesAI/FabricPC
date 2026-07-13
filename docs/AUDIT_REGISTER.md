@@ -166,7 +166,7 @@ genuinely matches upstream bit-for-bit; only the `_tb_apply_rope` comment was mi
 |----|-----|------|--------|
 | C-01 | HIGH | ConvNode (1D/2D/3D) + pooling + windowed-shape validation | DEFERRED (post-Batch 2) |
 | C-02 | HIGH | ResNet-18/CIFAR-10 demo | BLOCKED (C-01) |
-| C-03 | HIGH | Real-text LM data (char tokenizer + windowed loader) | **IN PROGRESS** |
+| C-03 | HIGH | Real-text LM data (char tokenizer + windowed loader) | **VERIFIED CLOSED.** `examples/char_lm_pc.jl` -- `CharDataLoader`, a port of `_TokenSequenceLoader`/`CharDataLoader` (dataloader.py:272-390): raw-download (not TFDS -- no Julia binding) of the same `karpathy/char-rnn` source TFDS uses, split with TFDS's own verified 90/5/5 formula (`tiny_shakespeare_dataset_builder.py:52-56`), train-only vocab. Kept example-local (no `src/utils/` module), matching `mnist_pc.jl`'s existing precedent -- this port has never had a library-level dataloader. DIVERGENCE (documented, intentional): 1-based char ids, not upstream's 0-based, matching every other token-id consumer in this codebase (EmbeddingNode, `_one_hot`). Offline regression tests (`test/test_char_dataloader.jl`, 12 assertions): TFDS split formula on two boundary cases, vocab sortedness/1-basing, sliding-window shift-by-one invariant + exact ground truth, drop-incomplete-batch, `max_samples` cap, seeded-reproducible + re-iterable-across-epochs shuffling, decode round-trip. Live-smoke-tested against the real corpus (not just synthetic): split sizes exactly 1,003,854/55,770/55,770 chars (bit-exact TFDS-formula match), vocab_size=65, **zero OOV chars in validation/test against the train-only vocab** (relevant to C-06), a short real training run + generation both executed without error. 352/352 green. |
 | C-04 | HIGH | PC-vs-backprop comparison harness | **DECIDE → OPEN, reclassified.** Reflective cross-check confirmed the new-document framing: NOT structurally blocked by the never-port-backprop decision. `ab_experiment.py`/`statistics.py` treat each arm's `params`/`structure` as fully opaque duck-typed objects; a Julia arm on a plain Lux.jl/Flux.jl MLP never touches FabricPC internals and is not a "port of `train_backprop.py`" in any sense. Real new code still needed (stats module + `ExperimentArm`/`ABExperiment` port + a small Lux arm) — moderate/large effort stands, "blocked" does not. |
 | C-05 | MED | InferenceSGDNormClip | **IN PROGRESS** |
 | C-06 | MED | evaluate_autoregressive | **IN PROGRESS** |
@@ -219,11 +219,14 @@ and the two bugs were independently fixable/testable, not a coupled unit. F-01 (
 + F-02 + F-03 + F-04 landed as one batch (`c8fb541`) with independent, targeted regression tests
 rather than a combined fixture-gated test. No fixture generator was needed to close Batch 1.
 
-**Batch 2 — validated showcase: IN PROGRESS.** C-03 (Tiny Shakespeare char dataloader) → C-05
-(InferenceSGDNormClip) → C-06 (evaluate_autoregressive) queued next, proceeding in parallel with
-(not blocked by) the conformance-harness track. Dataloader first: highest ROI (turns the
+**Batch 2 — validated showcase: IN PROGRESS.** C-03 (Tiny Shakespeare char dataloader) —
+**VERIFIED CLOSED**, real-corpus smoke-tested. C-05 (InferenceSGDNormClip) → C-06
+(evaluate_autoregressive) queued next, proceeding in parallel with (not blocked by) the
+conformance-harness track. C-03 landing first was deliberate: highest ROI (turns the
 already-mature LM stack from synthetic-only to demonstrably working on real text) and unblocks C-06
-being meaningful (nothing to evaluate perplexity on without real data). Per A-01/C-09: before assuming no
+being meaningful (nothing to evaluate perplexity on without real data) — confirmed: C-03's live
+smoke test found zero OOV chars between the train vocab and validation/test splits, so C-06 can
+evaluate on either split with no additional vocab-handling work. Per A-01/C-09: before assuming no
 correctness exposure, confirm whether this work turns on `MuPCConfig` together with
 `TransformerBlock`/the decomposed family — if it does, F-01/F-02's fix already covers
 TransformerBlock; MhaResidualNode/LnMlp1Node under real muPC scaling remains untested (C-09).
