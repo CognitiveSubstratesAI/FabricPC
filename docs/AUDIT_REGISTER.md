@@ -205,7 +205,17 @@ genuinely matches upstream bit-for-bit; only the `_tb_apply_rope` comment was mi
 
 ## 5. JIT/performance lane
 
-No action this round. Unchanged from the original register (J-01 through J-07, all OPEN/DEFERRED).
+| ID | Item | Status |
+|----|------|--------|
+| J-01 | Flat gradient seam: Enzyme-under-Reactant | **OPEN — real blocker, not just missing code.** A scout of `src/jit_flat.jl`/`ext/FabricPCReactantExt.jl`/`benchmark/transformer_jit.jl`/`docs/decisions.md` found the only existing precedent (`benchmark/transformer_jit.jl`'s `wgrad`, benchmark-only, differentiates just `x`+`W_q` not the full parameter set) and a **documented, unresolved architectural conflict** (`decisions.md:387-415`, §15): eager `Enzyme.autodiff` and `Reactant`-compiled `Enzyme` cannot coexist in one process ("a prior eager autodiff poisons the subsequent compile"). Parked pending a deliberate design decision on that conflict, not attempted this round. |
+| J-02 | Compile full `train_step` | **BLOCKED on J-01** (needs a working flat weight-gradient first; `compute_local_weight_gradients` remains entirely eager/Dict-based, no flat/traced counterpart exists). |
+| J-03 | Extend flat lane to seam nodes | **PARTIAL — TransformerBlock forward wired, backward parked.** `flat_forward(::TransformerBlock, ...)` (`src/jit_flat.jl`) wires the already-validated `_tb_block_flat` kernel (`src/nodes/transformer.jl:296-338`, previously a standalone, disconnected kernel + benchmark) into `CompiledPlan`'s dispatch — `to_flat_params` special-cased to bridge via the existing `flat_block_args` (TransformerBlock's weights are keyed by NAME, not by edge key like every other node here). Verified byte-equivalent to eager `compute_mu` (`test/test_jit_flat.jl`, new testset) on a graph where TransformerBlock is the unclamped terminal node (`flat_latent_grads`'s `out_degree==0 && !is_clamped` branch — forward only). **No `_flat_input_grads(::TransformerBlock, ...)` method exists** — the attention+FFN backward pass needed for TransformerBlock as an interior or clamped node — same category of problem as J-01 (needs Enzyme-under-Reactant, or a substantial hand-derived closed-form gradient verified against Zygote's already-upstream-validated gradient); verified this fails loudly with a clean `MethodError`, not silently wrong output, rather than asserting it in CI (a `MethodError` from a private multi-arg dispatch is a brittle thing to `@test_throws` on). Decomposed nodes (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`/`EmbeddingNode`/`VocabProjectionNode`) and `StorkeyHopfield` remain untouched — zero flat-lane work for any of them. |
+| J-04 | Benchmark harness | OPEN — explicitly gated on Tier C passing (register's own rule: "Only meaningful after Tier C passes"), not started. |
+| J-05 | Hand-derived attention VJP as explicit Layer-1 gradient | DEFERRED (optional, post-J-03) — unchanged. |
+| J-06 | `NodeState` parametric types `{T<:AbstractArray}` | OPEN (post-Batch 3) — unchanged, "a real refactor — schedule deliberately." |
+| J-07 | Slot-name resolution out of node forwards | OPEN (with J-03) — unchanged. |
+
+**Batch 3 sequencing note**: the original register's ordering (J-01→J-02→J-03→J-04) assumed J-01/J-02 would land first. In practice J-03's TransformerBlock forward-wiring turned out to be the only piece of this batch achievable without first resolving J-01's architectural blocker — it used already-validated math with no new numerical kernel, whereas J-01 hit a real unresolved process-level conflict and J-02 is blocked on J-01. J-04 remains gated on Tier C regardless of J-01/J-02/J-03's state.
 
 ## 6. Conformance harness
 

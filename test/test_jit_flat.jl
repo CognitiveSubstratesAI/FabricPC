@@ -64,3 +64,36 @@ end
     @test _match(st, params, Dict{String, Any}("x" => x, "y" => y), batch)
     @test _match(st, params, Dict{String, Any}("x" => x), batch)
 end
+
+@testset "flat run_inference == eager (TransformerBlock, J-03 forward-only)" begin
+    # J-03 (docs/AUDIT_REGISTER.md section 5): flat_forward(::TransformerBlock, ...) wires
+    # the already-validated _tb_block_flat kernel into this dispatch, but no
+    # _flat_input_grads method exists for it (the attention+FFN backward pass is out of
+    # scope — see that function's docstring in jit_flat.jl). That's fine here: TransformerBlock
+    # is the graph's UNCLAMPED TERMINAL node ("predict-style", y omitted from clamps), which
+    # hits flat_latent_grads' `out_degree == 0 && !is_clamped` branch — forward only, no
+    # backward pass needed. Using TransformerBlock as an interior/clamped node would need the
+    # (unimplemented) backward pass instead.
+    rng = MersenneTwister(9)
+    batch, S, E, H = 4, 5, 8, 2
+    x = randn(rng, Float32, batch, S, E)
+    # NOTE: `_match`'s `clamps` dict (like every other testset in this file) is keyed by NODE
+    # NAME, not task name — `initialize_graph_state`/`run_inference`/`CompiledPlan` all take
+    # already-resolved (node-name-keyed) clamps; task_map resolution happens at the CALLER
+    # (e.g. train_step_autoregressive), not here. Every other testset in this file sidesteps
+    # this by naming its nodes "x"/"y" (identical to their task names) — this one does too, to
+    # stay consistent, rather than "input"/"tb" (which would silently clamp NOTHING, since
+    # neither name matches a "x"/"y" clamps key — caught by hand-verifying the intended
+    # MethodError case actually fires before landing this test).
+    xn = IdentityNode((S, E), "x")                    # rank-generic passthrough; see identity.jl
+    yn = TransformerBlock((S, E), "y"; num_heads=H)
+    st = graph([xn, yn], [Edge(xn, slot(yn, "in"))], TaskMap(; x=xn, y=yn),
+        InferenceSGD(; eta_infer=0.1, infer_steps=4))
+    params = initialize_params(st, MersenneTwister(10))
+
+    @test _match(st, params, Dict{String, Any}("x" => x), batch)   # predict-style: "y" (the
+    # TransformerBlock) unclamped ⇒ out_degree==0 && !is_clamped branch, forward only.
+    # Clamping "y" too would hit the interior/clamped branch and MethodError on the missing
+    # _flat_input_grads — verified by hand (not asserted here; @test_throws on a MethodError
+    # from a private multi-arg dispatch is brittle) that this actually happens.
+end

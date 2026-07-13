@@ -67,11 +67,19 @@ function to_flat_params(plan::CompiledPlan, params::GraphParams)
     out = FlatNodeParams[]
     for (i, name) in enumerate(plan.names)
         np = params.nodes[name]
-        w = Union{Nothing, Matrix{Float32}}[
-            get(np.weights, k, nothing) for k in plan.in_key[i]
-        ]
-        b = get(np.biases, "b", nothing)
-        push!(out, FlatNodeParams(w, b))
+        if plan.nodes[i] isa TransformerBlock
+            # TransformerBlock's weights are keyed by NAME ("W_q", "ln1_gamma", ...), not by
+            # edge key like every other node here — the generic per-in-edge lookup below
+            # doesn't apply. Stash the pre-bridged `flat_block_args` tuple as the sole `w`
+            # entry; `flat_forward(::TransformerBlock, ...)` unpacks it directly.
+            push!(out, FlatNodeParams(Any[flat_block_args(plan.nodes[i], np)], nothing))
+        else
+            w = Union{Nothing, Matrix{Float32}}[
+                get(np.weights, k, nothing) for k in plan.in_key[i]
+            ]
+            b = get(np.biases, "b", nothing)
+            push!(out, FlatNodeParams(w, b))
+        end
     end
     return out
 end
@@ -212,6 +220,38 @@ function flat_forward(
     transformed = forward(node.activation, pre)
     z_mu = skip === nothing ? transformed : transformed .+ skip
     ns = update_state(state; pre_activation=pre, z_mu=z_mu, error=state.z_latent .- z_mu)
+    return energy_functional(node, ns)
+end
+
+# TransformerBlock (J-03, docs/AUDIT_REGISTER.md section 5): wires the already-validated
+# `_tb_block_flat` kernel (transformer.jl) into this file's dispatch — FORWARD ONLY. No
+# `_flat_input_grads(::TransformerBlock, ...)` method exists (the attention+FFN backward
+# pass, deliberately out of scope here — needs either Enzyme-under-Reactant, blocked per
+# J-01/decisions.md §15, or a from-scratch hand-derived gradient). `flat_latent_grads`'s
+# `out_degree == 0 && !is_clamped` branch (this file, below) calls ONLY `flat_forward` — so
+# this works wherever TransformerBlock is the graph's unclamped terminal/output node (e.g.
+# JIT-compiled prediction on fixed params). Using it as an interior or clamped node hits a
+# MethodError on `_flat_input_grads` — a deliberate, honest failure, not silently wrong math.
+#
+# DIVERGENCE from `_tb_block_flat` itself: that kernel returns the raw block output with no
+# activation applied (matching upstream, which never applies `node_info.activation` either —
+# see F-06). Eager `compute_mu` DOES apply `node.activation`. This wrapper matches eager
+# `compute_mu` (this file's stated contract — every `flat_forward` "mirrors the corresponding
+# eager forward", not upstream), applying `node.activation` here rather than inside the
+# shared, separately-benchmarked kernel.
+function flat_forward(
+    node::TransformerBlock, fp::FlatNodeParams, ins, slots, state::NodeState
+)
+    x = only(ins)
+    args = fp.w[1]
+    B = size(x, 1)
+    z_mu = forward(
+        node.activation,
+        _tb_block_flat(
+            x, args..., Val(node.num_heads), Val(B), Val(node.use_rope), Val(node.causal)
+        )
+    )
+    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=state.z_latent .- z_mu)
     return energy_functional(node, ns)
 end
 
