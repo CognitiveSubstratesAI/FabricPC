@@ -133,7 +133,11 @@ function _tb_rope_tables(head_dim, seq; theta=10000.0f0)
 end
 
 # Apply RoPE to a head tensor (B,S,Dh). Adjacent-pair convention (1,2),(3,4),…
-# (a valid consistent rotation; from-scratch ⇒ no numpy-layout match required).
+# — this happens to coincide with upstream's own pairing (verified against both
+# fabricpc/core/positional.py and fabricpc/nodes/transformer.py: same frequency
+# table, same position indexing, same adjacent-pair grouping, same rotation
+# formula). Not a numpy-byte-compatibility requirement (from-scratch training
+# needs none), it just turns out to match.
 function _tb_apply_rope(xh, cosA, sinA)
     B, S, Dh = size(xh)
     half = Dh ÷ 2
@@ -231,11 +235,45 @@ function compute_mu(node::TransformerBlock, params::NodeParams, inputs)
         xres1, reshape(params.weights["ln2_gamma"], 1, 1, E),
         reshape(params.biases["ln2_beta"], 1, 1, E)
     )
-    ff1 = _tb_dense(xn2, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2)))
+    ff1 = _tb_dense(
+        xn2,
+        params.weights["W_ff1"],
+        reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2))
+    )
     ffa = forward(node.internal_activation, ff1)
     ff2 = _tb_dense(ffa, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, E))
     z_mu = inv2 .* (xres1 .+ ff2)
     return forward(node.activation, z_mu)            # output activation (Identity by default)
+end
+
+# muPC LayerNorm gradient compensation (port of upstream transformer.py
+# TransformerBlock.forward_and_weight_grads): LN(a·x) = LN(x), so the leading
+# LayerNorm absorbs any muPC forward-scale `a` applied to the "in" edge before
+# this node ever sees it (scale_inputs pre-scales, per core/mupc.jl). That makes
+# dE/dW independent of `a` — i.e. ~1/a too large relative to a node (like Linear)
+# whose dE/dW is directly proportional to `a·x`. Multiply the weight grads by `a`
+# to compensate. `info` is `nothing` outside a full graph call (no compensation,
+# matching the generic seam) or when `info.scaling_config` is `nothing` (muPC off).
+function forward_and_weight_grads(
+    node::TransformerBlock, params::NodeParams, inputs::AbstractDict, state::NodeState;
+    info=nothing
+)
+    _, ns = forward(node, params, inputs, state)
+    grad_params = _ad_param_grads(node, params, _concrete_inputs(inputs), state.z_latent)
+    if info !== nothing && info.scaling_config !== nothing
+        a = 1.0f0
+        for (edge_key, scale) in info.scaling_config.forward_scale
+            if endswith(edge_key, ":in")
+                a = scale
+                break
+            end
+        end
+        if a != 1.0f0
+            scaled_weights = Dict(k => v .* a for (k, v) in grad_params.weights)
+            grad_params = NodeParams(scaled_weights, grad_params.biases)
+        end
+    end
+    return ns, grad_params
 end
 
 # =============================================================================

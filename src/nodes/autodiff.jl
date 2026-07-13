@@ -74,6 +74,32 @@ const _ENZYME_HINT =
     "FabricPC: this node uses the Phase-D autodiff gradient seam — run `using Zygote` " *
     "(works on transformer/attention) or `using Enzyme` (simple nodes) to activate it."
 
+# F-04 dual-backend load guard: FabricPCZygoteExt and FabricPCEnzymeExt implement the
+# IDENTICAL `_ad_param_grads`/`_ad_latent_grads` hooks (see decisions.md #19) — they
+# cannot safely coexist, since the second-loaded extension silently overrides the
+# first's dispatch with no warning, and Enzyme aborts (opaque LLVM crash, not a
+# catchable Julia error) on the multi-head-attention block that Zygote handles fine.
+# The varargs fallback above only catches "neither backend loaded yet"; it can never
+# fire once either extension has registered a fully-specific method. This registers
+# WHICH backend loaded first and raises immediately (at `using X` time, not at the
+# first mismatched call) if the other one tries to load afterward in the same session.
+const _AD_BACKEND = Ref{Symbol}(:none)
+
+function _register_ad_backend!(name::Symbol)
+    if _AD_BACKEND[] !== :none && _AD_BACKEND[] !== name
+        error(
+            "FabricPC: both Zygote and Enzyme AD backends are loaded in this session " *
+            "(loaded $(_AD_BACKEND[]) first, then $name). They implement the SAME " *
+            "gradient seam and cannot coexist: the second one silently overrides the " *
+            "first's dispatch, and Enzyme aborts with an opaque LLVM crash on nodes " *
+            "(e.g. TransformerBlock) that only Zygote handles. Use exactly ONE of " *
+            "`using Zygote` / `using Enzyme` per Julia session — restart to switch."
+        )
+    end
+    _AD_BACKEND[] = name
+    return nothing
+end
+
 # Varargs fallbacks (NOT the typed signature the extension defines): a same-
 # signature method in the ext would be a forbidden precompile-time overwrite. The
 # ext adds strictly-more-specific `(::AbstractNode, ::NodeParams, inputs, z_latent)`
@@ -101,15 +127,20 @@ function _concrete_inputs(inputs)
 end
 
 """
-    forward_and_weight_grads(node::AbstractNode, params, inputs, state) -> (NodeState, NodeParams)
+    forward_and_weight_grads(node::AbstractNode, params, inputs, state; info=nothing) -> (NodeState, NodeParams)
 
 Generic learning-phase weight gradients via autodiff (Julia analog of
 `NodeBase.forward_and_weight_grads`: `value_and_grad(forward, argnums=0)`). The
 NodeState comes from the (non-differentiated) `forward`; the NodeParams gradient
 comes from differentiating `energy_kernel` w.r.t. `params`.
+
+`info` (the node's `NodeInfo`, `nothing` outside a full graph call) is accepted so
+that node-specific overrides (e.g. `TransformerBlock`'s LayerNorm muPC-gradient
+compensation) can read `info.scaling_config`; the generic path here ignores it.
 """
 function forward_and_weight_grads(
-    node::AbstractNode, params::NodeParams, inputs::AbstractDict, state::NodeState
+    node::AbstractNode, params::NodeParams, inputs::AbstractDict, state::NodeState;
+    info=nothing
 )
     _, ns = forward(node, params, inputs, state)
     grad_params = _ad_param_grads(node, params, _concrete_inputs(inputs), state.z_latent)

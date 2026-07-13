@@ -47,7 +47,11 @@ function MhaResidualNode(
     )
 end
 
-get_slots(::MhaResidualNode) = Dict("in" => SlotSpec("in", false))
+get_slots(::MhaResidualNode) = Dict(
+    "in" => SlotSpec("in", false),
+    "skip" =>
+        SlotSpec("skip", false; is_variance_scalable=false, is_skip_connection=true)
+)
 get_weight_fan_in(::MhaResidualNode, source_shape::Tuple) = source_shape[end]
 
 function initialize_params(
@@ -71,14 +75,22 @@ function initialize_params(
 end
 
 function compute_mu(node::MhaResidualNode, params::NodeParams, inputs)
-    x = first(values(inputs))
+    in_key = first(k for k in keys(inputs) if endswith(k, ":in"))
+    x = inputs[in_key]
+    # "skip" is an OPTIONAL decoupled bypass (upstream transformer_v2.py post-#28):
+    # under muPC, "in" is pre-scaled by scale_inputs before compute_mu ever sees it,
+    # so the residual must read the UNSCALED skip edge, not the scaled "in" value.
+    # No "skip" edge wired ⇒ fall back to "in" (today's behavior, byte-identical
+    # whenever scaling is off since "in" is unscaled then too).
+    skip_keys = [k for k in keys(inputs) if endswith(k, ":skip")]
+    skip = isempty(skip_keys) ? x : inputs[first(skip_keys)]
     E = size(x, 3)
     xn = _tb_layernorm(
         x, reshape(params.weights["ln_gamma"], 1, 1, E),
         reshape(params.biases["ln_beta"], 1, 1, E)
     )
     mha = _tb_mha(node.num_heads, node.use_rope, node.causal, params, xn)
-    return x .+ mha
+    return skip .+ mha
 end
 
 # ============================================================================
@@ -132,7 +144,11 @@ function compute_mu(node::LnMlp1Node, params::NodeParams, inputs)
         x, reshape(params.weights["ln_gamma"], 1, 1, E),
         reshape(params.biases["ln_beta"], 1, 1, E)
     )
-    h = _tb_dense(xn, params.weights["W_ff1"], reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2)))
+    h = _tb_dense(
+        xn,
+        params.weights["W_ff1"],
+        reshape(params.biases["b_ff1"], 1, 1, size(params.biases["b_ff1"], 2))
+    )
     return forward(node.activation, h)
 end
 
@@ -186,7 +202,8 @@ function compute_mu(node::Mlp2ResidualNode, params::NodeParams, inputs)
     mlp1 = inputs[in_key]
     res = inputs[res_key]
     mlp2 = _tb_dense(
-        mlp1, params.weights["W_ff2"], reshape(params.biases["b_ff2"], 1, 1, size(params.biases["b_ff2"], 2))
+        mlp1, params.weights["W_ff2"],
+        reshape(params.biases["b_ff2"], 1, 1, size(params.biases["b_ff2"], 2))
     )
     return res .+ mlp2
 end
@@ -257,7 +274,8 @@ function forward(
 end
 
 function forward_and_weight_grads(
-    node::EmbeddingNode, params::NodeParams, inputs::AbstractDict, state::NodeState
+    node::EmbeddingNode, params::NodeParams, inputs::AbstractDict, state::NodeState;
+    info=nothing
 )
     idx = first(values(inputs))
     _, ns = forward(node, params, inputs, state)
@@ -328,6 +346,10 @@ end
 
 function compute_mu(node::VocabProjectionNode, params::NodeParams, inputs)
     x = first(values(inputs))
-    logits = _tb_dense(x, params.weights["W_out"], reshape(params.biases["b_out"], 1, 1, size(params.biases["b_out"], 2)))
+    logits = _tb_dense(
+        x,
+        params.weights["W_out"],
+        reshape(params.biases["b_out"], 1, 1, size(params.biases["b_out"], 2))
+    )
     return forward(node.activation, logits)
 end

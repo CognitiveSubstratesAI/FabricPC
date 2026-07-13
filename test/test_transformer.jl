@@ -10,7 +10,7 @@
 #      by local PC (Enzyme differentiates one node's local energy; never the network).
 
 using FabricPC
-using FabricPC: NodeParams, compute_mu
+using FabricPC: NodeParams, NodeState, NodeInfo, SlotInfo, MuPCScalingFactors, compute_mu
 using Zygote
 using Random, Test
 
@@ -207,5 +207,60 @@ end
         @test iters[end][1] < iters[1][1]      # per-batch energy fell over training
         @test e1 < e0                           # converged-state reconstruction improved
         @test e1 < 0.85f0 * e0                  # a real (non-trivial) drop
+    end
+
+    @testset "F-01: muPC LayerNorm weight-grad compensation" begin
+        # LN(a·x) = LN(x), so TransformerBlock's leading LayerNorm absorbs any muPC
+        # forward-scale `a` applied to the "in" edge before compute_mu ever sees it —
+        # dE/dW ends up independent of `a` (~1/a too large vs an uncompensated node).
+        # forward_and_weight_grads(...; info) must multiply weight grads by `a` to
+        # compensate (upstream fabricpc/nodes/transformer.py:392-422); biases are NOT
+        # scaled (upstream leaves params_grad.biases untouched).
+        rng = MersenneTwister(7)
+        B, S, E, H = 2, 3, 8, 2
+        node = TransformerBlock((S, E), "tb"; num_heads=H)
+        edge_key = "x->tb:in"
+        params = TF.initialize_params(
+            node, rng, (S, E), Dict(edge_key => (S, E)), node.weight_init
+        )
+        x = randn(rng, Float32, B, S, E)
+        inputs = Dict{String, Any}(edge_key => x)
+        zlat = randn(rng, Float32, B, S, E)
+        st = NodeState(
+            zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
+            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+        )
+
+        _, gp_unscaled = TF.forward_and_weight_grads(node, params, inputs, st)
+
+        a = 2.5f0
+        sc = MuPCScalingFactors(
+            Dict(edge_key => a), 1.0f0, Dict(edge_key => a), Dict(edge_key => 1.0f0)
+        )
+        info = NodeInfo(
+            "tb", (S, E), "TransformerBlock", Dict{String, SlotInfo}(),
+            1, 1, [edge_key], String[], sc
+        )
+        _, gp_scaled = TF.forward_and_weight_grads(node, params, inputs, st; info=info)
+
+        for k in keys(gp_unscaled.weights)
+            @test gp_scaled.weights[k] ≈ a .* gp_unscaled.weights[k] rtol = 1.0f-5
+        end
+        for k in keys(gp_unscaled.biases)
+            @test gp_scaled.biases[k] ≈ gp_unscaled.biases[k] rtol = 1.0f-5   # biases NOT scaled
+        end
+
+        # info=nothing (outside a full graph call) and scaling_config=nothing (muPC
+        # off) must both be no-ops, matching the pre-fix generic seam exactly.
+        info_noscale = NodeInfo(
+            "tb", (S, E), "TransformerBlock", Dict{String, SlotInfo}(),
+            1, 1, [edge_key], String[], nothing
+        )
+        _, gp_infobutoff = TF.forward_and_weight_grads(
+            node, params, inputs, st; info=info_noscale
+        )
+        for k in keys(gp_unscaled.weights)
+            @test gp_infobutoff.weights[k] ≈ gp_unscaled.weights[k] rtol = 1.0f-6
+        end
     end
 end

@@ -27,6 +27,22 @@ const TD = FabricPC
         x2[:, S, :] .+= reshape(Float32.(1:E), 1, E)     # non-uniform ⇒ survives LayerNorm
         z2 = compute_mu(node, params, Dict{String, Any}("x->mha:in" => x2))
         @test z[:, 1, :] ≈ z2[:, 1, :] rtol = 1e-5       # causal: no future leak
+
+        # F-02: the residual bypass must be decoupled from the "in" edge. This is a
+        # pure forward composition property of compute_mu — no gradients involved.
+        # Under muPC, scale_inputs pre-scales the "in" edge before compute_mu ever
+        # sees it; a decoupled "skip" edge must carry the UNSCALED bypass value.
+        skip = randn(rng, Float32, B, S, E)   # deliberately DIFFERENT from x
+        z_skip = compute_mu(
+            node, params, Dict{String, Any}("x->mha:in" => x, "x->mha:skip" => skip)
+        )
+        attn_only = z_skip .- skip
+        @test z_skip ≈ skip .+ attn_only rtol = 1.0f-6            # residual == skip, not x
+        @test !(z_skip ≈ z)                                       # differs from the no-skip case
+        # No "skip" edge wired ⇒ falls back to "in" (today's byte-identical behavior,
+        # matching the pre-fix code path whenever scaling is off).
+        z_noskip = compute_mu(node, params, Dict{String, Any}("x->mha:in" => x))
+        @test z_noskip ≈ z rtol = 1.0f-6
     end
 
     @testset "LnMlp1: forward shape (S, ff)" begin
@@ -120,9 +136,12 @@ const TD = FabricPC
         z = compute_mu(vp, vpp, Dict{String, Any}("h->vocab:in" => x))
         @test size(z) == (B, S, V)
         # default is now Softmax over the vocab axis (per upstream transformer_v2): a distribution.
-        @test all(>=(0.0f0), z) && all(isapprox.(sum(z; dims = 3), 1.0f0; atol = 1.0f-5))
-        logits = TD._tb_dense(x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :))
-        sm = exp.(logits .- maximum(logits; dims = 3)); sm = sm ./ sum(sm; dims = 3)
+        @test all(>=(0.0f0), z) && all(isapprox.(sum(z; dims=3), 1.0f0; atol=1.0f-5))
+        logits = TD._tb_dense(
+            x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :)
+        )
+        sm = exp.(logits .- maximum(logits; dims=3));
+        sm = sm ./ sum(sm; dims=3)
         @test z ≈ sm                                           # = softmax(raw dense projection)
     end
 end

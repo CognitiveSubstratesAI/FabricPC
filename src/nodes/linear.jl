@@ -174,7 +174,8 @@ function forward_and_weight_grads(
     node::Linear,
     params::NodeParams,
     inputs::AbstractDict,
-    state::NodeState
+    state::NodeState;
+    info=nothing
 )
     _, ns = forward(node, params, inputs, state)
     dpre = pre_grad(node, ns)

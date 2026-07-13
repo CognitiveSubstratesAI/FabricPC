@@ -17,8 +17,10 @@ module FabricPCEnzymeExt
 
 using FabricPC
 using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel
-import FabricPC: _ad_param_grads, _ad_latent_grads
+import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Enzyme
+
+_register_ad_backend!(:enzyme)
 
 # The params weights/biases (and, for latent grads, the inputs) are threaded as `NamedTuple`s — the
 # `SoA` container's `.nt` — so Enzyme accumulates gradients into NamedTuples, never a `Dict` (a Dict
@@ -27,8 +29,9 @@ using Enzyme
 # args (NOT closure captures — a captured mutable Dict triggers EnzymeMutabilityException).
 
 # differentiated kernels: rebuild the SoA from the differentiated NamedTuple, then call energy_kernel.
-_ek_w(node, wnt, bnt, inputs, z) = energy_kernel(node, NodeParams(SoA(wnt), SoA(bnt)), inputs, z)
-_ek_in(node, params, innt, z)    = energy_kernel(node, params, SoA(innt), z)
+_ek_w(node, wnt, bnt, inputs, z) =
+    energy_kernel(node, NodeParams(SoA(wnt), SoA(bnt)), inputs, z)
+_ek_in(node, params, innt, z) = energy_kernel(node, params, SoA(innt), z)
 
 function _ad_param_grads(
     node::AbstractNode, params::NodeParams, inputs, z_latent
@@ -39,7 +42,8 @@ function _ad_param_grads(
     dbnt = map(zero, bnt)
     Enzyme.autodiff(
         set_runtime_activity(Reverse), _ek_w, Active,
-        Const(node), Duplicated(wnt, dwnt), Duplicated(bnt, dbnt), Const(inputs), Const(z_latent),
+        Const(node), Duplicated(wnt, dwnt), Duplicated(bnt, dbnt), Const(inputs),
+        Const(z_latent)
     )
     return NodeParams(SoA(dwnt), SoA(dbnt))
 end
@@ -52,7 +56,7 @@ function _ad_latent_grads(
     dz = zero(z_latent)
     Enzyme.autodiff(
         set_runtime_activity(Reverse), _ek_in, Active,
-        Const(node), Const(params), Duplicated(innt, dinnt), Duplicated(z_latent, dz),
+        Const(node), Const(params), Duplicated(innt, dinnt), Duplicated(z_latent, dz)
     )
     N = ndims(first(values(inputs)))
     dinputs = Dict{String, Array{Float32, N}}(String(k) => dinnt[k] for k in keys(dinnt))

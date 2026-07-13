@@ -121,7 +121,8 @@ function forward_and_weight_grads(
     node::IdentityNode,
     params::NodeParams,
     inputs::AbstractDict,
-    state::NodeState
+    state::NodeState;
+    info=nothing
 )
     _, ns = forward(node, params, inputs, state)
     return ns, NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}())

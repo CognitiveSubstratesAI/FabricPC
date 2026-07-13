@@ -12,8 +12,10 @@ module FabricPCZygoteExt
 using FabricPC
 using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel,
     _tb_causal_mask, _tb_rope_tables, _tb_varcomp, _soa_key, _soa_keys
-import FabricPC: _ad_param_grads, _ad_latent_grads
+import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Zygote
+
+_register_ad_backend!(:zygote)
 
 # SoA key strings are structural (independent of the differentiated values); the Symbol->String
 # foreigncall (jl_cstr_to_string) is not differentiable, so skip tracing it. This is what lets a
@@ -33,15 +35,17 @@ Zygote.@nograd _tb_varcomp
 # zeros matching the reference NamedTuple so repack/optimizer code is uniform.
 _fill_zero(::Nothing, ref) = map(zero, ref)
 _fill_zero(g::NamedTuple, ref) =
-    NamedTuple{keys(ref)}(map(k -> getproperty(g, k) === nothing ? zero(ref[k]) : getproperty(g, k),
-                              keys(ref)))
+    NamedTuple{keys(ref)}(
+        map(k -> getproperty(g, k) === nothing ? zero(ref[k]) : getproperty(g, k),
+            keys(ref))
+    )
 
 function _ad_param_grads(node::AbstractNode, params::NodeParams, inputs, z_latent)
     wnt = params.weights.nt
     bnt = params.biases.nt
     gw, gb = Zygote.gradient(
         (w, b) -> energy_kernel(node, NodeParams(SoA(w), SoA(b)), inputs, z_latent),
-        wnt, bnt,
+        wnt, bnt
     )
     return NodeParams(SoA(_fill_zero(gw, wnt)), SoA(_fill_zero(gb, bnt)))
 end
@@ -50,7 +54,7 @@ function _ad_latent_grads(node::AbstractNode, params::NodeParams, inputs, z_late
     innt = SoA(inputs).nt
     gin, gz = Zygote.gradient(
         (inn, z) -> energy_kernel(node, params, SoA(inn), z),
-        innt, z_latent,
+        innt, z_latent
     )
     gin = _fill_zero(gin, innt)
     N = ndims(first(values(inputs)))
