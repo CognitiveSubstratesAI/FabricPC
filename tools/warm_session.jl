@@ -13,16 +13,23 @@ catch
     @warn "Revise unavailable — src edits will NOT hot-reload"
 end
 using FabricPC, Random
-try; using Zygote; catch; @warn "Zygote unavailable"; end
+try
+    ;
+    using Zygote;
+catch
+    ;
+    @warn "Zygote unavailable";
+end
 
-const DIR  = abspath(joinpath(@__DIR__, "..", ".warm"))
+const DIR = abspath(joinpath(@__DIR__, "..", ".warm"))
 mkpath(DIR)
-const INF  = joinpath(DIR, "in.jl")
+const INF = joinpath(DIR, "in.jl")
 const OUTF = joinpath(DIR, "out.txt")
 const SEQF = joinpath(DIR, "seq")
 const DONE = joinpath(DIR, "done")
 function _serve()
-    rm(INF; force = true); rm(DONE; force = true)
+    rm(INF; force=true);
+    rm(DONE; force=true)
     write(joinpath(DIR, "ready"), "1")
     println("WARM SESSION READY (FabricPC loaded)")
     seen = ""

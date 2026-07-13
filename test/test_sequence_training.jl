@@ -15,17 +15,22 @@ import FabricPC: GraphState, NodeState, _sample_next
     # compute_loss CE vs upstream formula: one-hot target [1 0 0], pred [0.7 0.2 0.1] → −log(0.7)
     pred = Float32[0.7 0.2 0.1]
     tgt = Float32[1 0 0]
-    st = GraphState(Dict("y" => NodeState(nothing, pred, nothing, nothing, nothing, nothing)), 1)
+    st = GraphState(
+        Dict("y" => NodeState(nothing, pred, nothing, nothing, nothing, nothing)), 1
+    )
     @test compute_loss(st, tgt, "y") ≈ -log(0.7f0) atol = 1.0f-5
-    @test compute_loss(st, tgt, "y"; loss_type = :mse) ≈ (0.3f0^2 + 0.2f0^2 + 0.1f0^2) / 3 atol = 1.0f-6
+    @test compute_loss(st, tgt, "y"; loss_type=:mse) ≈ (0.3f0^2 + 0.2f0^2 + 0.1f0^2) / 3 atol =
+        1.0f-6
 
     # batch mean: two identical rows → same scalar loss
     st2 = GraphState(
-        Dict("y" => NodeState(nothing, Float32[0.7 0.2 0.1; 0.7 0.2 0.1],
-            nothing, nothing, nothing, nothing)), 2)
+        Dict(
+            "y" => NodeState(nothing, Float32[0.7 0.2 0.1; 0.7 0.2 0.1],
+                nothing, nothing, nothing, nothing)
+        ), 2)
     @test compute_loss(st2, Float32[1 0 0; 1 0 0], "y") ≈ -log(0.7f0) atol = 1.0f-5
 
-    @test_throws ArgumentError compute_loss(st, tgt, "y"; loss_type = :bogus)
+    @test_throws ArgumentError compute_loss(st, tgt, "y"; loss_type=:bogus)
 end
 
 @testset "autoregressive trainer reduces energy + CE (step + driver)" begin
@@ -37,46 +42,55 @@ end
     y = Float32[labels[b] == c ? 1 : 0 for b in 1:B, c in 1:out_f]   # one-hot targets
 
     xn = Linear((in_f,), "x")
-    hn = Linear((hid_f,), "h"; activation = TanhActivation())
-    yn = Linear((out_f,), "y"; activation = SoftmaxActivation(), energy = CrossEntropyEnergy())
-    inference = InferenceSGD(; eta_infer = 0.1, infer_steps = 30)
-    structure = graph([xn, hn, yn], [Edge(xn, hn), Edge(hn, yn)], TaskMap(; x = xn, y = yn), inference)
+    hn = Linear((hid_f,), "h"; activation=TanhActivation())
+    yn = Linear((out_f,), "y"; activation=SoftmaxActivation(), energy=CrossEntropyEnergy())
+    inference = InferenceSGD(; eta_infer=0.1, infer_steps=30)
+    structure = graph(
+        [xn, hn, yn], [Edge(xn, hn), Edge(hn, yn)], TaskMap(; x=xn, y=yn), inference
+    )
     params = initialize_params(structure, param_rng)
     batch = Dict("x" => x, "y" => y)
 
     # train_step_autoregressive returns (params, energy, ce, state); both fall over training
-    energies = Float32[]; ces = Float32[]
+    energies = Float32[];
+    ces = Float32[]
     for _ in 1:150
-        params, e, ce, _ = train_step_autoregressive(params, 0.05, batch, structure, param_rng)
-        push!(energies, e); push!(ces, ce)
+        params, e, ce, _ = train_step_autoregressive(
+            params, 0.05, batch, structure, param_rng
+        )
+        push!(energies, e);
+        push!(ces, ce)
     end
     @test all(isfinite, energies) && all(isfinite, ces)
     @test energies[end] < 0.5f0 * energies[1]                 # energy decreased (PC learning)
     @test ces[end] < ces[1]                                   # CE / perplexity metric decreased
 
     # driver: runs, returns (params, iter_energies, epoch_results) of the right shape
-    _, iters, eres = train_autoregressive(params, structure, [batch], 0.05, 3, param_rng; verbose = false)
+    _, iters, eres = train_autoregressive(
+        params, structure, [batch], 0.05, 3, param_rng; verbose=false
+    )
     @test length(iters) == 3 && length(iters[1]) == 1
     @test length(eres) == 3
     # epoch_callback fires once per epoch with the epoch index
     _, _, eres2 = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
-        verbose = false, epoch_callback = (ep, p, s) -> ep)
+        verbose=false, epoch_callback=(ep, p, s) -> ep)
     @test eres2 == [1, 2]
 end
 
 @testset "generation sampling core _sample_next (train_autoregressive.py:299 sampling)" begin
     rng = MersenneTwister(1)
     probs = Float32[0.1 0.7 0.2]                                  # argmax = token 2
-    @test all(==(2), [_sample_next(probs, rng; top_k = 1)[1] for _ in 1:30])        # greedy
-    @test all(==(2), [_sample_next(probs, rng; temperature = 0.01)[1] for _ in 1:30]) # T→0 greedy
-    @test all(==(2), [_sample_next(probs, rng; top_p = 0.7)[1] for _ in 1:30])       # nucleus keeps {2}
-    @test Set(_sample_next(probs, rng; top_p = 0.85)[1] for _ in 1:80) ⊆ Set([2, 3]) # nucleus {2,3}
+    @test all(==(2), [_sample_next(probs, rng; top_k=1)[1] for _ in 1:30])        # greedy
+    @test all(==(2), [_sample_next(probs, rng; temperature=0.01)[1] for _ in 1:30]) # T→0 greedy
+    @test all(==(2), [_sample_next(probs, rng; top_p=0.7)[1] for _ in 1:30])       # nucleus keeps {2}
+    @test Set(_sample_next(probs, rng; top_p=0.85)[1] for _ in 1:80) ⊆ Set([2, 3]) # nucleus {2,3}
     # distribution fidelity over many draws
-    pr = Float32[0.2 0.3 0.5]; cnt = zeros(Int, 3)
+    pr = Float32[0.2 0.3 0.5];
+    cnt = zeros(Int, 3)
     for _ in 1:4000
         cnt[_sample_next(pr, rng)[1]] += 1
     end
     @test all(abs.(cnt ./ 4000 .- [0.2, 0.3, 0.5]) .< 0.04)
     # batched: independent per-row greedy
-    @test _sample_next(Float32[0.9 0.05 0.05; 0.05 0.05 0.9], rng; top_k = 1) == [1, 3]
+    @test _sample_next(Float32[0.9 0.05 0.05; 0.05 0.05 0.9], rng; top_k=1) == [1, 3]
 end

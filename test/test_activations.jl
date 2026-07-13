@@ -140,13 +140,13 @@ end
     J = jacobian(SoftmaxActivation(), x)
     @test size(J) == (1, 3, 3)
     ref = Float32[0.081925 -0.022033 -0.059892
-                  -0.022033 0.184836 -0.162803
-                  -0.059892 -0.162803 0.222695]
-    @test isapprox(J[1, :, :], ref; atol=1f-5)            # numeric parity with upstream
-    @test all(abs.(sum(J; dims=3)) .< 1f-5)               # softmax-Jacobian invariant: row sums 0
+        -0.022033 0.184836 -0.162803
+        -0.059892 -0.162803 0.222695]
+    @test isapprox(J[1, :, :], ref; atol=1.0f-5)            # numeric parity with upstream
+    @test all(abs.(sum(J; dims=3)) .< 1.0f-5)               # softmax-Jacobian invariant: row sums 0
     # diagonal must equal the diagonal `derivative` (s·(1−s)) the PC path uses
     d = derivative(SoftmaxActivation(), x)
-    @test isapprox(Float32[J[1, i, i] for i in 1:3], vec(d); atol=1f-6)
+    @test isapprox(Float32[J[1, i, i] for i in 1:3], vec(d); atol=1.0f-6)
 
     # element-wise activations: jacobian = diag(derivative), off-diagonals exactly 0
     for act in (IdentityActivation(), TanhActivation(), ReLUActivation())
@@ -155,7 +155,7 @@ end
         @test size(Je) == (2, 2, 2)
         de = derivative(act, xe) .* ones(Float32, 2, 2)
         for b in 1:2, i in 1:2, j in 1:2
-            @test isapprox(Je[b, i, j], i == j ? de[b, i] : 0.0f0; atol=1f-6)
+            @test isapprox(Je[b, i, j], i == j ? de[b, i] : 0.0f0; atol=1.0f-6)
         end
     end
 end

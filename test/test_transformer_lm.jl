@@ -43,7 +43,7 @@ import FabricPC: run_inference, initialize_graph_state
     # ab_experiment.py:12, every train_*.py docstring). Plain SGD at lr=0.02 DIVERGES on a transformer
     # (weights -> 1e7 -> NaN by step ~4); Adam's per-parameter adaptive step is what makes attention
     # trainable. With this, E drops ~191 -> 8 over 50 steps.
-    opt = AdamW(params; lr = 1.0f-3, weight_decay = 0.1f0)
+    opt = AdamW(params; lr=1.0f-3, weight_decay=0.1f0)
     energies = Float32[]
     ces = Float32[]
     for _ in 1:50
@@ -57,8 +57,12 @@ import FabricPC: run_inference, initialize_graph_state
 
     # (c) greedy generation: deterministic across RNGs, correct shapes (1-D and 2-D).
     prompt1 = [1, 2, 3]
-    g1a = generate_autoregressive(params, structure, prompt1, 4, MersenneTwister(1); top_k=1)
-    g1b = generate_autoregressive(params, structure, prompt1, 4, MersenneTwister(999); top_k=1)
+    g1a = generate_autoregressive(
+        params, structure, prompt1, 4, MersenneTwister(1); top_k=1
+    )
+    g1b = generate_autoregressive(
+        params, structure, prompt1, 4, MersenneTwister(999); top_k=1
+    )
     @test length(g1a) == length(prompt1) + 4
     @test g1a[1:3] == prompt1                          # prompt preserved as a prefix
     @test g1a == g1b                                   # greedy ⇒ RNG-independent

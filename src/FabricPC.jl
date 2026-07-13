@@ -53,7 +53,8 @@ include("training/train.jl")
 include("training/adam.jl")
 include("training/natural_gradients.jl")
 include("training/train_autoregressive.jl")
-export create_causal_mask, compute_loss, train_step_autoregressive, train_autoregressive, generate_autoregressive
+export create_causal_mask,
+    compute_loss, train_step_autoregressive, train_autoregressive, generate_autoregressive
 include("models/transformer_lm.jl")
 export transformer_lm
 include("jit_flat.jl")

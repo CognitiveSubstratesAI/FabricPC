@@ -20,7 +20,7 @@ using Random
 
 # ── Build the MDN as a predictive-coding graph ───────────────────────────────
 function mdn_graph(; context_dim::Int=2, num_obj::Int=2, hidden::Int=16,
-                   infer_steps::Int=30, eta_infer::Float64=0.1)
+    infer_steps::Int=30, eta_infer::Float64=0.1)
     xn = Linear((context_dim,), "x")                                   # context input (source)
     h1 = Linear((hidden,), "h1"; activation=ReLUActivation())          # trunk layer 1
     h2 = Linear((hidden,), "h2"; activation=ReLUActivation())          # trunk layer 2
@@ -29,7 +29,7 @@ function mdn_graph(; context_dim::Int=2, num_obj::Int=2, hidden::Int=16,
         [xn, h1, h2, yn],
         [Edge(xn, h1), Edge(h1, h2), Edge(h2, yn)],
         TaskMap(; x=xn, y=yn),
-        InferenceSGD(; eta_infer=eta_infer, infer_steps=infer_steps),
+        InferenceSGD(; eta_infer=eta_infer, infer_steps=infer_steps)
     )
 end
 
@@ -46,8 +46,10 @@ function make_data(n::Int)
     X = zeros(Float32, 2n, 2)
     Y = zeros(Float32, 2n, 2)
     for i in 1:n
-        X[i, :] .= _CTX1; Y[i, :] .= _CONE1
-        X[n + i, :] .= _CTX2; Y[n + i, :] .= _CONE2
+        X[i, :] .= _CTX1;
+        Y[i, :] .= _CONE1
+        X[n + i, :] .= _CTX2;
+        Y[n + i, :] .= _CONE2
     end
     X, Y
 end
@@ -71,18 +73,26 @@ function run_mdn_demo(; n::Int=32, epochs::Int=200, lr::Float64=0.02, seed::Int=
     ev0 = evaluate_pcn(params, structure, loader; rng=MersenneTwister(7))
     params, iters, _ = train_pcn(
         params, structure, loader, lr; num_epochs=epochs,
-        rng=MersenneTwister(7), verbose=false,
+        rng=MersenneTwister(7), verbose=false
     )
     ev1 = evaluate_pcn(params, structure, loader; rng=MersenneTwister(7))
 
     # Predict the cone for each prototype context (this is what gets exposed as atoms).
     proto = permutedims(hcat(_CTX1, _CTX2))                # (2, 2): row1=ctx1, row2=ctx2
-    cones = predict(params, structure, Dict("x" => proto), MersenneTwister(2); output_task="y")
+    cones = predict(
+        params, structure, Dict("x" => proto), MersenneTwister(2); output_task="y"
+    )
 
     println("── SubRep MDN (FabricPC, PC-trained) ──")
-    println("  energy:  ", round(ev0["energy"]; digits=4), " → ", round(ev1["energy"]; digits=4))
-    println("  cone | ctx-1 (raid):  ", round.(cones[1, :]; digits=3), "  (want ≈ ", _CONE1, ")")
-    println("  cone | ctx-2 (trade): ", round.(cones[2, :]; digits=3), "  (want ≈ ", _CONE2, ")")
+    println(
+        "  energy:  ", round(ev0["energy"]; digits=4), " → ", round(ev1["energy"]; digits=4)
+    )
+    println(
+        "  cone | ctx-1 (raid):  ", round.(cones[1, :]; digits=3), "  (want ≈ ", _CONE1, ")"
+    )
+    println(
+        "  cone | ctx-2 (trade): ", round.(cones[2, :]; digits=3), "  (want ≈ ", _CONE2, ")"
+    )
     # Exposed as atoms for the symbolic gate (§2.4) — ℓ=0, u = learned support values.
     lo = zeros(Float32, size(cones, 2))
     println("  atom | ", cone_to_atom("raid", lo, cones[1, :]))
@@ -115,31 +125,45 @@ simplex_margin(dr::Real, dn::AbstractVector) = Float32(dr) + minimum(dn)
 const _OPT1 = Float32[1.0, -0.3]    # ctx-1 option: helps motive-1, hurts motive-2
 const _OPT2 = Float32[-0.3, 1.0]    # ctx-2 option: the mirror
 
-function run_coupled_demo(; n::Int=32, epochs::Int=300, lr::Float64=0.02, seed::Int=0, eps::Float32=0.05f0)
+function run_coupled_demo(;
+    n::Int=32, epochs::Int=300, lr::Float64=0.02, seed::Int=0, eps::Float32=0.05f0
+)
     cone1 = cone_to_admit(_OPT1)            # gate-derived target [1, 0]
     cone2 = cone_to_admit(_OPT2)            # gate-derived target [0, 1]
-    X = zeros(Float32, 2n, 2); Y = zeros(Float32, 2n, 2)
+    X = zeros(Float32, 2n, 2);
+    Y = zeros(Float32, 2n, 2)
     for i in 1:n
-        X[i, :] .= _CTX1; Y[i, :] .= cone1
-        X[n + i, :] .= _CTX2; Y[n + i, :] .= cone2
+        X[i, :] .= _CTX1;
+        Y[i, :] .= cone1
+        X[n + i, :] .= _CTX2;
+        Y[n + i, :] .= cone2
     end
     structure = mdn_graph()
     params = initialize_params(structure, MersenneTwister(seed))
     loader = [Dict("x" => X, "y" => Y)]
     params, iters, _ = train_pcn(
-        params, structure, loader, lr; num_epochs=epochs, rng=MersenneTwister(7), verbose=false
+        params, structure, loader, lr; num_epochs=epochs, rng=MersenneTwister(7),
+        verbose=false
     )
     proto = permutedims(hcat(_CTX1, _CTX2))
-    cones = predict(params, structure, Dict("x" => proto), MersenneTwister(2); output_task="y")
+    cones = predict(
+        params, structure, Dict("x" => proto), MersenneTwister(2); output_task="y"
+    )
     u1 = cones[1, :]
     m_simplex = simplex_margin(0.0, _OPT1)               # naive full-simplex cone
     m_learned = box_margin(0.0, _OPT1, u1)               # the MDN's co-learned cone
     println("── Admission-COUPLED MDN (cone derived from the gate) ──")
-    println("  ctx-1 learned cone u = ", round.(u1; digits=3), "  (gate-derived target ", cone1, ")")
+    println(
+        "  ctx-1 learned cone u = ",
+        round.(u1; digits=3),
+        "  (gate-derived target ",
+        cone1,
+        ")"
+    )
     println("  option Δn=", _OPT1, ":")
     println("    full-simplex margin ", round(m_simplex; digits=3), "  → REJECT")
     println("    learned-cone margin ", round(m_learned; digits=3),
-            m_learned >= -eps ? "  → ADMIT (co-learned geometry enables it)" : "  → reject")
+        m_learned >= -eps ? "  → ADMIT (co-learned geometry enables it)" : "  → reject")
     return (; iters, cones, m_learned, m_simplex, eps)
 end
 
@@ -166,7 +190,7 @@ function dirichlet_sample(alphas::AbstractVector, rng)
 end
 
 function pds_cvar(dr::Real, dn::AbstractVector, alphas::AbstractVector;
-                  confidence::Float64=0.1, nsamples::Int=4000, rng=MersenneTwister(0))
+    confidence::Float64=0.1, nsamples::Int=4000, rng=MersenneTwister(0))
     vals = Vector{Float32}(undef, nsamples)
     for s in 1:nsamples
         w = dirichlet_sample(alphas, rng)
@@ -186,8 +210,20 @@ function run_cvar_demo()
     c2 = pds_cvar(0.0, opt, a2; rng=MersenneTwister(1))
     println("── PDS-CVaR gate (distribution-aware over the MDN's α) ──")
     println("  option Δn=", opt, ":")
-    println("    α=", a1, " (motive-1 weighted): CVaR ", round(c1; digits=3), c1 >= 0 ? "  → ADMIT" : "  → reject")
-    println("    α=", a2, " (motive-2 weighted): CVaR ", round(c2; digits=3), c2 >= 0 ? "  → ADMIT" : "  → reject")
+    println(
+        "    α=",
+        a1,
+        " (motive-1 weighted): CVaR ",
+        round(c1; digits=3),
+        c1 >= 0 ? "  → ADMIT" : "  → reject"
+    )
+    println(
+        "    α=",
+        a2,
+        " (motive-2 weighted): CVaR ",
+        round(c2; digits=3),
+        c2 >= 0 ? "  → ADMIT" : "  → reject"
+    )
     return (; c1, c2)
 end
 
@@ -215,7 +251,7 @@ function run_pc_native_gate_demo(; eps::Float32=0.05f0, lr::Float32=0.5f0, steps
     println("── PC-native gate: follow the local L_CDS error (§3) ──")
     println("  cone u: [1.0, 1.0] → ", round.(u; digits=3))
     println("  margin: ", round(m0; digits=3), " (reject) → ", round(m1; digits=3),
-            m1 >= -eps ? "  → ADMIT (gate satisfied by local descent)" : "  → reject")
+        m1 >= -eps ? "  → ADMIT (gate satisfied by local descent)" : "  → reject")
     return (; m0, m1, u, eps)
 end
 
@@ -230,12 +266,14 @@ end
 # preventing the degenerate collapse to a point that admits everything. Combined
 # objective L = L_CDS − λ·Σ log(u_i); ∂/∂u_i = ∂L_CDS/∂u_i − λ/u_i (the reward pushes
 # every bound UP, away from 0 — so the cone stays as LARGE as admission allows).
-function lcds_grad_reg(dr::Real, dn::AbstractVector, u::AbstractVector, eps::Float32, lam::Float32)
+function lcds_grad_reg(
+    dr::Real, dn::AbstractVector, u::AbstractVector, eps::Float32, lam::Float32
+)
     lcds_grad(dr, dn, u, eps) .- lam ./ (u .+ 1.0f-3)
 end
 
 function run_lcds_cotrain_demo(; epochs::Int=250, lr_pc::Float64=0.3, eta::Float32=1.0f0,
-                               inner::Int=3, lam::Float32=0.03f0, eps::Float32=0.07f0, seed::Int=0)
+    inner::Int=3, lam::Float32=0.03f0, eps::Float32=0.07f0, seed::Int=0)
     X = permutedims(hcat(_CTX1, _CTX2))              # (2,2): two contexts
     opts = (_OPT1, _OPT2)                            # each context's should-admit option
     structure = mdn_graph()
@@ -244,19 +282,27 @@ function run_lcds_cotrain_demo(; epochs::Int=250, lr_pc::Float64=0.3, eta::Float
         u = predict(params, structure, Dict("x" => X), MersenneTwister(ep); output_task="y")
         T = similar(u)
         for i in 1:size(u, 1)                        # pseudo-target = L_CDS + volume-reward descent
-            T[i, :] = clamp.(u[i, :] .- eta .* lcds_grad_reg(0.0, opts[i], u[i, :], eps, lam), 0.0f0, 1.0f0)
+            T[i, :] = clamp.(
+                u[i, :] .- eta .* lcds_grad_reg(0.0, opts[i], u[i, :], eps, lam),
+                0.0f0,
+                1.0f0
+            )
         end
         params, _, _ = train_pcn(params, structure, [Dict("x" => X, "y" => T)], lr_pc;
-                                 num_epochs=inner, rng=MersenneTwister(ep), verbose=false)
+            num_epochs=inner, rng=MersenneTwister(ep), verbose=false)
     end
     cones = predict(params, structure, Dict("x" => X), MersenneTwister(99); output_task="y")
     m1 = box_margin(0.0, _OPT1, cones[1, :])
     m2 = box_margin(0.0, _OPT2, cones[2, :])
-    println("── §2.6 L_CDS admission-coupled co-training (NO cone targets — gate loss only) ──")
-    println("  ctx-1 cone ", round.(cones[1, :]; digits=3), "  margin ", round(m1; digits=3),
-            m1 >= -eps ? "  → ADMIT" : "  → reject")
-    println("  ctx-2 cone ", round.(cones[2, :]; digits=3), "  margin ", round(m2; digits=3),
-            m2 >= -eps ? "  → ADMIT" : "  → reject")
+    println(
+        "── §2.6 L_CDS admission-coupled co-training (NO cone targets — gate loss only) ──"
+    )
+    println("  ctx-1 cone ", round.(cones[1, :]; digits=3), "  margin ",
+        round(m1; digits=3),
+        m1 >= -eps ? "  → ADMIT" : "  → reject")
+    println("  ctx-2 cone ", round.(cones[2, :]; digits=3), "  margin ",
+        round(m2; digits=3),
+        m2 >= -eps ? "  → ADMIT" : "  → reject")
     return (; cones, m1, m2, eps)
 end
 
@@ -304,5 +350,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     @assert l.m2 >= -l.eps "ctx-2 option should be admitted"
     @assert l.cones[1, 1] > l.cones[1, 2] "ctx-1 cone should keep motive-1 weight (weakest-adequate)"
     @assert l.cones[2, 2] > l.cones[2, 1] "ctx-2 cone should keep motive-2 weight (weakest-adequate)"
-    println("SUBREP L_CDS CO-TRAIN OK — weakest-adequate geometry learned from admission decisions")
+    println(
+        "SUBREP L_CDS CO-TRAIN OK — weakest-adequate geometry learned from admission decisions"
+    )
 end

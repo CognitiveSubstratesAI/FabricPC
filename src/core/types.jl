@@ -53,31 +53,32 @@ end
 # the Reactant JIT path. `SoA` is a thin NamedTuple-backed container exposing the Dict-like *read*
 # API the codebase already uses (`["W_q"]`, `keys`, `values`, iteration), so node forwards and most
 # call sites are UNCHANGED; only construction converts Dict→SoA.
-struct SoA{NT<:NamedTuple}
+struct SoA{NT <: NamedTuple}
     nt::NT
 end
 SoA(d::AbstractDict) = SoA(NamedTuple{Tuple(Symbol(k) for k in keys(d))}(Tuple(values(d))))
 Base.getindex(s::SoA, k::AbstractString) = s.nt[Symbol(k)]
-Base.getindex(s::SoA, k::Symbol)         = s.nt[k]
-Base.get(s::SoA, k::AbstractString, default) = haskey(s.nt, Symbol(k)) ? s.nt[Symbol(k)] : default
-Base.get(s::SoA, k::Symbol, default)         = haskey(s.nt, k) ? s.nt[k] : default
-Base.haskey(s::SoA, k::AbstractString)   = haskey(s.nt, Symbol(k))
+Base.getindex(s::SoA, k::Symbol) = s.nt[k]
+Base.get(s::SoA, k::AbstractString, default) =
+    haskey(s.nt, Symbol(k)) ? s.nt[Symbol(k)] : default
+Base.get(s::SoA, k::Symbol, default) = haskey(s.nt, k) ? s.nt[k] : default
+Base.haskey(s::SoA, k::AbstractString) = haskey(s.nt, Symbol(k))
 # Key→String conversion (jl_cstr_to_string) is a foreigncall Zygote cannot differentiate. SoA keys
 # are STRUCTURAL — they never depend on the (differentiated) numeric values — so these helpers are
 # marked `Zygote.@nograd` in FabricPCZygoteExt. That lets an autodiff'd `compute_mu` ITERATE an SoA
 # (generic nodes that sum over input edges) while gradients still flow through the values (`s.nt[i]`).
 _soa_key(nt::NamedTuple, i::Int) = String(keys(nt)[i])
-_soa_keys(nt::NamedTuple)        = String[String(k) for k in keys(nt)]
-Base.keys(s::SoA)   = _soa_keys(s.nt)
+_soa_keys(nt::NamedTuple) = String[String(k) for k in keys(nt)]
+Base.keys(s::SoA) = _soa_keys(s.nt)
 Base.values(s::SoA) = values(s.nt)
 Base.length(s::SoA) = length(s.nt)
-Base.pairs(s::SoA)  = (_soa_key(s.nt, i) => s.nt[i] for i in 1:length(s.nt))
-function Base.iterate(s::SoA, st::Int = 1)
+Base.pairs(s::SoA) = (_soa_key(s.nt, i) => s.nt[i] for i in 1:length(s.nt))
+function Base.iterate(s::SoA, st::Int=1)
     st > length(s.nt) && return nothing
     return (_soa_key(s.nt, st) => s.nt[st], st + 1)
 end
 
-struct NodeParams{W<:SoA, B<:SoA}
+struct NodeParams{W <: SoA, B <: SoA}
     weights::W
     biases::B
 end
