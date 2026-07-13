@@ -117,7 +117,9 @@ export NodeParams,
 # muPC (Phase C)
 export MuPCConfig, MuPCScalingFactors, compute_mupc_scalings
 # Inference / learning
-export InferenceSGD, run_inference, inference_step, compute_local_weight_gradients
+export InferenceSGD,
+    InferenceSGDNormClip, run_inference, inference_step,
+    compute_local_weight_gradients
 # Assembly + init
 export graph,
     TaskMap,

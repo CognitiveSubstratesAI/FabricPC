@@ -29,4 +29,5 @@ using Zygote
     include("test_sequence_training.jl")        # autoregressive/sequence trainer (port phases)
     include("test_transformer_lm.jl")           # assembled transformer LM graph (e2e)
     include("test_char_dataloader.jl")          # C-03: Tiny Shakespeare char loader (offline)
+    include("test_inference_normclip.jl")       # C-05: InferenceSGDNormClip
 end
