@@ -111,6 +111,10 @@ export SlotSpec, SlotRef, Edge, slot
 export AbstractNode, Linear, IdentityNode, SkipConnection, LinearResidual, get_slots
 # Phase-D autodiff seam (generic local-PC gradients; activate with `using Enzyme`)
 export compute_mu, energy_kernel
+# AD backend selection (F-04, docs/AUDIT_REGISTER.md section 1): ADBackend/NoBackend/
+# ZygoteBackend/EnzymeBackend are marker types dispatched on by the Phase-D seam;
+# set_ad_backend! is the deliberate-switch escape hatch (bypasses the load-order guard).
+export ADBackend, NoBackend, ZygoteBackend, EnzymeBackend, set_ad_backend!
 # PC-transformer block (local-PC gradients via the Enzyme seam)
 export TransformerBlock
 # Decomposed (fully-PC) transformer stages

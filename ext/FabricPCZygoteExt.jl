@@ -10,7 +10,7 @@
 module FabricPCZygoteExt
 
 using FabricPC
-using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel,
+using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel, ZygoteBackend,
     _tb_causal_mask, _tb_rope_tables, _tb_varcomp, _soa_key, _soa_keys
 import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Zygote
@@ -18,9 +18,15 @@ using Zygote
 # __init__(), NOT bare top-level -- see the identical note in FabricPCEnzymeExt.jl. A
 # module-level statement mutating FabricPC._AD_BACKEND only ran once, in this extension's own
 # precompile worker process; it was never replayed on a normal load from the .ji cache, so
-# F-04's guard was a no-op in real sessions for BOTH backends, not just Enzyme.
+# F-04's guard was a no-op in real sessions for BOTH backends, not just Enzyme. Backend-TYPE
+# dispatch (2026-07-14, docs/AUDIT_REGISTER.md F-04 reopened): this extension's real
+# `_ad_param_grads`/`_ad_latent_grads` methods below are keyed on `::ZygoteBackend` as their
+# FIRST argument, a distinct type from FabricPCEnzymeExt's `::EnzymeBackend` -- the two
+# extensions' methods therefore coexist in the method table with no possibility of one
+# overwriting the other; `_AD_BACKEND[]` (set here) only selects WHICH one `_ad_param_grads`/
+# `_ad_latent_grads`'s unwrap-and-dispatch entry point routes to.
 function __init__()
-    _register_ad_backend!(:zygote)
+    _register_ad_backend!(ZygoteBackend())
 end
 
 # SoA key strings are structural (independent of the differentiated values); the Symbol->String
@@ -46,7 +52,9 @@ _fill_zero(g::NamedTuple, ref) =
             keys(ref))
     )
 
-function _ad_param_grads(node::AbstractNode, params::NodeParams, inputs, z_latent)
+function _ad_param_grads(
+    ::ZygoteBackend, node::AbstractNode, params::NodeParams, inputs, z_latent
+)
     wnt = params.weights.nt
     bnt = params.biases.nt
     gw, gb = Zygote.gradient(
@@ -56,7 +64,9 @@ function _ad_param_grads(node::AbstractNode, params::NodeParams, inputs, z_laten
     return NodeParams(SoA(_fill_zero(gw, wnt)), SoA(_fill_zero(gb, bnt)))
 end
 
-function _ad_latent_grads(node::AbstractNode, params::NodeParams, inputs, z_latent)
+function _ad_latent_grads(
+    ::ZygoteBackend, node::AbstractNode, params::NodeParams, inputs, z_latent
+)
     innt = SoA(inputs).nt
     gin, gz = Zygote.gradient(
         (inn, z) -> energy_kernel(node, params, SoA(inn), z),

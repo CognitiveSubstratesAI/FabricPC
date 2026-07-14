@@ -16,7 +16,7 @@
 module FabricPCEnzymeExt
 
 using FabricPC
-using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel
+using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel, EnzymeBackend
 import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Enzyme
 
@@ -27,8 +27,14 @@ using Enzyme
 # documented mechanism for exactly this: it runs on EVERY load, precompiled or not. Before
 # this fix, F-04's guard was a no-op in any normal (post-precompile) session -- confirmed by
 # direct probe, 2026-07-14 (see docs/AUDIT_REGISTER.md F-04 / docs/decisions.md #15 update).
+# Backend-TYPE dispatch (same date, same reopened F-04): this extension's real
+# `_ad_param_grads`/`_ad_latent_grads` methods below are keyed on `::EnzymeBackend` as their
+# FIRST argument, a distinct type from FabricPCZygoteExt's `::ZygoteBackend` -- the two
+# extensions' methods coexist in the method table with no possibility of one overwriting the
+# other; `_AD_BACKEND[]` (set here) only selects WHICH one the unwrap-and-dispatch entry
+# point in src/nodes/autodiff.jl routes to.
 function __init__()
-    _register_ad_backend!(:enzyme)
+    _register_ad_backend!(EnzymeBackend())
 end
 
 # The params weights/biases (and, for latent grads, the inputs) are threaded as `NamedTuple`s — the
@@ -43,7 +49,7 @@ _ek_w(node, wnt, bnt, inputs, z) =
 _ek_in(node, params, innt, z) = energy_kernel(node, params, SoA(innt), z)
 
 function _ad_param_grads(
-    node::AbstractNode, params::NodeParams, inputs, z_latent
+    ::EnzymeBackend, node::AbstractNode, params::NodeParams, inputs, z_latent
 )
     wnt = params.weights.nt
     bnt = params.biases.nt
@@ -58,7 +64,7 @@ function _ad_param_grads(
 end
 
 function _ad_latent_grads(
-    node::AbstractNode, params::NodeParams, inputs, z_latent
+    ::EnzymeBackend, node::AbstractNode, params::NodeParams, inputs, z_latent
 )
     innt = SoA(inputs).nt                         # Dict inputs (eager) → NamedTuple for Enzyme
     dinnt = map(zero, innt)

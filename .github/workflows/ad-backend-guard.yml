@@ -1,0 +1,57 @@
+# AD Backend Guard Regression (nightly) — docs/AUDIT_REGISTER.md F-04, docs/decisions.md
+# #15/#19/#23. Exercises `test/test_autodiff_backend_registration.jl`, the regression test for
+# the dual-AD-backend load footgun (`using Zygote` + `using Enzyme` in one session silently
+# collided on the same gradient-seam dispatch, with an opaque LLVM abort as the only symptom).
+# That test is gated behind `FABRICPC_AD_BACKEND_SUBPROCESS_TESTS=1` (opt-in, NOT part of the
+# default `test/runtests.jl` run in the main `CI.yml` workflow) because it spawns up to 5
+# genuinely fresh `julia` subprocesses to reproduce a precompile-cache-boundary bug that an
+# already-warm test process cannot exercise — real cold-start/precompile cost (~7 minutes),
+# not appropriate for every PR.
+#
+# The ORIGINAL fix for this bug (`c8fb541`) was marked "VERIFIED CLOSED" but turned out to be a
+# complete no-op in real sessions (bare top-level code instead of `__init__()` — never actually
+# ran outside its own precompile worker). A ROUND-1 fix (`68a6154`, moving the call into
+# `__init__()`) was itself re-audited the same investigation and found to only make the guard
+# RUN, not PREVENT anything (a second, independent bug — see docs/AUDIT_REGISTER.md F-04). Two
+# genuinely broken "fixes" in a row for the same bug, each initially believed sufficient, is
+# exactly the failure mode this workflow exists to catch going forward: this test file is the
+# only thing that would have caught either regression, and it must never again go unexercised
+# after a "closed" milestone. Runs nightly + on every push to main (catches a regression within
+# a day of landing) + on-demand via workflow_dispatch. Deliberately NOT run on pull_request —
+# see above.
+name: AD Backend Guard Regression (nightly)
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ad-backend-guard:
+    name: F-04 dual AD-backend guard (subprocess regression, Julia ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.12'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+          arch: x64
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          # Opts test/runtests.jl into the F-04 subprocess block (see file header comment above);
+          # off by default in the main CI.yml `test` job for exactly this reason.
+          FABRICPC_AD_BACKEND_SUBPROCESS_TESTS: '1'

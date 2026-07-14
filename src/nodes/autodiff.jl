@@ -74,42 +74,80 @@ const _ENZYME_HINT =
     "FabricPC: this node uses the Phase-D autodiff gradient seam — run `using Zygote` " *
     "(works on transformer/attention) or `using Enzyme` (simple nodes) to activate it."
 
-# F-04 dual-backend load guard: FabricPCZygoteExt and FabricPCEnzymeExt implement the
-# IDENTICAL `_ad_param_grads`/`_ad_latent_grads` hooks (see decisions.md #19) — they
-# cannot safely coexist, since the second-loaded extension silently overrides the
-# first's dispatch with no warning, and Enzyme aborts (opaque LLVM crash, not a
-# catchable Julia error) on the multi-head-attention block that Zygote handles fine.
-# The varargs fallback above only catches "neither backend loaded yet"; it can never
-# fire once either extension has registered a fully-specific method. This registers
-# WHICH backend loaded first and raises immediately (at `using X` time, not at the
-# first mismatched call) if the other one tries to load afterward in the same session.
-const _AD_BACKEND = Ref{Symbol}(:none)
+# F-04 dual-backend load guard — BACKEND-TYPE DISPATCH (2026-07-14, replaces a Symbol-Ref
+# design that only ever LOGGED the conflict, never prevented it — see docs/AUDIT_REGISTER.md
+# F-04, reopened). The old design had FabricPCZygoteExt/FabricPCEnzymeExt both define the
+# IDENTICAL `_ad_param_grads(::AbstractNode, ::NodeParams, inputs, z_latent)` signature — a
+# genuine method OVERWRITE the second-loaded extension wins unconditionally, regardless of
+# whether the Ref-based guard's `error()` fired (module method definitions are installed while
+# RESTORING the module, which precedes `__init__` — by the time the guard runs, the overwrite
+# has already happened; and `__init__` errors are swallowed by Julia's own extension-loading
+# machinery, never reaching the `using X` call site as a catchable exception either way).
+#
+# This design makes the collision STRUCTURALLY IMPOSSIBLE instead of relying on the guard
+# firing in time: each backend's real gradient method is keyed on a DISTINCT first-argument
+# TYPE (`ZygoteBackend`/`EnzymeBackend`), so both methods coexist harmlessly in the method
+# table — there is nothing to overwrite. Dispatch instead goes through `_AD_BACKEND[]`, a
+# Ref holding WHICH backend is actually selected; `_register_ad_backend!` only ever
+# REASSIGNS that Ref when there's no conflict, so even though its `error()` still gets
+# swallowed by `__init__`'s error handling, the assignment it guards genuinely never
+# executes on conflict — the Ref stays on the first-loaded backend, protected by control
+# flow/state, not by exception propagation reaching the caller.
+abstract type ADBackend end
+struct NoBackend <: ADBackend end
+struct ZygoteBackend <: ADBackend end
+struct EnzymeBackend <: ADBackend end
 
-function _register_ad_backend!(name::Symbol)
-    if _AD_BACKEND[] !== :none && _AD_BACKEND[] !== name
+const _AD_BACKEND = Ref{ADBackend}(NoBackend())
+
+_backend_pkg_name(::ZygoteBackend) = "Zygote"
+_backend_pkg_name(::EnzymeBackend) = "Enzyme"
+_backend_pkg_name(::NoBackend) = "(none)"
+
+function _register_ad_backend!(backend::ADBackend)
+    current = _AD_BACKEND[]
+    if !(current isa NoBackend) && typeof(current) !== typeof(backend)
         error(
-            "FabricPC: both Zygote and Enzyme AD backends are loaded in this session " *
-            "(loaded $(_AD_BACKEND[]) first, then $name). They implement the SAME " *
-            "gradient seam and cannot coexist: the second one silently overrides the " *
-            "first's dispatch, and Enzyme aborts with an opaque LLVM crash on nodes " *
-            "(e.g. TransformerBlock) that only Zygote handles. Use exactly ONE of " *
-            "`using Zygote` / `using Enzyme` per Julia session — restart to switch."
+            "FabricPC: both $(_backend_pkg_name(current)) and $(_backend_pkg_name(backend)) " *
+            "AD backends are loaded in this session (loaded $(_backend_pkg_name(current)) " *
+            "first). They implement the same gradient seam; the active backend stays " *
+            "$(_backend_pkg_name(current)) (this registration was rejected, not applied) " *
+            "since Enzyme aborts with an opaque LLVM crash on nodes (e.g. TransformerBlock) " *
+            "that only Zygote handles. Use exactly ONE of `using Zygote` / `using Enzyme` " *
+            "per session, or call `FabricPC.set_ad_backend!($(typeof(backend))())` to " *
+            "deliberately switch."
         )
     end
-    _AD_BACKEND[] = name
+    _AD_BACKEND[] = backend
     return nothing
 end
 
-# Varargs fallbacks (NOT the typed signature the extension defines): a same-
-# signature method in the ext would be a forbidden precompile-time overwrite. The
-# ext adds strictly-more-specific `(::AbstractNode, ::NodeParams, inputs, z_latent)`
-# methods that win dispatch when Enzyme is loaded; otherwise these raise the hint.
+"""
+    set_ad_backend!(backend::ADBackend)
 
-"""Reverse-mode `∂(energy_kernel)/∂params`; real method in FabricPCEnzymeExt."""
-_ad_param_grads(args...) = error(_ENZYME_HINT)
+Deliberately select the active AD backend (`FabricPC.ZygoteBackend()` or
+`FabricPC.EnzymeBackend()`), bypassing the load-order conflict guard in
+`_register_ad_backend!`. For advanced use only — a normal session should just
+`using Zygote` (or `using Enzyme`) once and never call this. Both backends' gradient
+methods coexist safely in the method table regardless of which is loaded (they dispatch
+on distinct backend-marker types); this only changes WHICH one `_ad_param_grads`/
+`_ad_latent_grads` route to.
+"""
+function set_ad_backend!(backend::ADBackend)
+    _AD_BACKEND[] = backend
+    return nothing
+end
 
-"""Reverse-mode `∂(energy_kernel)/∂(inputs, z_latent)`; real method in FabricPCEnzymeExt."""
-_ad_latent_grads(args...) = error(_ENZYME_HINT)
+# Unwrap-and-dispatch: routes through whichever backend is currently registered. Real
+# per-backend methods (keyed on the FIRST argument's type = the backend marker) live in
+# FabricPCZygoteExt/FabricPCEnzymeExt; only `NoBackend` (neither loaded) hits the hint here.
+_ad_param_grads(node, params, inputs, z_latent) =
+    _ad_param_grads(_AD_BACKEND[], node, params, inputs, z_latent)
+_ad_param_grads(::NoBackend, args...) = error(_ENZYME_HINT)
+
+_ad_latent_grads(node, params, inputs, z_latent) =
+    _ad_latent_grads(_AD_BACKEND[], node, params, inputs, z_latent)
+_ad_latent_grads(::NoBackend, args...) = error(_ENZYME_HINT)
 
 # gather_inputs builds Dict{String,Any}; concrete-ify so Enzyme stays type-stable.
 # Rank is inferred from the inputs (rank-2 (batch,features) for dense nodes, rank-3
