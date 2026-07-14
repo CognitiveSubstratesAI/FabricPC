@@ -18,14 +18,15 @@
 #   single-call BLAS=1: stock 153.3ms -> hoist/prune 29.6ms (5.2x) -> in-place 5.1ms (5.8x more) = 30x
 #   in-place is FLOP/bandwidth-LIMITED: ~6% above the arithmetic floor (F/26.82 ~= 4.79ms) -- NOT
 #   "~ the FLOP ceiling" (that would be a category error: in-place eliminates 0 FLOPs, a different axis).
-#   XLA-vs-eager (SLOPE test, marshalling-free -- decisions.md §28 addendum 3, corrected): XLA per-step
-#   compute 0.127 ms/step is ~15-20% FASTER than eager 0.148-0.154. Eager's total only wins <~39 steps
-#   because XLA pays ~2.5ms/call marshalling (GraphState->ConcreteRArray, naive-usage not fundamental).
-#   So XLA IS faster on compute; and MNIST is the topology most favorable to eager (98.7% FLOP
-#   elimination). Do NOT generalize "eager beats XLA" -- measure transformer_lm() first.
+#   XLA-vs-eager (SLOPE test, marshalling-free -- decisions.md §28 addendum 3): with the loop FUSED
+#   (below), eager per-step = 0.1239 (BLAS=1) / 0.1272 (BLAS=2) ms/step == XLA's 0.1272 -- EXACT PARITY.
+#   Both memory-BOUND (~10 GFLOP/s on 1.31 MFLOP/step). XLA's earlier 21% edge was FUSION, not compute:
+#   the unfused loop did 3 passes over 256x128 materializing lg_h twice; XLA auto-fuses. Fused eager
+#   matches it by hand. So compiled buys NOTHING on compute for this shape; its value is auto-fusion of
+#   COMPLEX chains (transformer, untested) + scaling (@trace while) + GPU. Measure transformer_lm() first.
 #   Run: julia --project=.warm/zygote_env this-file.  [NB: earlier headers cited contaminated
-#   223/9.26/24.1x numbers (3 concurrent suites) and a "MATCHES/BEATS XLA" total-time claim confounded
-#   by marshalling -- both superseded by the above.]
+#   223/9.26/24.1x numbers and a "MATCHES/BEATS XLA" / "XLA faster per-step" claim -- both superseded:
+#   the first was contention, the second was an UNFUSED eager lane (3rd un-exhausted-lane artifact).]
 using FabricPC
 using FabricPC: run_inference
 import Random
@@ -56,19 +57,20 @@ function main()
     eta = 0.1f0
     pre_h  = Matrix{Float32}(undef, B, DH); z_mu_h = Matrix{Float32}(undef, B, DH)
     z_mu_y = Matrix{Float32}(undef, B, DY); pgy    = Matrix{Float32}(undef, B, DY)
-    igr    = Matrix{Float32}(undef, B, DH); lg_h   = Matrix{Float32}(undef, B, DH)
+    igr    = Matrix{Float32}(undef, B, DH)   # lg_h eliminated by the fused update below
     Whyt = permutedims(Why)
 
     function relax!(z_h)
         # hoist: z_mu_h = tanh(Xc*Wxh + bh) is loop-invariant (Xc clamped) -- computed ONCE
         mul!(pre_h, Xc, Wxh); pre_h .+= bh; z_mu_h .= tanh.(pre_h)
         @inbounds for _ in 1:20
-            mul!(z_mu_y, z_h, Why); z_mu_y .+= by      # y forward (identity)
-            pgy .= z_mu_y .- Yc                         # pre_grad_y = (z_mu_y - Y)·f'(=1)
-            mul!(igr, pgy, Whyt)                        # input-grad y->h (no temp)
-            lg_h .= z_h .- z_mu_h                        # self_grad_h  (Gaussian: z - z_mu)
-            lg_h .+= igr                                # + downstream y contribution
-            @. z_h = z_h - eta * lg_h                    # SGD update, fused in-place
+            mul!(z_mu_y, z_h, Why)                       # y forward (identity)
+            @. pgy = z_mu_y + by - Yc                     # pre_grad_y, FUSED (one pass, not two)
+            mul!(igr, pgy, Whyt)                          # input-grad y->h (no temp)
+            # FUSED update: self_grad_h (z-z_mu) + downstream igr, then SGD, in ONE pass over z_h.
+            # (unfused = 3 passes materializing lg_h twice; fusion is the ~45% memory-traffic win
+            #  that brings eager to EXACT parity with XLA's auto-fusion -- decisions.md §28 add. 3.)
+            @. z_h = z_h - eta * (z_h - z_mu_h + igr)
         end
         return z_h
     end
@@ -88,9 +90,13 @@ function main()
     t_opt = tmin(() -> run_inference(params, init, clamps, st; optimize=true))
     t_ip  = tmin(() -> relax!(copy(z0)))
     println("single-call ms:  stock=", round(t_ref*1e3, digits=1),
-            "  hoist/prune=", round(t_opt*1e3, digits=1), " (", round(t_ref/t_opt, digits=1), "x)",
-            "  in-place=", round(t_ip*1e3, digits=2), " (", round(t_opt/t_ip, digits=1), "x more) = ",
-            round(t_ref/t_ip, digits=1), "x total (~FLOP ceiling 26.8x)")
+            "  hoist/prune=", round(t_opt*1e3, digits=1), " (", round(t_ref/t_opt, digits=1), "x, FLOP-elimination axis)",
+            "  in-place+fused=", round(t_ip*1e3, digits=2), " (", round(t_opt/t_ip, digits=1), "x more, alloc/boxing/traffic axis)")
+    println("  NB: total is a COMBINED speedup over two orthogonal axes -- NOT bounded by the 26.8x FLOP",
+            " ceiling (that bounds only the elimination axis). The in-place path is memory-bandwidth-LIMITED",
+            " (slope 0.124-0.127 ms/step == XLA); see decisions.md §28 addendum 3.")
 end
 
-abspath(PROGRAM_FILE) == @__FILE__ && main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end
