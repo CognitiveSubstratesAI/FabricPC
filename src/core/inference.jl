@@ -217,16 +217,34 @@ method further down). `structure::GraphStructure` is not itself parametric on `c
 (`config::NamedTuple`, checked at runtime), so the dispatch is on the extracted `inference` value,
 not on `structure` directly — this is Julia's analogue of upstream's per-algorithm subclass
 override of `run_inference` (inference.py's `InferenceBase` hierarchy).
+
+`optimize=false` (default) runs the exact stock loop, byte-for-byte unchanged — this is what
+every conformance test and the whole training path use, so their behaviour is untouched. Passing
+`optimize=true` selects the algebraically-equivalent HOIST+PRUNE loop (`_run_inference_loop_opt`,
+below) for the two stateless SGD algorithms. That loop is bit-identical on every field the rest of
+the system ever CONSUMES — all unclamped nodes' `z_latent` (the actual inference result) and every
+node's `z_mu`/`error`/`energy`/`pre_activation`, hence identical downstream weight gradients and
+energy (`compute_local_weight_gradients`/`get_graph_param_gradient` recompute those from the
+converged state and never read `latent_grad`). Its ONLY observable divergence is the `latent_grad`
+of *clamped* nodes, which it leaves at zero instead of accumulating the provably-dead value that
+`update_latents` skips for clamped nodes anyway. Because a raw conformance dump (Tier C/D) DOES
+compare that scratch field, the optimization is deliberately opt-in rather than default-on — see
+`test/optimizations/test_inference_optimizations.jl` for the bit-identity oracle and
+`_hoistable_nodes`/`_run_inference_loop_opt` for the mechanics. `InferenceSGDMomentum` ignores the
+flag (falls through to its own velocity-carrying loop).
 """
 function run_inference(
     params::GraphParams,
     initial_state::GraphState,
     clamps::AbstractDict,
-    structure::GraphStructure
+    structure::GraphStructure;
+    optimize::Bool=false
 )
-    return _run_inference_loop(
-        structure.config.inference, params, initial_state, clamps, structure
-    )
+    inf = structure.config.inference
+    if optimize && (inf isa InferenceSGD || inf isa InferenceSGDNormClip)
+        return _run_inference_loop_opt(inf, params, initial_state, clamps, structure)
+    end
+    return _run_inference_loop(inf, params, initial_state, clamps, structure)
 end
 
 """Generic loop: `inference_step` (which dispatches `compute_new_latent` per node) `infer_steps`
@@ -241,6 +259,163 @@ function _run_inference_loop(
     state = initial_state
     for _ in 1:inf.infer_steps
         state = inference_step(params, state, clamps, structure)
+    end
+    return state
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOIST + PRUNE — algebraically-exact inference optimizations (opt-in via
+# `run_inference(...; optimize=true)`). Both are derived from two facts about the
+# stock loop above:
+#   PRUNE  update_latents (Phase 3) NEVER reads a clamped node's `latent_grad`
+#          (it `continue`s past clamped nodes), and compute_local_weight_gradients
+#          recomputes from the converged state without reading `latent_grad` at all.
+#          So every accumulation WRITE into a clamped node's `latent_grad` — a
+#          back-edge grad flowing into a clamped source (e.g. dE_h/dz_x → clamped x),
+#          or a clamped node's own self-grad into its own accumulator — is dead work.
+#   HOIST  a node whose in-edge sources are ALL clamped sees constant inputs across
+#          every step (clamped z_latent never changes), so its matmul-heavy forward
+#          (`pre_activation`, `z_mu`) is loop-invariant and can be computed ONCE. Its
+#          `error`/`energy`/`self_grad` still depend on its OWN (relaxing) z_latent, so
+#          those are recomputed each step from the hoisted z_mu — cheap elementwise, no
+#          matmul. And every one of its input-grads flows to a clamped source, so by
+#          PRUNE the entire back-projection (`dpre * Wᵀ`) is skipped outright.
+# Bit-identity is by construction: the hoisted `pre`/`z_mu` are the SAME operands the
+# stock loop recomputes each step (Float32 BLAS is deterministic for identical
+# operands), self-grad is recomputed from the identical (z_latent, z_mu), and the
+# accumulation ORDER into unclamped nodes is preserved (self-grad added at the node's
+# own iteration, downstream back-edges at the successor's — node_names order unchanged).
+
+"""
+    _hoistable_nodes(clamps, structure) -> Set{String}
+
+Nodes whose forward (`pre_activation`/`z_mu`) is loop-invariant AND take the plain
+`else` branch of `forward_and_latent_grads`: `in_degree > 0` (not a terminal source),
+`out_degree > 0` and unclamped (so NOT the eval/`unclamped-output` special case), and
+every in-edge source clamped (so inputs are constant and all back-edges prune away).
+"""
+function _hoistable_nodes(clamps::AbstractDict, structure::GraphStructure)
+    hoist = Set{String}()
+    for name in structure.node_names
+        info = structure.infos[name]
+        info.in_degree > 0 || continue          # terminal source: nothing to hoist
+        info.out_degree > 0 || continue          # unclamped/clamped-output branch: leave to stock path
+        haskey(clamps, name) && continue          # clamped node: handled by the prune branch, not hoisted
+        all_clamped = true
+        for edge_key in info.in_edges
+            if !haskey(clamps, structure.edges[edge_key].source)
+                all_clamped = false
+                break
+            end
+        end
+        all_clamped && push!(hoist, name)
+    end
+    return hoist
+end
+
+"""
+Phase-2 forward+accumulate with HOIST+PRUNE. `hoisted` maps each hoistable node to its
+loop-invariant forwarded `NodeState` (source of `z_mu`/`pre_activation`); `hoist` is that
+node set. Bit-identical to `forward_value_and_grad` on all consumed fields (see the block
+comment above): hoisted nodes reuse cached `z_mu`/`pre` and recompute `error`/`energy`/
+`self_grad` from the current z_latent (skipping their all-pruned back-edges); every other
+node runs the stock `forward_and_latent_grads` but skips accumulation WRITES into clamped
+targets (self-grad into a clamped node's own accumulator, and back-edge grads into clamped
+sources) — the values `update_latents` would discard.
+"""
+function _forward_value_and_grad_opt(
+    params::GraphParams,
+    state::GraphState,
+    clamps::AbstractDict,
+    structure::GraphStructure,
+    hoist::AbstractSet,
+    hoisted::AbstractDict
+)
+    for name in structure.node_names
+        node = structure.nodes[name]
+        info = structure.infos[name]
+
+        if name in hoist
+            # HOIST: reuse cached pre/z_mu; recompute the z_latent-dependent parts only.
+            cached = hoisted[name]
+            ns = state.nodes[name]
+            err = ns.z_latent .- cached.z_mu
+            ns = update_state(
+                ns; z_mu=cached.z_mu, pre_activation=cached.pre_activation, error=err
+            )
+            ns = energy_functional(node, ns)
+            self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
+            self_grad = scale_self_grad(self_grad, info.scaling_config)
+            # Hoistable ⇒ unclamped, so its own self-grad accumulation is LIVE.
+            ns = update_state(ns; latent_grad=ns.latent_grad .+ self_grad)
+            state = put_node(state, name, ns)
+            # PRUNE: all in-edge sources clamped ⇒ every back-edge grad is dead ⇒ skip entirely.
+            continue
+        end
+
+        in_data = gather_inputs(info, structure, state)
+        scaled_inputs = scale_inputs(in_data, info.scaling_config)
+
+        node_state, inedge_grads, self_grad = forward_and_latent_grads(
+            node,
+            params.nodes[name],
+            scaled_inputs,
+            state.nodes[name],
+            info,
+            haskey(clamps, name)
+        )
+
+        inedge_grads = scale_input_grads(inedge_grads, info.scaling_config)
+        self_grad = scale_self_grad(self_grad, info.scaling_config)
+        # PRUNE: a clamped node's own self-grad accumulation is never read — skip the write.
+        if !haskey(clamps, name)
+            node_state = update_state(
+                node_state; latent_grad=node_state.latent_grad .+ self_grad
+            )
+        end
+        state = put_node(state, name, node_state)
+
+        for (edge_key, grad) in inedge_grads
+            src = structure.edges[edge_key].source
+            # PRUNE: a back-edge grad flowing into a clamped source is never read — skip the write.
+            haskey(clamps, src) && continue
+            state = update_node_in_state(
+                state, src; latent_grad=state.nodes[src].latent_grad .+ grad
+            )
+        end
+    end
+    return state
+end
+
+"""Optimized generic loop (`InferenceSGD`/`InferenceSGDNormClip`): compute the hoistable nodes'
+loop-invariant forward ONCE, then run `infer_steps` of zero_grads → `_forward_value_and_grad_opt`
+→ `update_latents` (Phase 3 is unchanged; it already skips clamped nodes). See `run_inference`'s
+`optimize` kwarg and the HOIST+PRUNE block comment for the bit-identity argument."""
+function _run_inference_loop_opt(
+    inf,
+    params::GraphParams,
+    initial_state::GraphState,
+    clamps::AbstractDict,
+    structure::GraphStructure
+)
+    hoist = _hoistable_nodes(clamps, structure)
+    state = initial_state
+    # Hoisted forward computed ONCE from the clamp-set initial state. Each hoistable node's
+    # inputs are all clamped ⇒ constant for the whole loop ⇒ this pre/z_mu is exactly what the
+    # stock loop would recompute on every step.
+    hoisted = Dict{String, NodeState}()
+    for name in hoist
+        info = structure.infos[name]
+        node = structure.nodes[name]
+        in_data = gather_inputs(info, structure, state)
+        scaled_inputs = scale_inputs(in_data, info.scaling_config)
+        _, ns_fwd = forward(node, params.nodes[name], scaled_inputs, state.nodes[name])
+        hoisted[name] = ns_fwd
+    end
+    for _ in 1:inf.infer_steps
+        state = zero_grads(state, structure)
+        state = _forward_value_and_grad_opt(params, state, clamps, structure, hoist, hoisted)
+        state = update_latents(state, clamps, structure)
     end
     return state
 end

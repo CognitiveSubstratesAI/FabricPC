@@ -1681,8 +1681,21 @@ discipline — this is a four-job refactor otherwise: tracing-fix + hoist + prun
    This is also the cleanest ATTRIBUTION experiment available: eager-Julia-with vs eager-Julia-without
    isolates the *algorithmic* win from the *compilation* win, one language, no XLA, no cross-runtime
    confound. Cheapest item on the list and it de-risks steps 2–3 by proving the optimizations correct
-   before entangling them with a tracing refactor. (In progress — see the git history / a following
-   entry for the result.)
+   before entangling them with a tracing refactor. **DONE** (`run_inference(...; optimize=true)`,
+   opt-in so the stock loop stays byte-for-byte unchanged and every conformance dump is untouched;
+   `test/optimizations/test_inference_optimizations.jl` is the bit-identity oracle — 96/96, asserting
+   `.==` not `allclose` on every consumed field, that clamped-node `latent_grad` is zero-under-opt
+   but nonzero-under-stock (non-vacuous PRUNE), that the hoist set fires non-vacuously, and that
+   downstream local weight gradients are bit-identical). **Independently re-verified by execution
+   (not the implementing agent's claim): bit-identity 96/96, Tier C 100/100 unchanged, momentum
+   26/26 unchanged.** ATTRIBUTION RESULT: eager `run_inference` with-vs-without the optimizations on
+   the MNIST-MLP (B=256, 784→128→10, 20 steps, min of 3×min-of-5) = **5.9× (158.5ms → 26.9ms), pure
+   Julia, no XLA, no unrolling.** This is the decisive H1-vs-algorithmic attribution: ~5.9× of the
+   26.8× FLOP ceiling is realized by the algorithm ALONE, outside any compiler — so the compiled
+   7.87× (§11 update) is predominantly this algorithmic win that XLA performed automatically via
+   hoist+DCE on the unrolled graph, NOT a compilation-scheduling artifact. (Same eager efficiency
+   story as §11's η discussion: eager Julia's Dict-based matmuls realize ~0.22 of the FLOP ceiling
+   vs XLA's higher fraction — hence 5.9× eager vs the 7.87× compiled, both far below 26.8×.)
 2. Destructure `CompiledPlan` into plain `Int`/`Tuple` values (fixes the Reactant `SlotInfo`
    traced-type blocker from §11's update) — with dead edges already pruned and invariant forwards
    already separated at this step, so it does triple duty.
