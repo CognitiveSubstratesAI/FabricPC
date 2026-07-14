@@ -1,3 +1,9 @@
+# HOW TO RUN THIS SUITE: it `using Zygote`s at top level (below), and Zygote is a *weakdep* of
+# FabricPC (the core stays autodiff-free, decisions.md #8), so it is NOT in the root project.
+# `julia --project=. test/runtests.jl` therefore FAILS at load with "Package Zygote not found".
+# Run it with a Zygote-providing environment instead:
+#     julia --project=.warm/zygote_env test/runtests.jl          # the dev/warm env (has Zygote+NPZ)
+#   or, canonically, from a Zygote-enabled REPL:  Pkg.test("FabricPC")   # uses the [extras]/test target
 using FabricPC
 using Test
 # Load Zygote at top-level BEFORE the testset so the FabricPCZygoteExt seam (the AD backend for
