@@ -901,3 +901,107 @@ with what per-edge `forward_scale`/`topdown_grad_scale` factors are actually bui
 activation-variance/gradient-scale correction across width/depth, μP-style), not curvature/
 Hessian conditioning. Fixing `η*` itself would need something that moves `λmax`, which this
 mechanism structurally cannot reach on the monolithic family (see above).
+
+## 25. Reshaping the J-02/J-03/J-04 plan: the compiled inference loop doesn't scale yet,
+the compiled lane has a silent-optimizer-bug landmine, and how to benchmark honestly
+
+Date: 2026-07-14
+
+Three findings, made reviewing J-04's freshly-closed inference benchmark (§6/J-04) against
+what §24 just established the transformer relaxation actually needs. None of these
+invalidate J-04's own result (its 20-step config is well inside the range where the first
+finding is invisible) — they change what J-02/J-03/a future larger-scale J-04 need to do.
+
+**1. `flat_run_inference` (`src/jit_flat.jl:364-365`) UNROLLS under `Reactant.@compile` — not
+a hypothesis, read the loop: `for _ in 1:plan.inference.infer_steps`, no `@trace`.** Reactant's
+own docs are explicit that a native Julia loop over a compile-time-known trip count is
+executed AT TRACE TIME and vanishes from the traced program — each iteration becomes its own
+copy of the loop body baked into the StableHLO graph. At 12-20 steps (Tier C/D's fixtures,
+J-04's benchmark) this is invisible — a 20x-unrolled graph compiles fine and the numbers are
+correct. **But §24 measured this transformer's own relaxation needs ~50-300 steps at a stable
+η to actually converge — a 50-300x unrolled graph.** The compiled inference lane, exactly as
+built, does not scale to the configuration §24's own measurements say is needed for a
+meaningfully-converged compiled run.
+
+**The fix, and it's a genuine upgrade over upstream's own approach, not just a workaround:**
+Reactant's `@trace while` (see the package's own Sinkhorn-iteration tutorial, structurally
+identical to a PC relaxation loop — iterate a local update until a traced convergence
+condition, not a fixed count) compiles to `stablehlo.while` with a TRACED termination
+condition, i.e. relax-to-tolerance instead of relax-for-N-steps. Upstream's own
+`jax.lax.fori_loop` (`fabricpc/core/inference.py`, what Tier A-D's Python fixtures actually
+call) has a FIXED trip count — it has the exact same limitation FabricPC's current
+`flat_run_inference` does, upstream never solved this either. `@trace while` is available to
+FabricPC as a real path forward that goes beyond upstream's own compiled-inference design, not
+merely catching up to it. The real implementation work is restructuring the loop-carried state
+(`Vector{NodeState}` mutation) into the tuple/pytree shape `@trace while` needs — `jit_flat.jl`'s
+existing flatten/repack machinery (`FlatNodeParams`, `flatten_param_arrays`, §11 increment 2)
+is already built around exactly this kind of transformation, so this is an extension of an
+established pattern, not a new one.
+
+**A citable, quantitative positioning argument, sourced from the compiler's own
+documentation, not asserted:** Reactant's AD tutorial documents that differentiating through a
+traced loop has a real, explicit cost — O(N) memory by default (every iteration's
+intermediates saved for the reverse pass), O(√N) with checkpointing (trading recomputation
+for memory, their own Periodic/Binomial checkpointing schemes), and — the sharper limit —
+loops with a DYNAMIC (not compile-time-fixed) trip count "cannot be AD'd on all platforms"
+due to XLA's dynamic-shape restrictions. This is upstream/backprop's actual structural
+problem with a convergence-based (as opposed to fixed-N) relaxation loop: if you need to
+differentiate THROUGH the loop, a dynamic trip count fights the compiler. **FabricPC's local
+PC learning rule pays none of this cost** — weight gradients (`compute_local_weight_gradients`)
+are computed AT THE CONVERGED STATE only; nothing in this codebase's design ever
+differentiates through the relaxation loop itself (the weight loop is local per-node energy,
+not backprop through inference — this is the whole architectural distinction the docstrings
+in `src/nodes/autodiff.jl` already make). So PC can freely use a convergence-based `@trace
+while` relaxation (cheap: only the FORWARD pass needs to run to convergence, no reverse-mode
+memory cost scales with iteration count) in a regime where a backprop-style method
+structurally cannot without paying real memory/compile-time cost or hitting a hard platform
+limitation. This is a genuine, citable, compiler-documented axis of comparison for whatever
+positioning material eventually comes out of C-04/J-04 — not marketing, an XLA-level
+structural fact.
+
+**2. Optimisers.jl on the compiled lane closes a real landmine AND a real audit gap, and it's
+already sitting there unused.** Plain Julia scalars are compile-time CONSTANTS under Reactant
+unless explicitly tracked (`track_numbers=true` on `Reactant.to_rarray`, per the package's own
+FAQ). This codebase's hand-rolled AdamW (`src/training/`, read its actual step-counter field)
+increments a step counter `t` every call for its bias-correction term; under `@compile` that
+`t` would be frozen at its TRACE-TIME value — **every compiled training step would silently
+apply step-1's bias correction, forever, with no error, no warning, just wrong optimizer
+behavior** — a J-02/J-03 landmine to design around before, not after, building the compiled
+`train_step`. Separately (same mechanism, already relevant NOW): `InferenceSGD`'s
+`eta_infer::Float32` is also a plain scalar — also frozen under `@compile` — meaning any
+compiled inference path currently needs a fresh compile per η value. §24 just established that
+sweeping η is now a real, recurring need (production-scale sweeps are the natural §24
+follow-up), so this stops being a hypothetical the moment that sweep gets built.
+
+The fix for the optimizer half is not "add `track_numbers=true` to the hand-rolled AdamW" —
+it's **use `Optimisers.jl` instead of the hand-rolled implementation on the compiled lane**.
+`Optimisers.jl` is ALREADY a regular (non-weak) dependency (`Project.toml`'s `[deps]`) and
+already resolved in the Manifest at a version (0.4.7 locally) that ships
+`OptimisersReactantExt` — Reactant-tracing support built in, maintained upstream, not
+something this codebase needs to hand-roll compatibility for. Its state-threading design
+(`state, params = Optimisers.update(state, params, grads)`, functional state in/out) is
+already exactly the shape `@compile` needs. Switching the compiled lane to
+`Optimisers.AdamW`/`Optimisers.setup` retires the `t`-frozen-at-trace-time hazard AND
+independently closes a gap the original upstream-conformance audit named: upstream trains via
+`optax` (a generic, swappable optimizer library), while this port's PC training path only ever
+had one hand-rolled AdamW implementation — using `Optimisers.jl` (Julia's own generic,
+swappable optimizer library) on the compiled lane is the closer structural match, not just a
+Reactant-compatibility fix.
+
+**3. Benchmark on CPU; a GPU comparison needs matched XLA flags or it's not honest.** Upstream's
+own `jax_setup.py` (imported at the top of every one of upstream's example/demo scripts) sets
+three XLA flags: `xla_gpu_deterministic_ops=true`, `xla_gpu_enable_triton_gemm=false`,
+`xla_gpu_autotune_level=1` — every one of them REDUCES performance, chosen deliberately for
+reproducibility over speed. All three are `xla_gpu_*` — they do nothing on CPU. J-04's
+benchmark ran on this session's own CPU-only 2-core machine, so it was accidentally already
+fair (neither side paid or avoided these flags, because neither side is on GPU). **The
+discipline to carry forward, not a fix to anything currently wrong**: a future GPU comparison
+of Reactant against `jax.jit` MUST either apply the same three flags to the JAX side being
+compared against (matching upstream's own actual reproducibility-tuned configuration) or
+explicitly set matching `XLA_FLAGS` on the Reactant side (Reactant reads the same environment
+variable — it's the same underlying XLA) — running Reactant with default (fast) flags against
+JAX with upstream's deliberately-slowed flags would be a false win any competent reviewer
+would catch immediately by checking `jax_setup.py`. If a future benchmark's numbers look
+surprising either direction, `@code_hlo` (Reactant) vs JAX's `.lower(...).as_text()` dump
+comparable StableHLO/HLO IR from both frontends into the SAME backend — a slow result becomes
+debuggable in the IR instead of mysterious, since both sides lower to the same compiler.
