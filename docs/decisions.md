@@ -769,10 +769,13 @@ without naming it as such.
   found) languages. Tier D's transformer-LM conformance closure (§6) is scoped to
   `eta_infer=0.01`, NOT the production default; that scope limit is stated explicitly in the
   register precisely so it doesn't get inferred away.
-- **C-04 (PC-vs-backprop comparison harness, §4) must not run at `eta_infer=0.1`** without
-  first checking that config's own conditioning — otherwise the comparison benchmarks a
-  non-converged inference loop, a confound sitting directly under any resulting fidelity or
-  performance claim. Fix or document the eta config before running C-04, not after.
+- **A C-04 (PC-vs-backprop comparison harness, §4) arm built on a TRANSFORMER at
+  `eta_infer=0.1`** must not run without first checking that config's own conditioning —
+  otherwise the comparison benchmarks a non-converged inference loop, a confound sitting
+  directly under any resulting fidelity or performance claim. Scoped to the transformer only:
+  the MNIST-MLP config is contractive at its own `eta_infer=0.1` (this section's own control
+  measurement, κ≈0.902) — an MNIST-MLP C-04 arm carries no such confound and is runnable
+  today, unconfounded, without any eta fix first.
 - A production-scale `eta_infer` sweep (this session's was tiny-diagnostic-config only) is a
   reasonable, cheap follow-up — same method (perturb-and-track + power-iteration
   cross-check), applied to `char_lm_pc.jl`'s or `decomposed_lm_pc.jl`'s real dimensions.
@@ -789,3 +792,14 @@ quality. This is scoped to the monolithic `TransformerBlock` family only — the
 family (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`) exposes attention/FFN internals as
 separate PC nodes with their own edges, so muPC could plausibly do much more there; not yet
 measured (C-09's other, still fully open half).
+
+**The negative result, stated in the words someone is likely to get wrong otherwise:**
+`λmax` unchanged ⇒ `η*` unchanged at ~0.0176 ⇒ **muPC does NOT fix the η=0.1 instability
+above** — `transformer_lm()`'s default is 5.7× past its own stability limit with muPC on or
+off. "muPC improves conditioning, therefore it fixes the η problem" is the natural inference
+from the 16% number alone, and it's wrong for this node family. What the 16% actually is:
+`λmin` rose (~2.31→~2.74) while `λmax` sat still — muPC is lifting the SLOW modes, consistent
+with what per-edge `forward_scale`/`topdown_grad_scale` factors are actually built to do (O(1)
+activation-variance/gradient-scale correction across width/depth, μP-style), not curvature/
+Hessian conditioning. Fixing `η*` itself would need something that moves `λmax`, which this
+mechanism structurally cannot reach on the monolithic family (see above).
