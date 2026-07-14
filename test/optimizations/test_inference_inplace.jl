@@ -71,6 +71,65 @@ function _ip_diamond(; B=96, T=20)
     return GraphParams(pd), init, clamps, st, B
 end
 
+# THREE clamped sources feed one UNCLAMPED node H (3 in-edges) -> clamped sink T. The reference
+# folds inputs in Dict-iteration order; this catches any mismatch in the in-place fold order
+# (float non-associativity for 3+ in-edges). srcnames chosen so the edge-key hashes do NOT match
+# insertion order (verified to diverge before the fix).
+function _ip_multi3(srcnames=["A", "B", "C"]; B=64, T=20)
+    rng = MersenneTwister(1)
+    W(a, b) = 0.1f0 .* randn(rng, Float32, a, b)
+    a, b, c = (Linear((5,), srcnames[1]; use_bias=false), Linear((5,), srcnames[2]; use_bias=false),
+               Linear((5,), srcnames[3]; use_bias=false))
+    h = Linear((4,), "H")                                    # unclamped, in_degree 3, Identity act
+    t = Linear((3,), "T"; energy=GaussianEnergy())
+    st = graph(FabricPC.AbstractNode[a, b, c, h, t],
+               Edge[Edge(a, h), Edge(b, h), Edge(c, h), Edge(h, t)],
+               TaskMap(x=a, y=t), InferenceSGD(eta_infer=0.1, infer_steps=T, latent_decay=0.0))
+    pd = Dict{String,NodeParams}(
+        srcnames[1] => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+        srcnames[2] => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+        srcnames[3] => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+        "H" => NodeParams(Dict("$(srcnames[1])->H:in" => W(5, 4), "$(srcnames[2])->H:in" => W(5, 4),
+                               "$(srcnames[3])->H:in" => W(5, 4)), Dict("b" => zeros(Float32, 1, 4))),
+        "T" => NodeParams(Dict("H->T:in" => W(4, 3)), Dict("b" => zeros(Float32, 1, 3))))
+    clamps = Dict{String,Any}(srcnames[1] => randn(rng, Float32, B, 5), srcnames[2] => randn(rng, Float32, B, 5),
+                              srcnames[3] => randn(rng, Float32, B, 5), "T" => randn(rng, Float32, B, 3))
+    init = initialize_graph_state(st, B, rng; clamps=clamps, params=GraphParams(pd))
+    return GraphParams(pd), init, clamps, st, B
+end
+
+# x -> mid(IdentityNode | SkipConnection, unclamped) -> out. Exercises the WEIGHTLESS node types
+# (they crash prealloc before the fix). Skip variant merges two sources to also test multi-input.
+function _ip_weightless(kind; B=32)
+    rng = MersenneTwister(2)
+    W(a, b) = 0.1f0 .* randn(rng, Float32, a, b)
+    if kind == :ident
+        x = Linear((6,), "x"; use_bias=false)
+        mid = IdentityNode((6,), "mid")
+        out = Linear((4,), "out"; energy=GaussianEnergy())
+        nodes = FabricPC.AbstractNode[x, mid, out]; edges = Edge[Edge(x, mid), Edge(mid, out)]
+        pd = Dict("x" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+                  "mid" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+                  "out" => NodeParams(Dict("mid->out:in" => W(6, 4)), Dict("b" => zeros(Float32, 1, 4))))
+        clamps = Dict{String,Any}("x" => randn(rng, Float32, B, 6), "out" => randn(rng, Float32, B, 4))
+    else  # :skip — two clamped sources merge through a SkipConnection (multi-input, weightless)
+        x1 = Linear((6,), "x1"; use_bias=false); x2 = Linear((6,), "x2"; use_bias=false)
+        mid = SkipConnection((6,), "mid")
+        out = Linear((4,), "out"; energy=GaussianEnergy())
+        nodes = FabricPC.AbstractNode[x1, x2, mid, out]
+        edges = Edge[Edge(x1, mid), Edge(x2, mid), Edge(mid, out)]
+        pd = Dict("x1" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+                  "x2" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+                  "mid" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+                  "out" => NodeParams(Dict("mid->out:in" => W(6, 4)), Dict("b" => zeros(Float32, 1, 4))))
+        clamps = Dict{String,Any}("x1" => randn(rng, Float32, B, 6), "x2" => randn(rng, Float32, B, 6),
+                                  "out" => randn(rng, Float32, B, 4))
+    end
+    st = graph(nodes, edges, TaskMap(x=nodes[1], y=out), InferenceSGD(eta_infer=0.1, infer_steps=10, latent_decay=0.0))
+    init = initialize_graph_state(st, B, rng; clamps=clamps, params=GraphParams(pd))
+    return GraphParams(pd), init, clamps, st, B
+end
+
 # Small x->h->out graph, perturbing ONE thing that must be rejected fail-closed.
 function _ip_bad(kind)
     rng = MersenneTwister(3)
@@ -113,6 +172,14 @@ end
             _assert_ip_bitexact(_ip_diamond(; B=96)...; expect_hoist=Set(["h1", "h2"]))
             # precision != 1, distinct per node (C1: precision is READ, not assumed 1)
             _assert_ip_bitexact(_ip_chain([256, 96, 10]; B=96, pf=(k -> 0.5f0 + 0.7f0 * k))...)
+            # 3-in-edge node: fold order must match the reference's Dict order (float non-assoc).
+            # Every source-name triple below diverged by ~1 ULP before the fold-order fix.
+            for sn in (["A", "B", "C"], ["s1", "s2", "s3"], ["p", "q", "r"], ["n1", "n2", "n3"], ["h1", "h2", "m"])
+                _assert_ip_bitexact(_ip_multi3(sn)...)
+            end
+            # weightless node types (crashed prealloc before the fix)
+            _assert_ip_bitexact(_ip_weightless(:ident)...)
+            _assert_ip_bitexact(_ip_weightless(:skip)...)
         end
 
         @testset "0-alloc per step (step-count invariant)" begin
@@ -130,6 +197,14 @@ end
             @test_throws Exception (let (p, c, s) = _ip_bad(:normclip); prealloc_inference(s, p, c; batch=32) end)
             @test_throws Exception (let (p, c, s) = _ip_bad(:bern); prealloc_inference(s, p, c; batch=32) end)
             @test_throws Exception (let (p, c, s) = _ip_bad(:sink); prealloc_inference(s, p, c; batch=32) end)
+            # batch mismatch: buffers baked to B=128; running a B=96 init_state must THROW, not
+            # silently copy stale rows into the larger buffers.
+            @test_throws Exception let
+                p, _, c, s, _ = _ip_chain([64, 32, 10]; B=128)
+                ii = prealloc_inference(s, p, c; batch=128)
+                _, i96, _, _, _ = _ip_chain([64, 32, 10]; B=96)
+                run_inference!(ii, i96)
+            end
         end
     finally
         BLAS.set_num_threads(old_blas)
