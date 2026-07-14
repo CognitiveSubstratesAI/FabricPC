@@ -277,6 +277,16 @@ own Julia-internal ratio (compiled vs its own eager Dict path, measured in the s
 came out 28-38× — independently reproducing the existing 32× claim, a useful cross-check
 that the two benchmarks are measuring compatible things.
 
+**Re-verified after Reactant 0.2.264→0.2.273 bump (2026-07-14, `benchmark/jit/Manifest.toml`;
+ReactantCore 0.1.19→0.1.21).** Fresh fixtures (`benchmark/mnist_inference_vs_jax.{py,jl}`),
+same shared 2-core dev machine under concurrent-process contention: Julia+Reactant steady-state
+9.25ms vs `jax.jit` 72.76ms ⇒ ~7.87×, squarely inside the previously-measured 6.6×-8.3× range;
+numerics max|Julia-compiled − JAX-jit| = 2.29e-6 on `h` — identical to the pre-bump value,
+exact 0 on clamped `x`/`y`, also unchanged. Absolute times are higher than the original
+4.75-6.38ms/42.1-43.2ms pairing (more concurrent load on the shared machine at measurement
+time), consistent with this section's own note that absolute times swing with contention
+while the ratio is the trustworthy number. No regression.
+
 **Scope, stated plainly so it isn't overclaimed**: inference only. Weights are fixed
 throughout (no weight update, no `optax`/`Optimisers` step) — this is NOT a "PC training is
 Nx faster" result. J-01/J-02 (compiling the weight-gradient/training step) remain open and
