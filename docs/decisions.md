@@ -460,6 +460,45 @@ eager fallback" architecture is broken; a working integration needs either an
 all-compiled (no eager Enzyme) graph or the on-device GraphState refactor (#11).
 Deferred; the eager PC-transformer + the block-JIT benchmark (689de8c) stand.
 
+### §15 update (2026-07-14, J-01): the conflict is EAGER-ENZYME-specific, not
+### AD-generally — but a more dangerous, previously-unknown hazard replaces it
+
+The framing above ("eager Enzyme and Reactant+Enzyme `@compile` cannot coexist")
+conflated "any eager AD" with "eager Enzyme specifically." This codebase's actual
+production eager seam is Zygote (§19), which never calls eager `Enzyme.autodiff` at
+all — so the real, narrower question is whether Zygote-eager + Enzyme-only-inside-
+`@compile` coexist. Execution-verified (`benchmark/jit_zygote_expt/main_experiment.jl`,
+not committed — a diagnostic script): in a process that already did real eager-Zygote
+seam work, `Reactant.@compile`-with-`Enzyme.gradient`-inside (never eager
+`Enzyme.autodiff`, mirroring `benchmark/transformer_jit.jl`'s `wgrad` precedent, a
+raw-array pattern that bypasses FabricPC's actual seam dispatch) compiles and matches
+Zygote's eager gradient to ~1e-6/1e-7. **No poisoning of that pattern observed.**
+
+**But this investigation surfaced a more dangerous hazard while checking it, and it
+changes the practical rule in §23 below.** `using Reactant` transitively loads Enzyme
+(a hard dependency of Reactant, not a weak one) — which silently triggers F-04's
+dispatch-override bug (`docs/AUDIT_REGISTER.md` section 1, reopened 2026-07-14):
+`FabricPC._ad_param_grads`/`_ad_latent_grads` flip to Enzyme's implementation the
+moment `using Reactant` loads, with **zero explicit `using Enzyme` anywhere in user
+code**, and no catchable exception (F-04's guard fires internally but is swallowed by
+Julia's own extension-loading error handling — see the reopened F-04 write-up for the
+full mechanism). So: **the risk was never really about disciplined avoidance of
+`using Enzyme`** — merely loading Reactant for an entirely unrelated reason (e.g. an
+inference-only JIT benchmark) silently poisons the REAL seam for any Zygote-seam-
+dependent node (`TransformerBlock`/`EmbeddingNode`/`VocabProjectionNode`/decomposed
+MHA-FFN family) touched afterward in that same session — the documented MHA-crash
+risk, now reachable with no explicit trigger at all.
+
+**Revised practical rule, until F-04's dispatch mechanism gets a real fix** (routing
+through a Ref-held function pointer the guard installs only after its check passes,
+instead of two competing top-level methods — scoped, not attempted this session): do
+NOT `using Reactant` in any session that also needs the real seam (`forward_and_
+weight_grads`/`forward_and_latent_grads` dispatch) on a Zygote-seam-dependent node.
+Only the raw-array/`wgrad`-style bypass pattern (used by `benchmark/transformer_jit.jl`
+and this investigation's own experiment script) is currently safe to use post-
+`using Reactant` — it never goes through the poisoned dispatch at all, differentiating
+concrete arrays directly instead.
+
 ## 16. Decomposed (fully-PC) transformer stages — PC at every sub-component
 
 Date: 2026-06-09
@@ -724,29 +763,43 @@ today's J-01 scouting pass (docs/AUDIT_REGISTER.md section 5) found about the Re
   role inside a Reactant-traced region at all.
 - **Enzyme (eager) — opt-in, simple/dense nodes only.** The Enzyme extension implements the
   identical seam hooks and is retained for nodes that don't hit the MHA crash (simple/dense
-  nodes, per #19). F-04's guard (`_register_ad_backend!`) enforces exactly one of
-  Zygote/Enzyme loaded per session — they'd silently last-wins override each other
-  otherwise. Not usable together with Reactant+Enzyme in the SAME process (see next point) —
-  effectively a separate, standalone eager lane, not a stepping stone to the compiled lane.
-- **Reactant + Enzyme (compiled) — the intended production perf path, currently blocked for
-  gradients.** Reactant uses Enzyme-MLIR internally for autodiff under `@compile` — this is
-  a THIRD, distinct thing from eager Enzyme above, despite sharing a package name. Forward
-  compilation (no gradients) works today and is validated (`compile_inference`, Layer 2
-  above). Gradient compilation (J-01) is blocked by a real, reproduced conflict: loading
-  eager `Enzyme` (even just the package, even without calling it) in the same process as a
-  `Reactant`+`Enzyme` `@compile` poisons the compile (`setfield!: immutable Tuple`,
-  decisions.md §15). The one working precedent (`benchmark/transformer_jit.jl`'s `wgrad`)
-  avoids this by never loading eager `Enzyme` in that process at all — calling
-  `Enzyme.autodiff` only ever inside a `Reactant.@compile`d closure, on a partial parameter
-  set (`x`+`W_q`, not the full 16-array TransformerBlock parameter set).
+  nodes, per #19). **🔴 CORRECTION (2026-07-14, `docs/AUDIT_REGISTER.md` F-04 reopened):**
+  this entry previously claimed F-04's guard (`_register_ad_backend!`) "enforces exactly one
+  of Zygote/Enzyme loaded per session." It did not — it was inert in every real session (bare
+  top-level code, never replayed past the extension's own precompile; fixed 2026-07-14,
+  `68a6154`) and, even after the fix, only LOGS the conflict to stderr rather than preventing
+  it (Julia's extension-loading machinery swallows `__init__` errors; the competing method
+  definitions are already installed before `__init__` runs regardless). **Zygote and Enzyme
+  silently last-wins override each other's seam dispatch exactly as the original F-04 finding
+  described — this was never actually fixed, only believed to be.** Not usable together with
+  Reactant+Enzyme in the SAME process (see next point) — effectively a separate, standalone
+  eager lane, not a stepping stone to the compiled lane.
+- **Reactant + Enzyme (compiled) — the intended production perf path, gradients narrower than
+  originally scoped (§15 update, 2026-07-14).** Reactant uses Enzyme-MLIR internally for
+  autodiff under `@compile` — this is a THIRD, distinct thing from eager Enzyme above, despite
+  sharing a package name. Forward compilation (no gradients) works today and is validated
+  (`compile_inference`, Layer 2 above — and now benchmarked cross-language, ~7-8× vs real
+  `jax.jit`, `docs/AUDIT_REGISTER.md` J-04). Gradient compilation (J-01): the ORIGINAL framing
+  ("loading eager Enzyme poisons a subsequent compile") turned out to conflate eager-Enzyme
+  specifically with AD-generally — Zygote-eager + Enzyme-only-inside-`@compile` (the raw-array
+  `wgrad` pattern) is execution-verified to coexist cleanly, no poisoning. But `using Reactant`
+  alone (a hard Enzyme dependency, loaded transitively, no explicit `using Enzyme` needed)
+  silently triggers the SAME dispatch-override hazard described above — so the real practical
+  danger was never really about eager-Enzyme discipline, it's about `using Reactant` at all in
+  a session that also needs the real seam on Zygote-dependent nodes.
 
-**Practical rule**: a session either uses eager Zygote/Enzyme (Layer 0, the test suite's own
-convention) OR Reactant+Enzyme (Layer 2, benchmark-only today) — never both in one process.
-This is stricter than F-04's Zygote-vs-Enzyme guard (which only governs the eager pair) and
-is currently enforced by discipline/convention, not code — a real
-`FabricPCReactantEnzymeExt`-style guard analogous to `_register_ad_backend!` would be a
-reasonable small addition if this trips someone up in practice; not built yet since it
-hasn't (benchmark/ code is run standalone, never alongside the main test suite).
+**Practical rule (revised 2026-07-14)**: a session either uses eager Zygote (Layer 0, the test
+suite's own convention) on Zygote-seam-dependent nodes, OR loads Reactant (Layer 2) — never
+both, for any node that goes through the real `_ad_param_grads`/`_ad_latent_grads` seam
+dispatch (not just "never call `Enzyme.autodiff` eagerly" — merely `using Reactant` is enough
+to silently flip that dispatch to Enzyme's implementation, per the corrected entries above).
+The raw-array/`wgrad`-style bypass pattern (differentiate concrete arrays directly, never go
+through the seam) remains safe in either regime — it's how the one working Reactant+Enzyme
+gradient precedent (`benchmark/transformer_jit.jl`'s `wgrad`) avoids the hazard, not by
+avoiding `using Enzyme` as such. This is enforced by discipline/convention only, not code — a
+real fix routes seam dispatch through a Ref-held function pointer the F-04 guard installs only
+after its check passes, instead of two competing top-level methods; scoped but not attempted
+this session (`docs/AUDIT_REGISTER.md` F-04).
 
 ## 24. PC-relaxation stability: `eta_infer` is bounded by the graph's own conditioning, and
 `transformer_lm()`'s default sits well past that bound

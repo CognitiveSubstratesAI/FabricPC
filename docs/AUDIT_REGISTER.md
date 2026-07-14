@@ -33,7 +33,7 @@ tests. Coverage gaps remain concentrated in conv/pooling, JIT breadth, and Pytho
 | F-01 | HIGH (TransformerBlock) / LOW-informational (MhaResidualNode, LnMlp1Node) | muPC LayerNorm compensation | **VERIFIED CLOSED** (`c8fb541`) |
 | F-02 | MEDIUM (revised from claimed HIGH) | MhaResidualNode skip-slot not decoupled | **VERIFIED CLOSED** (`c8fb541`) |
 | F-03 | MEDIUM | Optimizer key-set asymmetry | **VERIFIED CLOSED** (`c8fb541`) |
-| F-04 | MEDIUM (revised from claimed LOW) | Dual AD-backend footgun | **VERIFIED CLOSED** (`c8fb541`) |
+| F-04 | 🔴 MEDIUM→HIGH (revised UP, 2026-07-14) | Dual AD-backend footgun | **REOPENED, PARTIALLY FIXED — was WRONGLY marked VERIFIED CLOSED.** See the reopened write-up below (this section) and `docs/decisions.md` §15 update. |
 | F-05 | MEDIUM | `compute_loss`/clamp one-hot contract divergence | **VERIFIED CLOSED** |
 | F-06 | LOW (dormant) | `TransformerBlock` output-activation divergence | **OPEN** — found by Tier B (section 6) |
 
@@ -92,19 +92,58 @@ this with nothing to catch it).
 raising a clear `ArgumentError` naming the node and the mismatched keys — one check point instead
 of two divergent downstream failure modes.
 
-### F-04 — dual AD-backend load footgun — VERIFIED CLOSED
+### F-04 — dual AD-backend load footgun — REOPENED 2026-07-14, PARTIALLY FIXED
 
-**CONFIRMED**, and **severity revised LOW → MEDIUM**: the trigger (`using Zygote; using Enzyme` in
-one session, or vice versa) has the lowest bar of all four findings, and the failure mode is
-uniquely bad — fully silent method-table overwrite at load time (empirically verified: no stderr
-warning), then an opaque, non-debuggable LLVM abort at the first call that hits code only the
-losing backend could handle. Distinct from — and NOT mitigated by — the existing "world-age
-gotcha" fallback (`_ENZYME_HINT`), which can only fire when *neither* backend has loaded yet.
+**Original finding (still accurate)**: the trigger (`using Zygote; using Enzyme` in one session,
+or vice versa) has the lowest bar of all four F-* findings, and the failure mode is uniquely
+bad — a silent method-table overwrite at load time, then an opaque, non-debuggable LLVM abort at
+the first call that hits code (e.g. `TransformerBlock`'s full multi-head-attention block) only
+the losing backend could handle.
 
-**Fix**: `_register_ad_backend!` (new, `nodes/autodiff.jl`) records which backend loaded first;
-both `FabricPCZygoteExt` and `FabricPCEnzymeExt` call it at module-load time and it raises
-immediately, with an actionable message, if the other backend tries to load afterward in the same
-session — catches the mistake at `using X` time instead of at an arbitrary later call site.
+**The original "VERIFIED CLOSED" fix (`c8fb541`) never actually worked, and had zero test
+coverage that would have caught it.** `_register_ad_backend!` (`nodes/autodiff.jl`) was called
+as BARE TOP-LEVEL CODE in both `FabricPCZygoteExt`/`FabricPCEnzymeExt`, not inside `__init__()`.
+Per Julia's package-extension semantics, a top-level statement mutating a DIFFERENT,
+already-loaded module's global state (`FabricPC._AD_BACKEND`) only takes effect in the ephemeral
+worker process that PRECOMPILES the extension — it is never replayed when the extension is later
+loaded from its cached `.ji` in a normal session. Found while investigating J-01 (below), by a
+direct probe in a genuinely fresh, already-precompiled process: `_AD_BACKEND[]` stayed `:none`
+forever — even loading a SINGLE backend with no conflict at all never registered it. This means
+the guard has likely never functioned in any real (post-initial-setup) session since it landed.
+
+**Fix applied and verified (`68a6154`)**: moved both `_register_ad_backend!` calls into
+`function __init__() ... end`, Julia's documented mechanism for exactly this (runs on every
+load, precompiled or not). Verified across a REAL fresh-process/precompile-cache boundary (the
+only way to genuinely test this — a check within an already-warm session would not have caught
+the original bug either): a fresh process loading a single backend now correctly registers it
+immediately post-cache-load (`test/test_autodiff_backend_registration.jl`, 15/15, opt-in behind
+`FABRICPC_AD_BACKEND_SUBPROCESS_TESTS=1` since it spawns several genuinely-cold Julia processes).
+Full suite: 2309/2309, zero regressions from the change.
+
+**🔴 What this fix does NOT close — the ACTUAL named hazard remains open, now with a diagnostic
+instead of total silence.** Verified directly: in the dual-load (crux) case, the guard's
+`error(...)` genuinely fires inside `__init__()` — but Julia's own package-loading machinery
+catches `__init__` errors internally and reports them via `@error` to STDERR, not as a catchable
+Julia exception at the `using X` call site (`try using Enzyme catch; end` does not catch it).
+Worse: the competing extensions' top-level `function _ad_param_grads(...)`/`_ad_latent_grads(...)`
+METHOD DEFINITIONS are installed during module restoration, which happens BEFORE `__init__` runs
+— so by the time the guard's error fires, the silent override it exists to prevent has ALREADY
+happened. `methods(FabricPC._ad_param_grads)` after a dual load shows 2 methods, with the
+second-loaded backend's implementation winning dispatch, regardless of the guard. **The silent
+`_ad_param_grads`/`_ad_latent_grads` dispatch override this finding was written to prevent still
+happens exactly as before — the fix only adds a loud, non-fatal stderr log next to it.** A real
+fix would need dispatch routed through a Ref-held function pointer the guard installs only after
+its check passes, instead of two competing top-level methods — a real (if scoped) refactor of
+the seam's dispatch mechanism, not attempted this session; tracked as a new follow-up (see J-01
+below for the operationally-relevant consequence: `using Reactant` alone, via transitively
+loading Enzyme, triggers this exact silent override with zero explicit `using Enzyme` anywhere
+in user code).
+
+**Severity revised MEDIUM → HIGH**: the trigger is now known to be broader than originally
+scoped (see J-01) — not just an explicit `using Enzyme` mistake, but any `using Reactant` in a
+session that has (or will) touch a Zygote-seam-dependent node (`TransformerBlock`,
+`EmbeddingNode`, `VocabProjectionNode`, the decomposed MHA/FFN family) — and the "fix" that was
+believed to guard against it for the past several sessions was inert the entire time.
 
 ### F-05 — `compute_loss`/clamp one-hot contract divergence — VERIFIED CLOSED
 
@@ -209,7 +248,7 @@ genuinely matches upstream bit-for-bit; only the `_tb_apply_rope` comment was mi
 
 | ID | Item | Status |
 |----|------|--------|
-| J-01 | Flat gradient seam: Enzyme-under-Reactant | **OPEN — real blocker, not just missing code.** A scout of `src/jit_flat.jl`/`ext/FabricPCReactantExt.jl`/`benchmark/transformer_jit.jl`/`docs/decisions.md` found the only existing precedent (`benchmark/transformer_jit.jl`'s `wgrad`, benchmark-only, differentiates just `x`+`W_q` not the full parameter set) and a **documented, unresolved architectural conflict** (`decisions.md:387-415`, §15): eager `Enzyme.autodiff` and `Reactant`-compiled `Enzyme` cannot coexist in one process ("a prior eager autodiff poisons the subsequent compile"). Parked pending a deliberate design decision on that conflict, not attempted this round. |
+| J-01 | Flat gradient seam: Enzyme-under-Reactant | **NARROWED (2026-07-14, `docs/decisions.md` §15 update) — the original framing conflated two different claims; only the narrow one blocks, and it now has an execution-verified answer for the raw-array pattern.** §15's "eager Enzyme poisons a subsequent Reactant-compiled Enzyme" is real for eager Enzyme specifically — but this codebase's actual production eager seam is Zygote (decision #19), which never calls eager `Enzyme.autodiff` at all. Execution-verified (`benchmark/jit_zygote_expt/main_experiment.jl`): a process that already did real eager-Zygote seam work, then `using Reactant`, then `Reactant.@compile`-with-`Enzyme.gradient`-inside (never eager `Enzyme.autodiff`, mirroring `benchmark/transformer_jit.jl`'s `wgrad` precedent) — **compiles and matches Zygote's eager gradient to ~1e-6/1e-7. No poisoning observed** for this raw-array pattern. **🔴 But a serious NEW hazard surfaced along the way, and it's more dangerous than J-01's original framing**: `using Reactant` transitively loads Enzyme (a hard dependency, not weak), which silently triggers the exact F-04 dispatch-override bug (section 1, reopened) — `FabricPC._ad_param_grads`/`_ad_latent_grads` flip to Enzyme's implementation the moment `using Reactant` loads, with ZERO explicit `using Enzyme` anywhere in user code, and zero catchable exception. Any subsequent call through FabricPC's REAL seam (not the raw-array `wgrad`-style bypass) on a Zygote-seam-dependent node (`TransformerBlock`, `EmbeddingNode`, `VocabProjectionNode`, decomposed MHA/FFN) in that same session would silently run under Enzyme instead of Zygote — decision #19's documented MHA-crash risk, now reachable via `using Reactant` alone. **Practical rule until F-04's dispatch mechanism is actually fixed: do not `using Reactant` in any session that also needs the real seam on those node types — only the raw-array/`wgrad`-style bypass pattern is currently safe post-`using Reactant`.** J-02/J-03's full weight-gradient training-step compile remain blocked/parked (unattempted this round; the narrow numerical question above is not the same as a production-ready compiled `train_step`). |
 | J-02 | Compile full `train_step` | **BLOCKED on J-01** (needs a working flat weight-gradient first; `compute_local_weight_gradients` remains entirely eager/Dict-based, no flat/traced counterpart exists). |
 | J-03 | Extend flat lane to seam nodes | **PARTIAL — TransformerBlock forward wired, backward parked.** `flat_forward(::TransformerBlock, ...)` (`src/jit_flat.jl`) wires the already-validated `_tb_block_flat` kernel (`src/nodes/transformer.jl:296-338`, previously a standalone, disconnected kernel + benchmark) into `CompiledPlan`'s dispatch — `to_flat_params` special-cased to bridge via the existing `flat_block_args` (TransformerBlock's weights are keyed by NAME, not by edge key like every other node here). Verified byte-equivalent to eager `compute_mu` (`test/test_jit_flat.jl`, new testset) on a graph where TransformerBlock is the unclamped terminal node (`flat_latent_grads`'s `out_degree==0 && !is_clamped` branch — forward only). **No `_flat_input_grads(::TransformerBlock, ...)` method exists** — the attention+FFN backward pass needed for TransformerBlock as an interior or clamped node — same category of problem as J-01 (needs Enzyme-under-Reactant, or a substantial hand-derived closed-form gradient verified against Zygote's already-upstream-validated gradient); verified this fails loudly with a clean `MethodError`, not silently wrong output, rather than asserting it in CI (a `MethodError` from a private multi-arg dispatch is a brittle thing to `@test_throws` on). Decomposed nodes (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`/`EmbeddingNode`/`VocabProjectionNode`) and `StorkeyHopfield` remain untouched — zero flat-lane work for any of them. |
 | J-04 | Benchmark harness | **INFERENCE-ONLY arm VERIFIED CLOSED (2026-07-14, `docs/decisions.md` §11).** The "BLOCKED on J-01/J-02" framing was too broad — that pair blocks compiling `compute_local_weight_gradients` (the weight-gradient/M-step) specifically, but `compile_inference`/`flat_run_inference` (the E-step relaxation loop) is a separate, already-validated path, and the MNIST-MLP architecture (`Linear`-only) is fully covered by `flat_forward`/`flat_latent_grads` — confirmed against `src/jit_flat.jl` before benchmarking, not assumed. `benchmark/mnist_inference_vs_jax.{py,jl}`: same architecture/batch/η/steps, same weights both sides (RNG-trap discipline). **Julia+Reactant's `compile_inference` runs ~7-8× faster than upstream's own `jax.jit(run_inference)`** (the first cross-language, both-compiled number this codebase has produced — do not conflate with §11's existing 8.8×/32× Julia-vs-Julia numbers), numerics validated to float32 precision. Scope: inference only, no weight update — NOT a training-speed claim. **The training/weight-gradient arm remains BLOCKED on J-01/J-02**, unchanged. |
