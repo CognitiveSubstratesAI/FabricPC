@@ -1736,3 +1736,22 @@ The 5.9× eager attribution (above) invited an Amdahl decomposition, and getting
 | FLOP ceiling | **26.8×** | — | nothing (all FLOPs at equal efficiency) |
 
 The ordering is forced by which overhead each lane still pays; each rung up removes one, and the ratio climbs monotonically toward the ceiling — Dict-churn removal (Dict→flat) is worth ~4.4→6.15×, boxing removal (flat→compiled) another ~6.15→7.87×. `ΔT_min ≈ 135–142 ms` (A ≈ 3.5 ms) is invariant across all lanes — the 39 eliminated GEMMs are the same BLAS calls everywhere; only the surviving base differs. (Single-call ratios are noisy 4.4–6.9× depending on heap/GC state; the robust quantities are alloc-count and `ΔT_min`, per rung 4 above.)
+
+### §28 addendum 2 — the eager path spends 57% of a training loop in GC; four tools converge on J-06; the fix is reduce-allocations, not a GC knob (2026-07-14)
+
+Applying the GC/memory-management reference (`docs/specs/Julia/Memeory management and garbage Collection.txt`) end-to-end turned the J-06 boxing from "208 MB/call" into a headline training-cost number, and four independent tools now converge on the same root cause and fix.
+
+**The headline: 57% of SUSTAINED wall-clock is GC.** A single isolated `run_inference` call shows only 0–4% gc% (the heap absorbs one call's 208 MB — §28 addendum). But a training loop is thousands of calls, and the pressure is deferred, not absent. Measured over 40 back-to-back calls (`@timed`, `BLAS=1`, quiet machine, MNIST-MLP B=256): **Dict-stock = 57.4% gc%** (8.33 GB garbage, per-call time 186 ms→374 ms under sustained GC), **Dict-opt = 59.5%** (5.6 GB, 27 ms→112 ms). `GC.enable_logging` shows the events: 6–31 ms pauses each collecting 200–377 MB. So J-06 (parametric `NodeState`) + a positional/pre-allocated eager state is not hygiene — it is a **~2× training-throughput win by eliminating the garbage that forces the GC**.
+
+**The doc's mitigation hierarchy, confirmed empirically — the config knobs DON'T help, only reducing allocations does.** The reference lists, for "High GC Overhead": reduce allocation rate; adjust `--gcthreads`; enable concurrent sweeping (`--gcthreads=N,1`); profile hotspots. Tested the concurrent-sweep knob directly: `--gcthreads=1,1` on this 2-core machine made it **WORSE (63.6% vs 57.4%)** — dedicating a thread to sweeping steals a compute core. So the reference's own #1 recommendation is the only real lever here: "The best way to minimize GC impact is to reduce unnecessary allocations." FabricPC's eager path violates every item on that list — `latent_grad = latent_grad .+ self_grad` (a fresh array, not `.+=`, because immutable `NodeState` forbids in-place); no pre-allocation (fresh `z_mu`/`error`/`latent_grad` every one of the 20 steps); 6565 temporaries/call in the tightest loop. J-06 + a mutable/reused-buffer inference loop is exactly the reference's prescription applied.
+
+**Four tools, one root cause, no daylight between them:**
+
+| tool | level | what it found |
+|---|---|---|
+| `@code_warntype` | type inference | `forward(::Linear)` infers to `Tuple{Any, NodeState}`; `NodeState`'s 6 fields are `::Any` |
+| `AllocCheck.check_allocs` | static / line | `forward(::Linear)` = 46 allocation sites, **16 dynamic dispatches** — incl. `size(state.z_latent,1)` (`linear.jl:92`) and `zeros(…,batch,…)` (`linear.jl:94`) boxing because `z_latent::Any` makes even the batch-size computation dynamic |
+| `Profile.Allocs` | runtime / site | 6565 allocs/call → `put_node` Dict-rebuild (1440, J-07) + clamped-input 48 MB `copy`/`zero` + matmul temporaries |
+| `BenchmarkTools` + `@timed`/`GC` | cost | 208 MB/call; **57% gc% in sustained loops**; median 2× min from GC variance |
+
+The `two-tier allocator` (reference: small ≤2032 B via the per-thread pool, large via `malloc`) explains the split — the 6565 count is dominated by *small* Dict/NodeState-churn objects (pool) while the 208 MB bytes are dominated by *large* 256×784-class matmul arrays (`malloc`); at 40 calls that is ~262K pooled allocations + gigabytes of large-array churn, and the GC must scan all of it. J-06 removes the small-object churn (fewer, concretely-typed fields) and a pre-allocated loop removes the large-array re-allocation — attacking both tiers. This is now the single best-supported, highest-leverage item in the perf backlog: a measured ~2× on sustained/training workloads, confirmed by four tools and one falsified mitigation.
