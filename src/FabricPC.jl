@@ -70,6 +70,8 @@ export create_causal_mask,
 include("models/transformer_lm.jl")
 export transformer_lm
 include("jit_flat.jl")
+include("inference_inplace.jl")   # J-06: type-stable, 0-alloc in-place inference lane
+export prealloc_inference, run_inference!, InplaceInference
 
 export FABRICPC_VERSION
 # Activations / energy / initializers

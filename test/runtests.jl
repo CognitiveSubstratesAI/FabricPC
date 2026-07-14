@@ -39,6 +39,7 @@ using Zygote
     include("test_inference_normclip.jl")       # C-05: InferenceSGDNormClip
     include("test_inference_momentum.jl")       # InferenceSGDMomentum: ahead-of-upstream (docs/decisions.md #26)
     include("optimizations/test_inference_optimizations.jl")  # HOIST+PRUNE exact inference opt (opt-in)
+    include("optimizations/test_inference_inplace.jl")        # J-06: type-stable 0-alloc in-place inference (opt-in)
     include("conformance/test_tier_a.jl")        # Tier A: primitives vs upstream JAX fixtures
     include("conformance/test_tier_b.jl")        # Tier B: node-local vs upstream JAX fixtures
     include("conformance/test_tier_c.jl")        # Tier C: loop-level vs upstream JAX fixtures
