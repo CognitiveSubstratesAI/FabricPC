@@ -12,15 +12,17 @@
 #   - concrete types (no ::Any boxing)   plain Matrix{Float32} throughout, type-stable
 #   - (bakes in the §28 hoist+prune too: z_mu_h is loop-invariant, computed once)
 #
-# RESULT (B=256, 20 steps, BLAS=1, measured 2026-07-14):
+# RESULT (B=256, 20 steps, one process, BLAS pinned+printed, measured 2026-07-14 CLEAN):
 #   bit-identical to run_inference (max|diff| = 0.0)
-#   allocations: 6565 -> 0   (208.3 MB -> 0 MB)
-#   single-call: stock 223ms -> hoist/prune 37.3ms (6.0x) -> in-place 9.26ms (4.0x more) = 24.1x
-#                (~the 26.8x FLOP ceiling, in EAGER Julia, no compiler)
-#   sustained 40 calls: 55.6x, gc% 40-57% -> 0.0%
-#
-# The 24.1x decomposes as hoist+prune (6.0x, FLOP reduction, §28) x in-place/type-stable
-# (4.0x, the J-06 alloc+boxing+bandwidth win). Run: julia --project=.warm/zygote_env this-file.
+#   allocations: 6565 -> 0   (208.3 MB -> 0 MB);  gc% 40-57% (sustained) -> 0%
+#   single-call BLAS=1: stock 153.3ms -> hoist/prune 29.6ms (5.2x) -> in-place 5.1ms (5.8x more) = 30x
+#   in-place is FLOP/bandwidth-LIMITED: ~6% above the arithmetic floor (F/26.82 ~= 4.79ms) -- NOT
+#   "~ the FLOP ceiling" (that would be a category error: in-place eliminates 0 FLOPs, a different axis).
+#   DECISIVE: T_reactant (XLA-compiled, same 77.6 MFLOP) = 5.75ms vs in-place eager 4.49ms(BLAS=2)/5.1ms(BLAS=1)
+#   -> optimized eager Julia MATCHES/BEATS XLA for this workload. Compiled lane's value = SCALING
+#   (@trace while) + GPU/parity, NOT raw eager speed. See decisions.md §28 addendum 3 (corrected).
+#   Run: julia --project=.warm/zygote_env this-file.  [NB: an earlier header cited contaminated
+#   223ms/9.26ms/24.1x numbers, measured under 3 concurrent test suites -- superseded by the above.]
 using FabricPC
 using FabricPC: run_inference
 import Random
