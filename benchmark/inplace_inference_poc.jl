@@ -18,11 +18,14 @@
 #   single-call BLAS=1: stock 153.3ms -> hoist/prune 29.6ms (5.2x) -> in-place 5.1ms (5.8x more) = 30x
 #   in-place is FLOP/bandwidth-LIMITED: ~6% above the arithmetic floor (F/26.82 ~= 4.79ms) -- NOT
 #   "~ the FLOP ceiling" (that would be a category error: in-place eliminates 0 FLOPs, a different axis).
-#   DECISIVE: T_reactant (XLA-compiled, same 77.6 MFLOP) = 5.75ms vs in-place eager 4.49ms(BLAS=2)/5.1ms(BLAS=1)
-#   -> optimized eager Julia MATCHES/BEATS XLA for this workload. Compiled lane's value = SCALING
-#   (@trace while) + GPU/parity, NOT raw eager speed. See decisions.md §28 addendum 3 (corrected).
-#   Run: julia --project=.warm/zygote_env this-file.  [NB: an earlier header cited contaminated
-#   223ms/9.26ms/24.1x numbers, measured under 3 concurrent test suites -- superseded by the above.]
+#   XLA-vs-eager (SLOPE test, marshalling-free -- decisions.md §28 addendum 3, corrected): XLA per-step
+#   compute 0.127 ms/step is ~15-20% FASTER than eager 0.148-0.154. Eager's total only wins <~39 steps
+#   because XLA pays ~2.5ms/call marshalling (GraphState->ConcreteRArray, naive-usage not fundamental).
+#   So XLA IS faster on compute; and MNIST is the topology most favorable to eager (98.7% FLOP
+#   elimination). Do NOT generalize "eager beats XLA" -- measure transformer_lm() first.
+#   Run: julia --project=.warm/zygote_env this-file.  [NB: earlier headers cited contaminated
+#   223/9.26/24.1x numbers (3 concurrent suites) and a "MATCHES/BEATS XLA" total-time claim confounded
+#   by marshalling -- both superseded by the above.]
 using FabricPC
 using FabricPC: run_inference
 import Random
