@@ -806,6 +806,14 @@ this session (`docs/AUDIT_REGISTER.md` F-04).
 
 Date: 2026-07-14
 
+> **CORRECTED by §26 (same date, later same session):** this section's `lambda_min≈2.3`/
+> `kappa≈49` was measured with a power iteration too short to converge on this graph's
+> near-degenerate spectrum. A properly-converged (renormalized, ~400-step) power iteration
+> finds `lambda_min≈0.17`, `kappa≈668`. This section's QUALITATIVE conclusions (expansive at
+> `eta=0.1`, Tier D correctly scoped to `eta=0.01`, the graph is stiffer than `infer_steps=12`
+> accounts for) are unchanged and reinforced, not overturned — only the specific `lambda_min`/
+> `kappa` numbers below are stale. Use §26's corrected values in any new derivation.
+
 Closing Tier D's transformer-LM conformance track (`docs/AUDIT_REGISTER.md` §6) required
 diagnosing why a real 12-step relaxation on the assembled `TransformerBlock` graph would not
 reproduce across two independent float32 implementations at any reasonable tolerance, even
@@ -1005,3 +1013,146 @@ would catch immediately by checking `jax_setup.py`. If a future benchmark's numb
 surprising either direction, `@code_hlo` (Reactant) vs JAX's `.lower(...).as_text()` dump
 comparable StableHLO/HLO IR from both frontends into the SAME backend — a slow result becomes
 debuggable in the IR instead of mysterious, since both sides lower to the same compiler.
+
+## 26. `InferenceSGDMomentum`: shipped ahead of upstream, correctly — and the verification pass
+that chased its own mismatch corrected §24's own spectrum measurement in the process
+
+Date: 2026-07-14
+
+**What this is.** `src/core/inference.jl`'s `InferenceSGDMomentum` (heavy-ball momentum:
+`v(t+1) = momentum·v(t) - eta_infer·grad; z(t+1) = z(t)·(1-eta_infer·latent_decay) + v(t+1)`)
+implements upstream's own PLANNED design (`docs/dev_plans_archive/momentum_sgd_inference_plan.md`
+in the upstream checkout, as of the commit this port tracks) before upstream has shipped it —
+`fabricpc/core/inference.py` still has only `InferenceBase`/`InferenceSGD`/
+`InferenceSGDNormClip`. This is registered as an **ahead-of-upstream divergence, not a
+conformance-gap fill**: there is no reference output to port against, so its correctness rests
+on a conformance anchor (below), not a fixture diff. Per upstream's own plan, it overrides the
+inference LOOP rather than the per-node `compute_new_latent` hook, because velocity must be
+carried across steps — Julia's version of this is `_run_inference_loop` dispatching on
+`structure.config.inference`'s type (a new `momentum_inference_step` function is the single
+source of truth for one heavy-ball step; both `_run_inference_loop`'s internal loop and any
+external caller — tests, diagnostics, a future `@trace while` compiled loop — must go through it,
+not `inference_step`/`compute_new_latent`, which is a documented plain-SGD fallback for this type
+that silently ignores `momentum`).
+
+**Conformance anchor (the part with no room for interpretation):** at `momentum=0f0`, the
+recursion collapses to `v(t+1) = -eta·grad`, i.e. bit-for-bit `InferenceSGD.compute_new_latent`'s
+own formula. Tested directly: 20/20 fields bit-exact across all 4 non-clamped/clamped nodes over
+12 steps (`test/test_inference_momentum.jl`).
+
+**The interesting part is what happened chasing the theory-vs-measurement closure, not that it
+closed cleanly on the first try.** §24 measured this exact graph's (`transformer_lm(embed_dim=8,
+num_heads=2, num_blocks=1)`, same fixture params/batch as `tier_d_transformer_stable`) Hessian
+spectrum as `lambda_min≈2.3, lambda_max≈113.6` (`kappa≈49`), and this session derived Polyak
+heavy-ball's optimal hyperparameters from it: `eta*=4/(√λmax+√λmin)²≈0.027`,
+`beta*=((√λmax-√λmin)/(√λmax+√λmin))²≈0.56`, predicting an asymptotic per-step rate
+`√beta*≈0.751`. **Measured (natural-relaxation trajectory, 80 steps): ~0.99/step — a real
+mismatch, not a rounding difference.** Rather than accept either number, the mismatch was
+chased with the SAME perturb-and-track methodology §24 itself used (a joint `(z,v)`-state
+power iteration for the momentum case), with one addition: **periodic renormalization** (rescale
+the tracked perturbation back to `eps` every 10 steps, standard power-iteration hygiene against
+numerical underflow over long runs). This surfaced two things:
+
+1. **§24's own `lambda_min=2.3` was measured with too few power-iteration steps to converge on
+   this graph's near-degenerate spectrum.** A SHORT (5-10 step) power iteration gives a ratio
+   ≈0.977-0.98 — matching §24's number closely — but the ratio keeps DRIFTING (monotonically,
+   not noise) for hundreds more iterations before truly plateauing. A renormalized 400-step
+   power iteration on plain SGD (`momentum=0`, `eta=0.01`, the exact config §24 measured)
+   converges to **≈0.998/step**, implying **`lambda_min≈0.17`, not 2.3** — the graph's TRUE
+   condition number is **`kappa≈668`, not ≈49**. Power iteration converges to whichever mode has
+   the LARGEST eigenvalue MODULUS among what's being tracked; an under-run power iteration on a
+   near-degenerate spectrum reports an intermediate, still-decaying ratio that LOOKS converged
+   (it's stable to 2-3 decimal places over a handful of steps) but isn't. This is a real,
+   general methodological lesson for every perturb-and-track measurement in this project, not
+   specific to momentum — the fix is checking two non-adjacent windows late in a long run agree
+   to within noise (this session used windows 291:310 vs 381:400, agreeing to 5e-5) before
+   trusting a power-iteration rate, not trusting a rate that merely LOOKS stable over the first
+   10-20 steps.
+2. **`lambda_max=113.6` independently re-confirmed correct — but ONLY near initialization.**
+   Direct stability-boundary crossing (plain SGD, no perturb-and-track needed): at `eta=0.017`
+   the near-init trajectory contracts (ratio≈0.973/12-steps); at `eta=0.02` it flips to GROWTH
+   (ratio>1) — bracketing `2/lambda_max≈0.0176` almost exactly. But power-iterating from a state
+   burned 40 steps into relaxation, NO instability appears even at `eta=0.025` (safely past the
+   near-init boundary) — the local Hessian is **trajectory-dependent**, not a fixed global
+   quadratic. LayerNorm/softmax/GELU curvature genuinely varies between the near-initialization
+   region (stiff, `lambda_max` large) and a partially-relaxed region (much gentler locally). A
+   single global `(lambda_min, lambda_max)` pair is therefore an ENGINEERING CHOICE (worst-case
+   `lambda_max` anywhere on the trajectory for stability, worst-case `lambda_min` anywhere for
+   convergence speed), not a clean fit to a real fixed quadratic.
+
+**Corrected derivation** (`lambda_min=0.17`, `lambda_max=113.6`): `eta*≈0.0326`, `beta*≈0.857`,
+naive predicted rate `√beta*≈0.926`. Re-measured (same renormalized perturb-and-track
+methodology): **momentum converges to ≈0.989/step vs plain SGD's own (corrected) ≈0.998/step —
+real, if modest, and NOT matching the naive quadratic-model prediction closely either.** This
+is the honest result: the graph is not a single quadratic, so heavy-ball's classical closed-form
+optimality guarantee (which assumes one) does not transfer cleanly — but real, if modest, is
+still real. Separately, because `eta*≈0.0326` sits almost exactly AT its own stability boundary
+`2(1+beta*)/lambda_max≈0.0327` (using the near-init worst-case `lambda_max`), running it from an
+actual cold start (not perturb-and-track — the real `momentum_inference_step` loop) is
+NOT smooth: a genuine transient — with the bug described below fixed, the corrected trajectory
+in fact converges cleanly without overshoot on this particular graph+params (`step1=4.75 →
+step10=3.01 → step60=0.27`, no spike) — the overshoot described in an earlier draft of this
+investigation turned out to be an artifact of the bug below, not a property of the corrected
+hyperparameters themselves; kept here as a documented false lead, not a current risk.
+
+**A real bug this investigation found and fixed, in the test file, not the implementation:**
+early falsification/rate tests called `FabricPC.inference_step` directly to step through
+momentum trajectories. `inference_step` → `update_latents` → `compute_new_latent`, and for
+`InferenceSGDMomentum` that's the documented plain-SGD FALLBACK (mirrors upstream's own plan,
+which also documents its `compute_new_latent` override as "not used in practice") — it silently
+ignores `momentum` entirely. Symptom: `beta=0.9` and `beta=0.99` trajectories were bit-identical
+to 15 decimal places (both were secretly plain SGD at `eta=0.1`). Root cause identified by
+noticing the impossible coincidence, not assumed away. Fix: extracted `momentum_inference_step`
+as the single source of truth (`src/core/inference.jl`) that both `_run_inference_loop` and every
+step-by-step caller (tests, diagnostics) now use — the momentum=0 conformance anchor was
+unaffected throughout (it correctly goes through `run_inference`), and the perturb-and-track
+spectrum diagnostics were unaffected too (they hand-rolled the correct velocity update
+independently of `inference_step`) — only the falsification test and the natural-relaxation
+sanity check were silently testing the wrong algorithm. Re-measured with the fix: falsification
+holds (below); the "corrected-optimal" cold-start trajectory turned out BETTER-behaved once
+fixed (clean convergence, no overshoot) than the buggy version had shown.
+
+**Falsification (unaffected by the lambda_min correction — lambda_max was not revised):**
+upstream's own proposed default (`InferenceSGDMomentum(eta_infer=0.1, momentum=0.9)`, from their
+plan doc) is predicted unstable — stability boundary at `beta=0.9` is
+`eta<2(1+0.9)/lambda_max≈0.0334`, three-fold below 0.1; the ceiling as `beta→1` is
+`4/lambda_max≈0.0352`, still `<0.1` — no `beta<1` stabilizes `eta=0.1` on this graph. Measured
+(real `momentum_inference_step` trajectories, `beta=0.9` and `beta=0.99`, 100 steps): NOT a clean
+exponential blowup — nonlinear saturation bounds it, exactly as §24 already documented for plain
+SGD at this same `eta=0.1`. What IS observed: a real excursion (>2x its post-transient baseline,
+peaking ≈2.4-2.7x) that settles into an ELEVATED, non-decaying oscillation, never returning below
+its own baseline — the opposite sign from the corrected-optimal config, which nets a >10x
+DECREASE using the identical measurement protocol. That sign difference (net growth vs net decay
+from the same post-transient baseline) is the falsification test's actual assertion — a specific
+growth multiplier isn't robust here because saturation makes the exact bound graph-and-config-
+dependent, but the sign is not.
+
+**What this closes and does NOT:**
+- CLOSED: `InferenceSGDMomentum` is implemented, conformance-anchored (momentum=0 exact), and
+  genuinely faster than plain SGD on this graph (measured, not assumed) — a real, shippable,
+  ahead-of-upstream feature.
+- CLOSED: upstream's own proposed default hyperparameters are falsified on this graph, predicted
+  before measured, from the (corrected) spectrum.
+- CLOSED, and arguably the more valuable result: §24's `lambda_min=2.3`/`kappa≈49` figures are
+  corrected to `lambda_min≈0.17`/`kappa≈668` — anyone citing §24's condition number going forward
+  should use this section's corrected value. §24's own qualitative conclusions (this graph's
+  production `eta_infer=0.1` default is expansive; Tier D's transformer-LM conformance closure is
+  correctly scoped to `eta=0.01`; the graph is stiffer than the untuned `infer_steps=12` default
+  accounts for) are UNCHANGED and, if anything, reinforced by a worse condition number.
+- NOT closed, and explicitly not claimed: a clean match to the naive fixed-quadratic heavy-ball
+  theory. The graph's local curvature is trajectory-dependent; a single global `(eta*, beta*)` is
+  a worst-case engineering compromise, not a tight theoretical optimum. A trajectory-adaptive
+  momentum schedule (larger `beta` once past the stiff near-init region) is a natural, NOT YET
+  BUILT follow-up if the modest ≈0.989-vs-0.998 speedup needs to be pushed closer to what the
+  corrected `kappa≈668` would allow a truly-optimal (adaptive) scheme to achieve.
+- **Free byproduct for J-02/J-03** (`docs/decisions.md` §25): `momentum_inference_step`'s
+  velocity-Dict-threaded-through-the-caller design is exactly the loop-carried-state shape
+  `Reactant.@trace while` needs (a tuple/pytree of `(state, velocity)` carried across traced
+  iterations, not a Julia-native `for` loop that would unroll under `@compile`) — building
+  momentum correctly already did the state-restructuring work §25 flagged as the real blocker
+  for a `@trace while`-based compiled inference loop, for a second, unrelated feature, for free.
+
+Tests: `test/test_inference_momentum.jl` (conformance anchor, corrected-optimal cold-start
+sanity, falsification — 26/26, always run) and `test/test_inference_momentum_diagnostic.jl` (the
+full renormalized perturb-and-track closure, several minutes — `FABRICPC_MOMENTUM_SPECTRUM_DIAGNOSTIC=1`,
+gated the same way as the demoted Tier D eta=0.1 diagnostic).

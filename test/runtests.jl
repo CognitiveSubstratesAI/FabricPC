@@ -31,6 +31,7 @@ using Zygote
     include("test_transformer_lm.jl")           # assembled transformer LM graph (e2e)
     include("test_char_dataloader.jl")          # C-03: Tiny Shakespeare char loader (offline)
     include("test_inference_normclip.jl")       # C-05: InferenceSGDNormClip
+    include("test_inference_momentum.jl")       # InferenceSGDMomentum: ahead-of-upstream (docs/decisions.md #26)
     include("conformance/test_tier_a.jl")        # Tier A: primitives vs upstream JAX fixtures
     include("conformance/test_tier_b.jl")        # Tier B: node-local vs upstream JAX fixtures
     include("conformance/test_tier_c.jl")        # Tier C: loop-level vs upstream JAX fixtures
@@ -87,4 +88,17 @@ end
 # I/O/exit-code assertions should never be silently swallowed into the parent's tally.
 if get(ENV, "FABRICPC_AD_BACKEND_SUBPROCESS_TESTS", "0") == "1"
     include("test_autodiff_backend_registration.jl")   # defines its own top-level @testset
+end
+
+# InferenceSGDMomentum's full theory-vs-measurement closure (docs/decisions.md #26): a
+# renormalized perturb-and-track power iteration, several minutes, not appropriate for the
+# default fast run. Requires test_inference_momentum.jl's helpers (build_graph, fresh_init,
+# PARAMS, CLAMPS) in scope first. Set FABRICPC_MOMENTUM_SPECTRUM_DIAGNOSTIC=1 to include it.
+if get(ENV, "FABRICPC_MOMENTUM_SPECTRUM_DIAGNOSTIC", "0") == "1"
+    try
+        include("test_inference_momentum_diagnostic.jl")   # defines its own top-level @testset
+    catch e
+        e isa Test.TestSetException || rethrow()
+        println("\n[momentum spectrum diagnostic] failures printed above -- see docs/decisions.md #26. Not counted against the main suite.")
+    end
 end

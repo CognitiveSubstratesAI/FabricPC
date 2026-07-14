@@ -134,8 +134,8 @@ export NodeParams,
 export MuPCConfig, MuPCScalingFactors, compute_mupc_scalings
 # Inference / learning
 export InferenceSGD,
-    InferenceSGDNormClip, run_inference, inference_step,
-    compute_local_weight_gradients
+    InferenceSGDNormClip, InferenceSGDMomentum, run_inference, inference_step,
+    momentum_inference_step, compute_local_weight_gradients
 # Assembly + init
 export graph,
     TaskMap,
