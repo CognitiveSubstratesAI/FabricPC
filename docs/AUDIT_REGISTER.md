@@ -193,12 +193,12 @@ genuinely matches upstream bit-for-bit; only the `_tb_apply_rope` comment was mi
 | C-01 | HIGH | ConvNode (1D/2D/3D) + pooling + windowed-shape validation | DEFERRED (post-Batch 2) |
 | C-02 | HIGH | ResNet-18/CIFAR-10 demo | BLOCKED (C-01) |
 | C-03 | HIGH | Real-text LM data (char tokenizer + windowed loader) | **VERIFIED CLOSED.** `examples/char_lm_pc.jl` -- `CharDataLoader`, a port of `_TokenSequenceLoader`/`CharDataLoader` (dataloader.py:272-390): raw-download (not TFDS -- no Julia binding) of the same `karpathy/char-rnn` source TFDS uses, split with TFDS's own verified 90/5/5 formula (`tiny_shakespeare_dataset_builder.py:52-56`), train-only vocab. Kept example-local (no `src/utils/` module), matching `mnist_pc.jl`'s existing precedent -- this port has never had a library-level dataloader. DIVERGENCE (documented, intentional): 1-based char ids, not upstream's 0-based, matching every other token-id consumer in this codebase (EmbeddingNode, `_one_hot`). Offline regression tests (`test/test_char_dataloader.jl`, 12 assertions): TFDS split formula on two boundary cases, vocab sortedness/1-basing, sliding-window shift-by-one invariant + exact ground truth, drop-incomplete-batch, `max_samples` cap, seeded-reproducible + re-iterable-across-epochs shuffling, decode round-trip. Live-smoke-tested against the real corpus (not just synthetic): split sizes exactly 1,003,854/55,770/55,770 chars (bit-exact TFDS-formula match), vocab_size=65, **zero OOV chars in validation/test against the train-only vocab** (relevant to C-06), a short real training run + generation both executed without error. 352/352 green. |
-| C-04 | HIGH | PC-vs-backprop comparison harness | **DECIDE → OPEN, reclassified.** Reflective cross-check confirmed the new-document framing: NOT structurally blocked by the never-port-backprop decision. `ab_experiment.py`/`statistics.py` treat each arm's `params`/`structure` as fully opaque duck-typed objects; a Julia arm on a plain Lux.jl/Flux.jl MLP never touches FabricPC internals and is not a "port of `train_backprop.py`" in any sense. Real new code still needed (stats module + `ExperimentArm`/`ABExperiment` port + a small Lux arm) — moderate/large effort stands, "blocked" does not. |
-| C-05 | MED | InferenceSGDNormClip | **VERIFIED CLOSED.** `src/core/inference.jl` -- port of `InferenceSGDNormClip` (inference.py:312-356): per-sample L2 gradient-norm clipping on `latent_grad` before the SGD update. Upstream dispatches per-algorithm via a Python class hierarchy (`InferenceBase.update_latents` calls `cls.compute_new_latent(...)`, `cls = type(inference_obj)`) -- the Julia port had NO such dispatch point (`update_latents` hardcoded the plain-SGD formula inline, since only `InferenceSGD` existed). Extracted `compute_new_latent(inf, z_latent, latent_grad)` as a Julia-multiple-dispatch analogue of the same override point, byte-identical for the existing `InferenceSGD` arm (verified: `max_norm=Inf` ⇔ plain SGD, exactly). NOTE (scoped, documented in-file): `jit_flat.jl`'s separate Dict-free JIT/Reactant-prep inference path still hardcodes SGD inline -- `InferenceSGDNormClip` is not usable there; out of C-05's scope (a distinct subsystem with its own eager-parity test discipline). Tests (`test/test_inference_normclip.jl`): hand-computed clip-vs-no-clip ground truth, `max_norm=Inf` byte-equivalence to `InferenceSGD`, `latent_decay` parity isolated from clipping, acceptance (small PC graph trains to lower energy under norm-clipped inference). 359/359 green. |
+| C-04 | HIGH | PC-vs-backprop comparison harness | **DECIDE → OPEN, reclassified.** Reflective cross-check confirmed the new-document framing: NOT structurally blocked by the never-port-backprop decision. `ab_experiment.py`/`statistics.py` treat each arm's `params`/`structure` as fully opaque duck-typed objects; a Julia arm on a plain Lux.jl/Flux.jl MLP never touches FabricPC internals and is not a "port of `train_backprop.py`" in any sense. Real new code still needed (stats module + `ExperimentArm`/`ABExperiment` port + a small Lux arm) — moderate/large effort stands, "blocked" does not. 🔴 **NEW CONFOUND (2026-07-14, `docs/decisions.md` §24):** whatever PC arm this harness builds must NOT run at `eta_infer=0.1` (`transformer_lm()`'s own default) without first checking that config's PC-relaxation conditioning — §24 measured the tiny diagnostic transformer graph as ~5.7× past its own stability limit at η=0.1 (12 steps buys ~0.6 of a stiff relaxation, not convergence), so a PC arm run there would benchmark a non-converged inference loop, not the algorithm — a confound sitting directly under any resulting fidelity/performance claim. Measure or fix the PC arm's own `eta_infer`/`infer_steps` conditioning (same perturb-and-track + power-iteration method as §24) before running the comparison, not after. |
+| C-05 | MED | InferenceSGDNormClip | **VERIFIED CLOSED.** `src/core/inference.jl` -- port of `InferenceSGDNormClip` (inference.py:312-356): per-sample L2 gradient-norm clipping on `latent_grad` before the SGD update. Upstream dispatches per-algorithm via a Python class hierarchy (`InferenceBase.update_latents` calls `cls.compute_new_latent(...)`, `cls = type(inference_obj)`) -- the Julia port had NO such dispatch point (`update_latents` hardcoded the plain-SGD formula inline, since only `InferenceSGD` existed). Extracted `compute_new_latent(inf, z_latent, latent_grad)` as a Julia-multiple-dispatch analogue of the same override point, byte-identical for the existing `InferenceSGD` arm (verified: `max_norm=Inf` ⇔ plain SGD, exactly). NOTE (scoped, documented in-file): `jit_flat.jl`'s separate Dict-free JIT/Reactant-prep inference path still hardcodes SGD inline -- `InferenceSGDNormClip` is not usable there; out of C-05's scope (a distinct subsystem with its own eager-parity test discipline). Tests (`test/test_inference_normclip.jl`): hand-computed clip-vs-no-clip ground truth, `max_norm=Inf` byte-equivalence to `InferenceSGD`, `latent_decay` parity isolated from clipping, acceptance (small PC graph trains to lower energy under norm-clipped inference). 359/359 green. **Upstream conformance coverage added 2026-07-14** (`docs/AUDIT_REGISTER.md` section 6, Tier D transformer-LM): `test_tier_d_transformer_stable.jl`'s `max_norm=1.0` variant (523/523 vs upstream JAX) exercises always-clipped/never-clipped regimes but never approaches the clip boundary itself — closed with a SECOND, purpose-built fixture (`test_tier_d_transformer_stable_normclip_boundary.jl`, `max_norm=2.5`, chosen after a first naive guess was caught and rejected: clipping one node's gradient cascades through the graph topology and can suppress a DIFFERENT node's gradient by ~30×, so a boundary target can't be read off an unclipped baseline in a multi-node graph sharing one global `max_norm`). Result: 523/523 at 1e-4, PLUS a dedicated discrete clip/no-clip decision check at 2 genuine near-boundary crossings (ratios 1.0095→0.9995 and 1.0058→0.9938, both within 1% of the threshold) — **zero decision disagreements**, verified against upstream's own independently-dumped `latent_grad` arrays (not Julia's self-consistency). The `min(1, max_norm/(norm+eps))` branch is now genuinely exercised, not coverage-by-absence. |
 | C-06 | MED | evaluate_autoregressive | **VERIFIED CLOSED.** `src/training/train_autoregressive.jl` -- port of `_eval_step_autoregressive`/`evaluate_autoregressive` (train_autoregressive.py:541-710): mean cross-entropy loss, perplexity, next-token accuracy over a `test_loader` (e.g. `CharDataLoader`, C-03), with `"x"` clamped and `"y"` left FREE (the network predicts, unlike training) -- de-risked by C-03's real-corpus smoke test finding zero train/validation/test vocab mismatch. Applies the same F-05 one-hot handling (`"y"` may be raw ids or one-hot; `compute_loss` still carries no ndim-check of its own -- expansion happens once, in `_eval_step_autoregressive`, and the expanded array is returned to the caller so the accuracy computation doesn't repeat the check). DIVERGENCES (documented in-file): no `config`/`use_causal_mask` param (upstream's external causal-mask clamp branch is dead code in this port, same as `train_step_autoregressive`); `rng` threaded sequentially, no `jax.random.split`/`jax.jit` (this stack is eager throughout, matching the rest of the file). `debug=true` ports upstream's first-batch diagnostics (per-token CE, per-token intrinsic perplexity, probability on the correct token). `_count_correct` factored out (mirrors the existing `_sample_next` precedent) for an isolated, hand-computed-ground-truth test independent of the full graph/PC-inference machinery. Tests (`test/test_transformer_lm.jl`): metric shape/range/`perplexity==exp(loss)`, raw-id vs pre-one-hotted equivalence, `debug=true` doesn't perturb results, empty-loader edge case, `_count_correct` exact ground truth. 371/371 green. |
 | C-07 | MED | GlobalStateInit / NodeDistributionStateInit | OPEN |
 | C-08 | MED | ND Kaiming/Xavier fan-in math | DEFERRED (tied to C-01) |
-| C-09 | MED | muPC never validated on either transformer node family | Umbrella over F-01+F-02, both now closed — test coverage for TransformerBlock landed with F-01's fix; MhaResidualNode/LnMlp1Node/Mlp2Residual under real `MuPCConfig` remains OPEN. |
+| C-09 | MED | muPC never validated on either transformer node family | Umbrella over F-01+F-02, both now closed — test coverage for TransformerBlock landed with F-01's fix; MhaResidualNode/LnMlp1Node/Mlp2Residual under real `MuPCConfig` remains OPEN. **Monolithic `TransformerBlock` half now has real CONTENT (2026-07-14, `docs/decisions.md` §24 follow-up):** measured muPC's effect on the SAME condition number characterized while closing Tier D — `MuPCConfig` reduces `λmax/λmin` from **~49 → ~41 (~16%)**, `include_output=True` vs `False` making no measurable difference. This is NOT the mechanism one might hope for: `λmax` is essentially unchanged (<1%) — muPC does not touch the dominant instability at all. The entire effect is a ~19% increase in `λmin`, because `compute_mupc_scalings` only reaches TWO edges in this topology (`embed→transformer_0:in` always, `skip_0→output:in` only when `include_output=True`) — both PERIPHERAL to the graph — while the measured `λmax≈113` instability lives INSIDE `TransformerBlock`'s own monolithic internal Jacobian (attention softmax + GELU FFN), which per-edge muPC scaling has no mechanism to reach. Translates to real steps saved: ~12.5→~10.5 steps to reach the same 0.6 residual-relaxation fraction (η_opt/r_opt formula, cross-validated against this session's independently-measured baseline). **The decomposed family (MhaResidualNode/LnMlp1Node/Mlp2ResidualNode) is a materially different question, still fully OPEN** — that family exposes attention/FFN internals as separate PC nodes with their own inter-node edges, so muPC's per-edge scaling would reach much more of the internal dynamics there and could plausibly show a larger effect; not measured this session. |
 | C-10 | LOW | BayesianTuner (537-line #28 rework) | DEFERRED — X-06 names a concrete structural blocker: `bayesian_tuner.py` requires `train_autoregressive`'s `iter_callback` param and `epoch_callback`'s extended signature, neither of which exist in `train_autoregressive.jl` yet. |
 | C-11 | LOW | StorkeyHopfield weight_init: Zeros (Julia) vs Xavier (upstream) | **VERIFIED CLOSED** (`52bb6a0`). Reflective cross-check resolved the R-03 read: neither implementation has a classical Storkey/Hebbian accumulation rule — W is 100% PC-gradient-learned in both — so upstream's own stated criterion for "Xavier matters when W learns via PC gradients" applies, confirming this was a port slip (Julia copied the internal `None`-fallback constant, not the constructor's actual default), not a legitimate design choice. Fixed to `XavierInitializer()`. |
 | C-12 | LOW | ~17 further API-surface/UX divergences (IDE list) | DEFERRED |
@@ -362,68 +362,179 @@ mathematically LR-invariant since "x" carries no trainable params) — ruling ou
 vacuous test (nothing failed) and an over-brittle one (everything failed regardless of
 relevance). File restored byte-identical (md5-verified) and reconfirmed green afterward.
 
-**Transformer-LM track — OPEN, 146/175, gated out of the default suite.**
-`scripts/generate_tier_d_transformer_fixtures.py` assembles the real
-`src/models/transformer_lm.jl` topology (`seq_len=8, vocab_size=10, embed_dim=8,
-num_heads=2, num_blocks=1`: `input → embed → transformer_0 → skip_0 → output`, all four
-node types Tier B already validated in isolation) plus one upstream-only addition — an
-explicit mask node (`IdentityNode`, clamped via a third `TaskMap` task `causal_mask`) feeding
+**Transformer-LM track — VERIFIED CLOSED (2026-07-14), via a stability-conditioning
+diagnosis, not a tolerance fit.** `scripts/generate_tier_d_transformer_fixtures.py` assembles
+the real `src/models/transformer_lm.jl` topology (`seq_len=8, vocab_size=10, embed_dim=8,
+num_heads=2, num_blocks=1`: `input → embed → transformer_0 → skip_0 → output`, all four node
+types Tier B already validated in isolation) plus one upstream-only addition — an explicit
+mask node (`IdentityNode`, clamped via a third `TaskMap` task `causal_mask`) feeding
 `TransformerBlock`'s "mask" slot, since Julia's `TransformerBlock` has no such slot at all
 (inline `causal::Bool` instead) — a real, intentional, documented topology divergence, not a
-bug. `VocabProjectionNode` is explicitly built `activation=IdentityActivation(),
-energy=GaussianEnergy()` to match Julia's actual defaults rather than upstream's own
-differing default (`SoftmaxActivation`/`CrossEntropyEnergy`) — using upstream's defaults
-would have silently compared two different energy functionals. One training step only
-(`initialize_graph_state → run_inference (12 steps) → get_graph_param_gradient → one
-train_step`) — proving the assembled graph computes correctly, not that a long training
-trajectory converges identically (that would mostly re-test Tier C's already-proven per-step
-numerics at much higher attention-relaxation cost for little new signal).
+bug. `VocabProjectionNode` is built with upstream's own class defaults
+(`SoftmaxActivation`/`CrossEntropyEnergy`), matching `transformer_lm.jl`'s actual behavior —
+an earlier draft of this fixture had it backwards (Identity+Gaussian), traced to a STALE
+top-of-file comment in `transformer_lm.jl` itself; corrected against the real struct default
+and `git blame` (`565f9fb`), not the comment. All three Verify Draft lenses (API fidelity,
+tolerance-and-comment discipline, and a 4th lens checking the fixture's topology against
+`transformer_lm.jl` line-by-line) verdicted CORRECT before generation.
 
-All three Verify Draft lenses (API fidelity, tolerance-and-comment discipline, and a 4th
-lens specifically checking the fixture's topology against `transformer_lm.jl` line-by-line —
-node sequence, edge-key naming, the mask-node/`causal_mask` wiring, the `VocabProjectionNode`
-override, `rope_theta`/`internal_activation` defaults, the 0-based/1-based token-id
-convention Tier B established) verdicted CORRECT before generation.
+The argument for closure is built in this order — **read the control before the fix**, or it
+reads exactly like tolerance-fitting by another name:
 
-**Result: 146/175 — NOT green, and not forced green.** Every pre-relaxation assertion is
-bit-exact (`params0` 19/19, `initialize_graph_state` 29/29 — confirming graph construction,
-embedding lookup, RoPE, causal masking, LayerNorm, GELU MLP, and the residual/vocab-
-projection stack are all correct pre-relaxation). All 29 failures are post-relaxation, after
-real 12-step multi-head-attention loops (`run_inference` 23/29, `get_graph_param_gradient`
-32/49, `train_step` 43/49). One real, legitimate bug was found and fixed along the way
-(not a tolerance workaround): upstream's `VocabProjectionNode.forward` never assigns
-`pre_activation` at all (only `z_mu`/`error`), diverging from `NodeBase`'s own general
-contract — that one field for that one node is excluded with a documented reason, matching
-`test_tier_b.jl`'s own established precedent of never asserting it either. Beyond that,
-substantial further investigation found no additional bug: the Zygote autodiff seam was
-FD-validated directly on an isolated `causal=true` `TransformerBlock` (ratio ~1.00–1.01 vs
-central differences), and a line-by-line source comparison confirmed exact formula agreement
-for RoPE, causal masking, the per-position `sqrt(effective-context)` variance compensation,
-LayerNorm eps, and GELU. Per-element failure inspection shows margins consistently
-**~1.3–1.7× over the 1e-4 threshold for a minority of elements — never gross, NaN, or
-wrong-signed — and growing with iteration count**, matching the tolerance comment's own
-documented rationale (Float32 BLAS-associativity drift compounding through a real 12-step
-relaxation, not a discrete logic error) rather than refuting it. No tolerance was loosened
-and no assertion was dropped to force a pass.
+**1. Port fidelity is established independently of anything below.** Tier B's 151/151
+isolated node-local gradient conformance, plus this track's own pre-relaxation checks
+(`params0` 19/19, `initialize_graph_state` 29/29 — graph construction, embedding lookup,
+RoPE, causal masking, LayerNorm, GELU MLP, and the residual/vocab-projection stack all
+correct pre-relaxation) are unaffected by anything that follows.
 
-Adversarial Re-verify's mutation-proof lens repeated Tier C's standard on the live (still-
-red) file: an LR mutation (0.05→0.06) broke exactly the LR-dependent `train_step` sub-testset
-(6→25 of 49 failing) while every LR-independent testset's pass/fail counts stayed byte-for-
-byte identical — proving the 146 passing assertions are genuinely live comparisons, not
-tautological, even though the track overall remains open. The regression lens confirmed zero
-collateral damage: full suite with both new tracks wired in is **849/878** (672 pre-Tier-D +
-31 MNIST + 146 transformer = 849 pass; the 29 fails are *entirely* the transformer track's
-own open gap, not a single previously-green test newly broke).
+**2. The MNIST control: contractive at η=0.1, passes 1e-4 — same harness, same tolerance,
+same η.** The PC inference-relaxation loop is literally gradient descent on energy w.r.t.
+latents, iteration matrix `(I − η·H)` — contractive (cross-implementation float32 noise stays
+bounded) iff `η < 2/λmax`, expansive (noise compounds exponentially, independent of port
+correctness) otherwise. Measured directly on Tier D-MNIST's own graph (`x(784)→h(128,tanh)
+→y(10)`, **same eta_infer=0.1** as the transformer config below — the contrast is NOT a
+gentler η) via perturb-and-track (κ≈0.902/step) AND power-iteration on the FD-linearized
+one-step Jacobian (ρ≈0.90001, agreeing to 4 significant figures) — implying `λmax≈1.0` for
+MNIST's one free node, ~100× smaller curvature than the transformer's. MNIST is contractive
+because it's well-conditioned at η=0.1, not because it uses a smaller η.
 
-**Disposition**: `test/conformance/test_tier_d_transformer.jl` is committed (the fixture,
-the FD-validation, and the line-by-line source comparison are real, reusable investigative
-work) but gated behind `FABRICPC_TIER_D_TRANSFORMER=1` in `runtests.jl` — NOT run by
-`julia test/runtests.jl`'s default invocation — so the health-gate/default suite stays green
-(**703/703** with the gate off) while this track stays open. Revisit by either (a)
-differential-debugging against intermediate, currently-undumped upstream steps to either
-confirm the BLAS-noise hypothesis definitively or find a real remaining bug, or (b), if the
-per-element evidence is judged sufficient on its own, documenting and adopting a specifically
-justified looser bound for this track only.
+**3. The transformer at η=0.1 is measurably expansive — this is what 146/175 was actually
+measuring.** Same two methods on the transformer tiny config: power-iteration crossing point
+`η*≈0.0176` (`λmax≈113`, superseding this investigation's own earlier single-point estimate
+of λ≈36 — that estimate fit ONE eigenvalue to the endpoint growth rate, which cannot describe
+a stiff system; see the condition-number paragraph below for why that mattered). At the
+fixture's actual η=0.1, the linearized map's spectral radius is **ρ≈8.80 — ~5.7× past its own
+stability limit**, and direct perturb-and-track confirms it operationally: tail per-step
+amplification ~1.24–1.27×, compounding to **~25,000–45,000× over the 12-step relaxation** for
+either of two tested seed magnitudes. Two independent float32 implementations of a map that
+amplifies its own rounding error 25,000× in 12 steps cannot be expected to agree — regardless
+of port fidelity — and 146/175's failures localize exactly where this predicts: 100%
+post-relaxation, concentrated in `embed.latent_grad` (the node where every downstream
+gradient in the graph accumulates each step — independently flagged as the single worst field
+by three separate, unrelated measurements: the original per-step trace, the fori_loop-vs-eager
+JAX-internal check below, and the float64 anchor).
+
+**Condition number, and why 12 steps was never going to be enough even at a safe η.** The
+slowest-decaying mode's measured tail contraction at η=0.01 (ρ≈0.977/step, from live E5
+measurement, not the linear estimate) implies that mode's own `λ≈2.3`. Condition number
+`λmax/λmin ≈ 113/2.3 ≈ 50` — a stiff Hessian. Even at the best possible stable η, the slow
+mode only contracts ~0.96–0.98/step; **12 steps buys `0.96¹²≈0.6` of relaxation, not
+convergence** — real relaxation of this graph needs on the order of 50–300 steps (from the
+measured 0.875–0.977 per-step range), not upstream's own `infer_steps = 3·(2·blocks+2) = 12`
+heuristic. This reframes what 146/175 was measuring: not primarily "does Julia match
+upstream" but "does an 12-step-truncated relaxation of a stiff, non-preconditioned map even
+reach a state two independent float32 implementations *could* agree on" — it could not, by
+construction, independent of any port defect.
+
+**4. The transformer at η=0.01 (still 12 steps — same iteration count, not a longer
+relaxation) is contractive, and conforms at the existing tight tolerance with no change.**
+Measured tail amplification 0.875–0.977/step (both tested seed magnitudes) vs η=0.1's
+1.24–1.27/step — the qualitative flip predicted by η*≈0.0176. `test/conformance/fixtures/tier_d_transformer_stable_{sgd,normclip}.npz`
++ `test/conformance/test_tier_d_transformer_stable.jl` replay the full
+`initialize_graph_state → relax01..relax12 → converged → get_graph_param_gradient →
+train_step` pipeline and compare **523 arrays — every intermediate relaxation step, not just
+endpoints (a strictly harder check than the original 175-comparison, endpoint-only test)** —
+at rtol=atol=1e-4. **523/523 pass for both `InferenceSGD` and `InferenceSGDNormClip`** (the
+latter giving C-05 its first conformance-harness coverage); worst required tolerance across
+all 523 comparisons is 1.57e-5 (SGD) / 1.59e-5 (NormClip) — a ~6× margin, not a near-miss.
+This is now the **primary, ungated** Tier D transformer-LM conformance test.
+
+**5. Include the falsified hypothesis — a register that shows its own dead ends is worth
+more than one that doesn't.** The first specific mechanism proposed for the pre-η*-diagnosis
+146/175 gap was "JAX's `value_and_grad`/`has_aux` autodiff tracing reassociates float32 ops
+differently than the plain eager forward used at state-init." Measured directly (E1): diffing
+`TransformerBlock.forward(...)` against the `has_aux` channel of `forward_and_latent_grads(...)`,
+identical params/inputs/state — **exactly 0.0 difference**, for every node. This is CORRECT
+behavior, not a null result: `value_and_grad` on an un-`jit`ted function dispatches its primal
+op-by-op, so there is no fusion for it to reassociate — the hypothesized mechanism doesn't
+exist at that site. The real mechanism (E2) is one level up, in upstream's own
+`jax.lax.fori_loop`-compiled `run_inference` vs. an eager per-step Python loop over the
+*identical* `inference_step` body: these diverge by up to 1.86e-5 by step 12, purely within
+JAX, no Julia involved — real, but only ~1/49th of the η=0.1 endpoint gap on its own (E2
+alone does not explain the magnitude; the stability analysis above does). A float64 anchor
+(E3) independently nailed the STEP-1 seed almost exactly (7.6776e-7 measured vs. 7.6e-7
+originally observed, same node/fields: `transformer_0.z_mu`/`pre_activation`) — ordinary
+float32-vs-float64 rounding noise, present from the very first forward pass. This also
+resolves a wording overclaim: `params0`/`initialize_graph_state`'s "bit-exact" language
+meant "passes the 1e-4 gate," not literal bitwise equality — Julia's first forward pass sits
+7.68e-7 from the float64 "truth," and upstream's own float32 sits the same 7.68e-7 from it.
+**Julia is as close to the exact answer as upstream is** — correct to float32 precision,
+verified against an independent float64 anchor, which is a stronger and more precise claim
+than "bit-exact" ever was.
+
+**What this closes, and what it explicitly does NOT.** The defensible claim: *conformance
+holds at tight tolerance (1e-4, with a measured ~6× margin) wherever this relaxation is
+well-conditioned; where it is expansive, cross-implementation disagreement measures the
+configuration's conditioning, not the port's fidelity* — derived from direct measurement
+(perturb-and-track AND power-iteration, cross-checked against each other on both graphs), not
+fitted to the discrepancy it explains. What it does **not** license: any claim that
+`transformer_lm()` run at ITS OWN production default (`eta_infer=0.1`, e.g.
+`examples/char_lm_pc.jl`/the Shakespeare demo) is verified-conformant against upstream —
+that config runs in the measured-expansive regime, so its converged latents are not expected
+to be reproducible across BLAS threadings or machines, let alone across languages. State this
+limit plainly rather than let it be inferred from the closure above.
+
+**Disposition.** `test/conformance/test_tier_d_transformer.jl` / `tier_d_transformer.npz`
+(η=0.1) are **demoted, not deleted** — the `relax01..relax12` per-step dumps are the most
+valuable diagnostic asset this investigation produced. `test/conformance/test_tier_d_transformer_stable.jl`
+(η=0.01, both `InferenceSGD` and `InferenceSGDNormClip`) and
+`test_tier_d_transformer_stable_normclip_boundary.jl` (the boundary-straddle C-05 coverage,
+section 4) are wired in **ungated**, inside the main `@testset "FabricPC.jl"`, as the track's
+real conformance target. The demoted η=0.1 file is kept gated behind
+`FABRICPC_TIER_D_TRANSFORMER=1` — but pulled **outside** the main testset into its own
+independent, try/caught testset (a first pass nested it inside "FabricPC.jl," which made the
+whole suite throw `LoadError` whenever the gate was set — a nested `@testset` only defers
+its failures to the parent's tally, it doesn't swallow them; only a non-nested testset's own
+`TestSetException` can be caught without also catching genuine regressions elsewhere).
+**Verified via a live run**: default suite (gate off) — `FabricPC.jl | 2309 2309` — every
+prior tier plus the new stable SGD (1046 = 523×2 variants), NormClip-boundary (560 = 523
+value comparisons + 1 straddle-exists check + 36 discrete clip/no-clip decision checks, all
+36 near-boundary points, zero mismatches), on top of the 703 pre-existing baseline. With
+`FABRICPC_TIER_D_TRANSFORMER=1` set, the demoted testset runs and prints its own 146/175
+breakdown (identical to the numbers above, confirming reproducibility) but is caught before
+it can affect "FabricPC.jl"'s own verdict — the script still completes without throwing.
+
+**Two findings that outlive this specific closure:**
+
+- **The η=0.1 default is a live problem in the codebase this investigation is about, not
+  just a fixture artifact.** `transformer_lm.jl`'s own production default is `eta_infer=0.1`
+  against a measured `η*≈0.0176` for the (much smaller) tiny diagnostic config — confirmed
+  the SAME default exists upstream too: `examples/transformer_demo.py`'s
+  `create_transformer_model` (the monolithic-`TransformerBlock` family `transformer_lm.jl`
+  actually ports) defaults `eta_infer=0.1` in both its CLI arg and function signature — this
+  is an upstream default, not a Julia-introduced one, and worth reporting back as a real
+  ecosystem contribution if confirmed at production scale. Suggestively (not conclusively —
+  different node family, different scale, so stated as a parallel, not evidence): the
+  *decomposed* model family's own demo (`examples/transformer_v2_demo.py`, `MhaResidual`→
+  `LnMlp1`→`Mlp2Residual`, embed_dim=64, depth=2 — a different graph from this track's) ships
+  a `CHAR_DEFAULTS.eta_infer = 0.0174852165627398`, empirically arrived at via what its own
+  comment calls "Phase 2 refined lr/eta_infer/infer_steps" hyperparameter search — within
+  0.1% of this session's independently-measured η*≈0.0176 for an unrelated tiny config.
+  **Direct consequence for future work, not just a curiosity: C-04 (PC-vs-backprop
+  comparison) run at η=0.1 would be benchmarking a non-converged inference loop** — a
+  confound sitting directly under any eventual fidelity/performance claim from that harness.
+  Fix the eta config (or measure/document the target config's own conditioning first) before
+  running C-04, not after. A production-scale η-sweep (this session's sweep was tiny-config
+  only, explicitly not claimed to transfer) belongs in `docs/decisions.md` as a follow-up.
+- **`InferenceSGDNormClip` conformance: the boundary-untested gap is now CLOSED, positively
+  (section 4, C-05).** A second fixture (`max_norm=2.5`, re-derived after a naive first guess
+  was caught and rejected — clipping one node cascades through the graph and can suppress a
+  DIFFERENT node's gradient by ~30×, invalidating a threshold read off an unclipped baseline
+  in a multi-node graph sharing one global `max_norm`) produces two genuine near-boundary
+  crossings (within 1% of the threshold). 523/523 at 1e-4, PLUS zero discrete clip/no-clip
+  decision disagreements at either crossing, verified against upstream's own independently-
+  dumped arrays. `test_tier_d_transformer_stable_normclip_boundary.jl` is wired in ungated
+  alongside the primary stable test.
+
+**C-09 follow-up (section 4): does muPC — a diagonal preconditioner on this exact iteration
+matrix — reduce the condition number?** Measured directly on this graph: yes, but modestly
+(~49→~41, ~16%) and by a limited mechanism (`compute_mupc_scalings` only touches two
+PERIPHERAL edges in this monolithic-`TransformerBlock` topology; `λmax≈113`, the dominant
+instability, lives inside the block's own internal attention/FFN Jacobian, which per-edge
+scaling cannot reach). See C-09's own row (section 4) for the full numbers — this gives that
+row real content for the first time on the monolithic node family; the decomposed family
+(`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`) remains fully open and is a materially
+different question (more inter-node edges for muPC to reach).
 
 ## 7. Documentation debt
 

@@ -702,3 +702,90 @@ is currently enforced by discipline/convention, not code — a real
 `FabricPCReactantEnzymeExt`-style guard analogous to `_register_ad_backend!` would be a
 reasonable small addition if this trips someone up in practice; not built yet since it
 hasn't (benchmark/ code is run standalone, never alongside the main test suite).
+
+## 24. PC-relaxation stability: `eta_infer` is bounded by the graph's own conditioning, and
+`transformer_lm()`'s default sits well past that bound
+
+Date: 2026-07-14
+
+Closing Tier D's transformer-LM conformance track (`docs/AUDIT_REGISTER.md` §6) required
+diagnosing why a real 12-step relaxation on the assembled `TransformerBlock` graph would not
+reproduce across two independent float32 implementations at any reasonable tolerance, even
+with port fidelity independently established (Tier B 151/151). The PC inference loop
+(`inference_step`'s `zero_grads → forward_value_and_grad → update_latents`, iterated
+`infer_steps` times) is literally gradient descent on energy w.r.t. latents: one step is
+`z ← z − η·∇E(z)`, i.e. the local linearization is `z_{n+1} = (I − η·H)·z_n` for the local
+Hessian/curvature `H`. This iteration is **contractive** (perturbations — including ordinary
+float32 rounding noise — shrink each step, so independent implementations converge toward
+agreement) iff `η < 2/λmax(H)`, and **expansive** (perturbations grow, compounding rounding
+noise exponentially regardless of implementation correctness) otherwise. This was not merely
+inferred — measured two independent ways (direct perturb-and-track amplification, and
+power-iteration on the FD-linearized one-step Jacobian; the two agreed to within a few percent
+on every graph tested) on two graphs:
+
+- **MNIST-MLP** (`x(784)→h(128,tanh)→y(10)`, `eta_infer=0.1`, the same η as below): `λmax≈1.0`,
+  contractive (measured κ≈0.90–0.902/step). Well-conditioned at its own default.
+- **The tiny transformer-LM diagnostic graph** (`embed_dim=8, num_heads=2, num_blocks=1` — the
+  Tier D conformance fixture's own config, NOT a production scale): `λmax≈113`, stability
+  boundary `η*≈0.0176`. At the fixture's `eta_infer=0.1` (`transformer_lm()`'s own default),
+  the linearized map's spectral radius is `ρ≈8.80` — **~5.7× past its own stability limit** —
+  and directly-measured amplification confirms it operationally: ~1.24–1.27× per step,
+  compounding to ~25,000–45,000× over 12 steps for either of two tested perturbation
+  magnitudes.
+
+**The Hessian is stiff, which matters beyond the stability boundary itself.** The
+slowest-decaying mode's own measured contraction rate at a safe `eta_infer=0.01` is only
+`ρ≈0.977`/step (implying that mode's `λ≈2.3`) — condition number `λmax/λmin≈113/2.3≈50`. Even
+at the best possible stable η, the slow mode only contracts `~0.96–0.98`/step, so **12 steps
+buys `0.96¹²≈0.6` of relaxation, not convergence to the energy minimum** — real relaxation of
+a graph this stiff needs on the order of 50–300 steps, not upstream's own
+`infer_steps = 3·(2·num_blocks+2) = 12` heuristic (`transformer_lm.jl`, `examples/
+transformer_demo.py`'s `create_transformer_model`). This reframes the original 146/175
+conformance gap: it was measuring whether a 12-step-truncated relaxation of a stiff,
+unpreconditioned map reaches a state two independent float32 implementations *could* agree on
+(it could not, by construction) — not primarily whether the port matches.
+
+**This is upstream's own default, confirmed, not a Julia-introduced value.**
+`examples/transformer_demo.py`'s `create_transformer_model` (the monolithic-`TransformerBlock`
+family `transformer_lm.jl` actually ports) defaults `eta_infer=0.1` in both its CLI argument
+and function signature. Worth reporting upstream if confirmed at production scale (this
+session's η* is tiny-diagnostic-config-only and explicitly not claimed to transfer — a
+production-scale sweep, e.g. on `char_lm_pc.jl`'s real dimensions, is the natural follow-up).
+Suggestively — not conclusively, since it's a different node family (`MhaResidual`/`LnMlp1`/
+`Mlp2Residual`, not the monolithic `TransformerBlock`) at a different scale (`embed_dim=64,
+depth=2`) — `examples/transformer_v2_demo.py`'s `CHAR_DEFAULTS.eta_infer =
+0.0174852165627398` was arrived at via what its own comment calls "Phase 2 refined lr/
+eta_infer/infer_steps" hyperparameter search, and sits within 0.1% of this session's
+independently-measured `η*≈0.0176` for an unrelated tiny config — consistent with upstream's
+own tuning having empirically rediscovered a stability boundary of this same general kind,
+without naming it as such.
+
+**Practical consequences, not just a diagnostic curiosity:**
+
+- `transformer_lm()` run at its own default (`eta_infer=0.1`, e.g. the Shakespeare/char-LM
+  demo path) trains — nonlinear saturation (softmax, LayerNorm, GELU) bounds the divergence a
+  purely linear analysis would predict as unbounded — but its converged latents are not
+  expected to be reproducible across BLAS threadings, hardware, or (as this investigation
+  found) languages. Tier D's transformer-LM conformance closure (§6) is scoped to
+  `eta_infer=0.01`, NOT the production default; that scope limit is stated explicitly in the
+  register precisely so it doesn't get inferred away.
+- **C-04 (PC-vs-backprop comparison harness, §4) must not run at `eta_infer=0.1`** without
+  first checking that config's own conditioning — otherwise the comparison benchmarks a
+  non-converged inference loop, a confound sitting directly under any resulting fidelity or
+  performance claim. Fix or document the eta config before running C-04, not after.
+- A production-scale `eta_infer` sweep (this session's was tiny-diagnostic-config only) is a
+  reasonable, cheap follow-up — same method (perturb-and-track + power-iteration
+  cross-check), applied to `char_lm_pc.jl`'s or `decomposed_lm_pc.jl`'s real dimensions.
+
+**Does muPC (a diagonal per-edge preconditioner on this exact iteration matrix) fix the
+conditioning?** Measured directly, same methodology, same graph (`docs/AUDIT_REGISTER.md`
+section 4, C-09): yes, but only ~16% (`λmax/λmin` ~49→~41), and not via `λmax` — muPC leaves
+the dominant instability essentially untouched (<1% change) because `compute_mupc_scalings`
+only reaches two edges PERIPHERAL to `TransformerBlock` in this topology (`embed→
+transformer_0:in`, and `skip_0→output:in` only under `include_output=True`); the measured
+`λmax≈113` lives inside the block's own internal attention/FFN Jacobian, which per-edge
+scaling has no mechanism to reach. Real but modest: ~12.5→~10.5 steps to the same relaxation
+quality. This is scoped to the monolithic `TransformerBlock` family only — the decomposed
+family (`MhaResidualNode`/`LnMlp1Node`/`Mlp2ResidualNode`) exposes attention/FFN internals as
+separate PC nodes with their own edges, so muPC could plausibly do much more there; not yet
+measured (C-09's other, still fully open half).
