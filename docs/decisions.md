@@ -683,6 +683,22 @@ inexpressible here. Adequate for autoregressive LM training (the only topology t
 currently trains) — revisit if a padding-mask use case (e.g. variable-length batches) shows
 up.
 
+**X-02 vindication (2026-07-14).** Upstream's own `CHANGELOG.md` `[Unreleased]` documents a real
+generation bug this design is structurally immune to: `generate_autoregressive` on v1 graphs that
+declare an external `causal_mask` node never clamped the mask during generation, so attention ran
+with a mask latent left over from state initialization instead of the lower-triangular pattern used
+in training/eval — upstream's fix assembles the clamp in one shared helper
+(`causal_mask_clamps(structure, batch_size, seq_len)`) now called from every consumer, including the
+generation path that had been missing it. This bug class requires an external mask NODE that some
+caller can forget to clamp. Confirmed by reading `get_slots(::TransformerBlock)` directly
+(`src/nodes/transformer.jl:75`): `Dict("in" => SlotSpec("in", false))` — one slot, no `"mask"` entry
+— matching a whole-file grep for `mask` (only `causal`/`_tb_causal_mask`/`cmask`, all internal,
+compile-time-constant additive masks baked in at graph construction, never a clamped graph node).
+Julia's own `generate_autoregressive`/`_generation_step` (`src/training/train_autoregressive.jl:361`
+and helpers) has no causal-mask clamp branch at all — nothing analogous to upstream's omitted
+`causal_mask_clamps` call exists to omit. Immune by construction, not by a fix that could later
+regress.
+
 **X-03 — `rope_theta` hardcoded to `10000`.** Upstream exposes it as a constructor
 parameter; Julia's `_tb_rope_tables` hardcodes the standard value. Trivial to parameterize
 (thread a `rope_theta` kwarg through `TransformerBlock`/`MhaResidualNode`/`_tb_rope_tables`)
