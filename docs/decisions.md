@@ -1750,7 +1750,9 @@ Applying the GC/memory-management reference (`docs/specs/Julia/Memeory managemen
 | tool | level | what it found |
 |---|---|---|
 | `@code_warntype` | type inference | `forward(::Linear)` infers to `Tuple{Any, NodeState}`; `NodeState`'s 6 fields are `::Any` |
-| `AllocCheck.check_allocs` | static / line | `forward(::Linear)` = 46 allocation sites, **16 dynamic dispatches** — incl. `size(state.z_latent,1)` (`linear.jl:92`) and `zeros(…,batch,…)` (`linear.jl:94`) boxing because `z_latent::Any` makes even the batch-size computation dynamic |
+| `AllocCheck.check_allocs` | static / line | `forward(::Linear)` = 46 allocation sites (16 where an `::Any` operand forced the compiler off the static-dispatch fast path) — incl. `size(state.z_latent,1)` (`linear.jl:92`) and `zeros(…,batch,…)` (`linear.jl:94`), whose results must be **BOXED** because `z_latent::Any` leaves even the batch size an unknown type |
+
+**Terminology precision (the allocation is BOXING, not "dispatch" — dispatch is a Julia strength):** the allocations above come from `::Any` type instability forcing values to be **boxed** (heap-allocated with a type tag, because their concrete type/size is unknown at compile time), plus the loss of inlining/specialization. Julia's multiple dispatch is normally resolved *statically* (devirtualized, zero-cost) and is a core strength — it is not the problem here. AllocCheck flags some sites as "dynamic dispatch" only because an `::Any` operand pushed the compiler onto the runtime-lookup fallback; the lookup itself is cheap, the boxing of the unknown-typed value is the allocation. The J-06 fix (parametric `NodeState{A}`) does NOT remove dispatch — it restores type stability so the SAME multiple-dispatch calls resolve statically and values stay unboxed. Root cause: the `::Any` field annotation that discards type info, not dispatch.
 | `Profile.Allocs` | runtime / site | 6565 allocs/call → `put_node` Dict-rebuild (1440, J-07) + clamped-input 48 MB `copy`/`zero` + matmul temporaries |
 | `BenchmarkTools` + `@timed`/`GC` | cost | 208 MB/call; **57% gc% in sustained loops**; median 2× min from GC variance |
 
