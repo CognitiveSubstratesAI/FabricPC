@@ -1014,6 +1014,17 @@ surprising either direction, `@code_hlo` (Reactant) vs JAX's `.lower(...).as_tex
 comparable StableHLO/HLO IR from both frontends into the SAME backend — a slow result becomes
 debuggable in the IR instead of mysterious, since both sides lower to the same compiler.
 
+**ROADMAP intel, for awareness only (upstream `docs/dev_plans_archive/ROADMAP.md` Phase 8.1):**
+upstream's own planned direction for their transformer stacks is Flax's `nn.scan` — one compiled
+block, scanned across the LAYER axis (`num_layers`), rather than unrolled. This is the SAME
+unrolling problem this section just found for `flat_run_inference` (point 1 above), but on the
+layer axis instead of the inference-step axis — upstream hasn't solved either axis yet
+(`nn.scan` is Phase 8, unbuilt), and neither has this port. Not urgent, but worth remembering
+if/when a multi-block `transformer_lm()` graph gets compiled: `num_blocks` unrolling under
+`@compile` is the same class of problem as `infer_steps` unrolling, and would want the same kind
+of fix (a traced loop over the block axis, if Reactant has an equivalent scan primitive) rather
+than being rediscovered independently.
+
 ## 26. `InferenceSGDMomentum`: shipped ahead of upstream, correctly — and the verification pass
 that chased its own mismatch corrected §24's own spectrum measurement in the process
 
