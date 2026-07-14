@@ -178,6 +178,21 @@ muPC + the full recipe makes deep PC nets trainable. The diagonal-softmax
 approximation remains for the general (non-CE) softmax case; only the CE pairing
 gets the exact path.
 
+> **⚠️ RISK FLAG (2026-07-14, later same session): the ~7-8×/~7.87× number below is NOT SAFE TO
+> CITE EXTERNALLY yet.** §25 (later this file) mandates replacing `flat_run_inference`'s unrolled
+> loop with `@trace while` — and `@trace while` compiles to the same `stablehlo.while` construct
+> `jax.lax.fori_loop` already uses on the JAX side of THIS benchmark. Direct HLO inspection
+> (`Reactant.@code_xla` vs JAX's `.lower(...).compile().as_text()`, same graph, both sides) shows
+> Julia's current (unrolled) compiled program has **zero `while` loops, ~41 `dot` ops, 350
+> fusions**, while JAX's has a genuine loop (~4 `dot` ops appearing once in the loop body, 74
+> fusions) — a fundamentally different program shape, not just a faster one. This is real evidence
+> that at least part of the measured speedup could be an artifact of the unrolled configuration
+> §25 is about to remove, not an architectural property of the closed-form-gradient approach.
+> **Decisive test ATTEMPTED and BLOCKED** on a genuine Reactant/`CompiledPlan` tracing gap (not a
+> quick fix — see the "§11 update" subsection near the end of this section for the exact error
+> and what's needed). Until the re-measurement actually runs, treat 7.87× as provisional and do
+> not cite it externally or in positioning material.
+
 ## 11. Reactant/XLA JIT: feasible + ~9× — full integration is the GraphState refactor
 
 Date: 2026-06-01
@@ -353,6 +368,85 @@ sharing a data directory, not one unified harness run. The arithmetic checks out
 artifacts (above), but a maximally precise citation of this number should describe it as
 "computed by comparing the two scripts' independently-reported steady-state numbers," not
 imply a single combined benchmark invocation.
+
+### §11 update — is the 7.87× unrolling-derived (H1) or architectural (H2)? Real evidence
+gathered, the decisive test attempted and BLOCKED on a genuine implementation gap (2026-07-14)
+
+**The tension, stated precisely.** `flat_run_inference` (`src/jit_flat.jl:364`) currently
+unrolls: `for _ in 1:plan.inference.infer_steps`, no `@trace`. §25 (below) mandates replacing
+this with `Reactant.@trace for`/`@trace while`, which compiles to `stablehlo.while` — the SAME
+construct `jax.lax.fori_loop` already emits on the JAX side of J-04's own comparison. Two
+mechanisms could produce the measured 7.87×, with opposite implications for whether the number
+survives §25's own planned refactor:
+- **H1 (unrolling-derived):** 20 unrolled steps give XLA a straight-line graph — cross-iteration
+  fusion, CSE, loop-invariant weight handling — that a genuine `while`-loop body (compiled once,
+  executed 20× at runtime) structurally cannot access. If this is the dominant mechanism,
+  converting to `@trace while` collapses the ratio toward 1× — the number would be an artifact
+  of a configuration this session is about to delete.
+- **H2 (architectural):** Julia's closed-form per-node gradients need no autodiff graph at all,
+  vs a real forward+backward every step on the JAX side. If dominant, the win survives
+  `@trace while` intact.
+
+**First check ruled out the ORIGINAL form of H2.** Read `benchmark/mnist_inference_vs_jax.py`
+in full: it deliberately builds `h`/`y` from `LinearExplicitGrad`
+(`fabricpc/nodes/linear_explicit_grad.py`), not the AD-based `Linear` — read that class's
+`forward_and_latent_grads` body directly: pure `jnp.matmul`/`energy.grad_latent()`/
+`activation.derivative()`, zero `jax.grad`/`jax.vjp`/`jax.value_and_grad` anywhere. **Upstream's
+own J-04 comparison already avoids autodiff on both sides** — Julia's fused `Linear` node
+implements the identical closed-form formula (confirmed by the existing comment in
+`mnist_inference_vs_jax.jl:76-77`, "== upstream's plain Linear for 'x', LinearExplicitGrad for
+'h'/'y'"). "Closed-form vs AD" is NOT what differs between the two implementations in this
+specific benchmark — that specific H2 story doesn't hold here, which raised rather than lowered
+concern about H1.
+
+**Direct HLO inspection — real, decisive-leaning evidence, gathered by actually running both
+compilers, not inferred.** `jax.jit(run_inference).lower(...).compile().as_text()` vs
+`Reactant.@code_xla` on the equivalent traced runner, same MNIST-MLP graph/batch/weights on
+both sides:
+
+| | JAX (`fori_loop`, current) | Julia (unrolled, current) |
+|---|---|---|
+| `while`-loop constructs | genuine loop present (108 loop-related hits) | **0** |
+| `dot` ops in optimized HLO | **4** (loop body, appears once) | **41** (≈20 steps × 2, not fused across iterations) |
+| optimized HLO instruction lines | ~206 | ~574 |
+| fusion count | 74 | 350 |
+
+This is a fundamentally different PROGRAM SHAPE, not just a faster one: JAX compiles a small
+loop body executed 20× at runtime; Julia compiles a fully materialized straight-line graph with
+~10× more matmul instructions but far more aggressive elementwise fusion around them. This is
+real, gathered evidence in H1's favor — not proof the ratio collapses under `@trace while` (raw
+op-count doesn't map directly to wall-clock time), but strong enough that the number cannot be
+treated as settled.
+
+**Attempted the decisive test — build the `@trace for` version, re-measure — and it is BLOCKED
+on a genuine Reactant/`CompiledPlan` tracing-compatibility gap, not a quick fix.**
+`Reactant.@trace for _ in 1:plan.inference.infer_steps; fstate = flat_inference_step(...); end`
+(both as a plain argument and, retried, as a properly closed-over constant — matching
+`compile_inference`'s own existing successful pattern for the unrolled thunk) fails identically
+both ways: `NoFieldMatchError` on `SlotInfo` (`is_multi_input::Bool` derives as
+`Reactant.TracedRNumber{Bool}` on one path and stays `Bool` on another, and the reconciliation
+fails) — Reactant's `@trace for`/`@trace while` machinery sweeps EVERY free variable referenced
+inside the loop body into a `Base.RefValue`-wrapped, tentatively-traced state — including
+`CompiledPlan` (static topology metadata: node order, edge sources, which slots are
+multi-input), which should be loop-INVARIANT and never needs tracing at all, closure or no
+closure. No `Const`-style escape hatch was found in Reactant's source for excluding a value
+from this automatic sweep (checked: no general-purpose `Reactant.Const`, no
+`@nonreactant`/opaque-type declaration mechanism turned up in `Tracing.jl`). This is a real,
+deeper version of exactly what §25 already flagged ("the real implementation work is
+restructuring the loop-carried state") — except it turns out the STATIC plan/layout/clamped-mask
+data needs restructuring too, not only `Vector{NodeState}`'s mutation pattern.
+
+**Status, stated plainly: NOT resolved.** The structural HLO evidence leans toward H1 being a
+real, non-trivial contributor; it does not prove the ratio collapses, and the actual
+apples-to-apples re-measurement under `@trace while` could not be completed this session — it
+needs either (a) `CompiledPlan`/`SlotInfo` restructured to be Reactant-tracing-compatible
+(likely: extract only the plain-array/tuple data the loop body actually needs into a
+pre-flattened, trace-friendly form BEFORE entering `@trace for`, rather than closing over the
+whole `CompiledPlan` struct), or (b) a different Reactant-side mechanism for excluding
+loop-invariant closed-over values from the auto-carry sweep, not yet found. **The 7.87× number
+must not be cited externally, in positioning material, or treated as settled until this
+re-measurement actually runs.** This entry supersedes the risk-flag at the top of this section
+with the concrete evidence and the concrete blocker; do not resolve one without the other.
 
 ## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
 
@@ -1235,14 +1329,21 @@ dependent, but the sign is not.
 whole proposed config is bad": upstream's `beta=0.9` is fine — their `eta=0.1` is what's fatal.**
 The stability boundary `eta<2(1+beta)/lambda_max` is a function of `lambda_max` ALONE — it doesn't
 care what `beta` is, beyond `beta<1`. At `beta=0.9`, the boundary is `0.0334`; the derived-optimal
-`beta*≈0.857` isn't meaningfully different from upstream's `0.9` (`sqrt(0.9)` vs `sqrt(0.857)` is
-only a ~4% per-step rate difference, i.e. upstream's own `beta` guess costs a modest speed
-penalty, not a correctness defect). The actual gap between "upstream's proposed default" and "the
-derived-optimal config" is almost entirely in `eta`: `0.1` vs `0.0326`, a `3`x difference, and
-`0.1` is the one number that's unconditionally past the stability boundary regardless of `beta`.
-The one-line takeaway for anyone tuning this config by hand rather than deriving it: keep
-momentum's `beta` near `0.85`-`0.9`, fix `eta` to respect `2(1+beta)/lambda_max` for whatever graph
-it's running on — `beta` was never the problem here.
+`beta*≈0.857` isn't a CORRECTNESS gap from upstream's `0.9` — but it isn't a small one operationally
+either, and stating it as a "~4% rate difference" understates what a user actually experiences.
+`sqrt(0.9)=0.9487` vs `sqrt(0.857)=0.9258` is a ~4% difference IN THE PER-STEP RATE, but rate
+differences compound: steps-to-`1e-3` goes `log(1e-3)/log(0.9258)≈89.6` (derived-optimal) vs
+`log(1e-3)/log(0.9487)≈131.1` (beta=0.9, its own equivalently-well-tuned eta) — **46% more
+iterations**, not 4% — because a small per-step rate delta compounds geometrically over ~100 steps.
+Both framings are correct; the step-count is the one a user actually experiences. The actual gap
+between "upstream's proposed default" and "the derived-optimal config" is almost entirely in `eta`:
+`0.1` vs `0.0326`, a `3`x difference, and `0.1` is the one number that's unconditionally past the
+stability boundary regardless of `beta` — so "beta was never a CORRECTNESS problem" still holds; it
+is, however, a real ~46%-more-steps performance cost if left at upstream's guess instead of the
+derived value. The one-line takeaway for anyone tuning this config by hand rather than deriving it:
+`beta` near `0.85`-`0.9` won't destabilize anything, but it costs real iterations relative to the
+derived-optimal value — `eta` is the number that must respect `2(1+beta)/lambda_max` or the config
+doesn't converge at all, full stop.
 
 **What this closes and does NOT:**
 - CLOSED: `InferenceSGDMomentum` is implemented, conformance-anchored (momentum=0 exact), and
@@ -1362,3 +1463,19 @@ Carlo baseline; block/simultaneous QR-orthonormalized k=6 subspace iteration wit
 renorm-every-10 cadence as §26's `perturb_and_track_renorm`, reusing `FabricPC.momentum_inference_step`/
 `FabricPC.inference_step`/`FabricPC.update_node_in_state` (the real production code path) throughout —
 not a hand-derived approximation of it.
+
+**This section hands §25's future `@trace while` implementation its termination criterion.**
+§25's plan (once the blocker documented in §11's update is resolved) is relax-to-tolerance
+instead of relax-for-N-steps — but an ABSOLUTE tolerance is the wrong criterion here: the
+decorative tail this section found keeps moving forever (any nonzero `lambda_min` means the
+residual asymptotically approaches, never reaches, zero), so a fixed absolute threshold has to
+either undershoot (never terminate) or overshoot (stop before real convergence, arbitrarily). A
+RELATIVE threshold is well-justified by this section's own number: since the slow cluster
+carries under 1% of the initial gradient's energy, terminating when `‖latent_grad‖` (or `‖Δz‖`)
+drops to roughly `1e-2` of its own step-1 value is a criterion that triggers once the
+SIGNAL-CARRYING part of the spectrum has actually relaxed, and is insensitive to how long the
+decorative tail would otherwise take — a batch that happens to excite the slow cluster more
+strongly would correctly run longer, one that doesn't would correctly stop sooner. This is also
+a sharper argument FOR `@trace while` over a fixed step count than §25 currently makes: a fixed
+`infer_steps` has to guess in advance whether a given batch is signal-limited or tail-limited; a
+relative-tolerance while loop measures it per batch instead of guessing once for all batches.
