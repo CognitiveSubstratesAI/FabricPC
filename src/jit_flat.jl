@@ -356,14 +356,105 @@ function flat_inference_step(
 end
 
 """
-    flat_run_inference(plan, fparams, fstate, clamped) -> Vector{NodeState}
+    flat_run_inference(plan, fparams, fstate, clamped; optimize=false) -> Vector{NodeState}
 
 Dict-free `run_inference`: `infer_steps` flat inference steps. `clamped[i]` marks
 clamped positions. Reproduces the eager loop exactly (validated in test_jit_flat).
-"""
-function flat_run_inference(plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool})
+
+`optimize=true` selects the positional HOIST+PRUNE loop (`_flat_run_inference_opt`),
+the flat-lane twin of `run_inference(...; optimize=true)` in `core/inference.jl` §28 —
+same two exact optimizations (hoist a position whose in-sources are all clamped; skip
+gradient accumulation into clamped positions), same bit-identity on all consumed fields.
+Bundled here to measure the optimization on the DICT-FREE eager path (isolating the
+algorithmic win from the Dict/string-key overhead the core eager path carries — see
+docs/decisions.md §28's three-way decomposition)."""
+function flat_run_inference(
+    plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool}; optimize::Bool=false
+)
+    optimize && return _flat_run_inference_opt(plan, fparams, fstate, clamped)
     for _ in 1:plan.inference.infer_steps
         fstate = flat_inference_step(plan, fparams, fstate, clamped)
+    end
+    return fstate
+end
+
+"""Positions whose forward is loop-invariant AND take the plain `else` branch of
+`flat_latent_grads`: `in_degree > 0`, `out_degree > 0` and unclamped, every in-edge source
+clamped. Position-indexed twin of `core/inference.jl`'s `_hoistable_nodes`."""
+function _flat_hoistable(plan, clamped::Vector{Bool})
+    n = length(plan.nodes)
+    hoist = falses(n)
+    for i in 1:n
+        info = plan.infos[i]
+        (info.in_degree > 0 && info.out_degree > 0 && !clamped[i]) || continue
+        all(clamped[s] for s in plan.in_src[i]) && (hoist[i] = true)
+    end
+    return hoist
+end
+
+"""HOIST+PRUNE flat step. `hoist[i]` marks hoistable positions; `hoisted[i]` caches their
+loop-invariant forwarded `NodeState` (`z_mu`/`pre_activation`). Bit-identical to
+`flat_inference_step` on every consumed field: hoisted positions reuse the cached forward and
+recompute only the `z_latent`-dependent `error`/`energy`/`self_grad`; all back-edge grads into
+clamped sources and self-grads into clamped positions (the values Phase 3 discards) are skipped."""
+function _flat_inference_step_opt(
+    plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool},
+    hoist::AbstractVector{Bool}, hoisted::Vector{NodeState}
+)
+    n = length(fstate)
+    fstate = NodeState[update_state(s; latent_grad=zero(s.latent_grad)) for s in fstate]
+    for i in 1:n
+        if hoist[i]
+            node = plan.nodes[i]
+            cached = hoisted[i]
+            s = fstate[i]
+            err = s.z_latent .- cached.z_mu
+            ns = update_state(s; z_mu=cached.z_mu, pre_activation=cached.pre_activation, error=err)
+            ns = energy_functional(node, ns)
+            self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
+            fstate[i] = update_state(ns; latent_grad=ns.latent_grad .+ self_grad)
+            continue                                   # all in-sources clamped ⇒ all back-edges pruned
+        end
+        ins = [fstate[s].z_latent for s in plan.in_src[i]]
+        ns, igrads, self_grad = flat_latent_grads(
+            plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i], plan.infos[i], clamped[i]
+        )
+        # PRUNE: a clamped position's own self-grad accumulation is dead — skip it.
+        fstate[i] = clamped[i] ? ns : update_state(ns; latent_grad=ns.latent_grad .+ self_grad)
+        for (k, src) in enumerate(plan.in_src[i])
+            clamped[src] && continue                   # PRUNE: back-edge grad into a clamped source is dead
+            fstate[src] = update_state(
+                fstate[src]; latent_grad=fstate[src].latent_grad .+ igrads[k]
+            )
+        end
+    end
+    inf = plan.inference
+    decay = 1.0f0 - inf.eta_infer * inf.latent_decay
+    for i in 1:n
+        if !clamped[i]
+            s = fstate[i]
+            fstate[i] = update_state(
+                s; z_latent=s.z_latent .* decay .- inf.eta_infer .* s.latent_grad
+            )
+        end
+    end
+    return fstate
+end
+
+"""Optimized flat loop: compute hoistable positions' loop-invariant forward ONCE, then run
+`infer_steps` of `_flat_inference_step_opt`. See `flat_run_inference`'s `optimize` kwarg."""
+function _flat_run_inference_opt(plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool})
+    hoist = _flat_hoistable(plan, clamped)
+    # Vector{NodeState} (NOT Vector{Any}) — unfilled (non-hoistable) slots stay #undef and are
+    # never indexed (only read where hoist[i]); keeping the eltype concrete avoids boxing.
+    hoisted = Vector{NodeState}(undef, length(fstate))
+    for i in 1:length(fstate)
+        hoist[i] || continue
+        ins = [fstate[s].z_latent for s in plan.in_src[i]]
+        hoisted[i] = flat_forward(plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i])
+    end
+    for _ in 1:plan.inference.infer_steps
+        fstate = _flat_inference_step_opt(plan, fparams, fstate, clamped, hoist, hoisted)
     end
     return fstate
 end

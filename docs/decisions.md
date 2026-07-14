@@ -1713,3 +1713,23 @@ so that invariant already holds for free. The two optimizations are also a real,
 contribution back to upstream, whose own `fori_loop` pays both costs (recompute the invariant
 forward, compute the dead gradient) on every inference call for every model with a wide clamped
 input — see `docs/upstream_contributions/pc_inference_clamped_hoist_prune.md`.
+
+### §28 addendum — the eager "overhead" term is MEASURED, not fitted; ΔT-invariance; and why the flat eager lane can't be the clean test (2026-07-14)
+
+The 5.9× eager attribution (above) invited an Amdahl decomposition, and getting it right took two corrections worth recording (both self-caught, one on the method itself):
+
+**1. The Amdahl "prediction" was a fit, not a prediction.** Solving `5.89 = 1/((1-p)+p/26.82)` for `p` is one equation in one unknown — it *reproduces* the 26.9ms optimized time by construction, it doesn't predict it. The honest, zero-free-parameter claim is **ΔT (absolute saving), not the ratio**: the 39 eliminated 784-contractions (20 hoisted invariant forwards − 1 kept + 20 pruned dead backwards) are the *same BLAS gemm calls* regardless of lane, so the absolute saving is lane-invariant: `ΔT = 39·A`. Measured: `ΔT_dict = 131.93 ms` ⟹ `A = 3.38 ms` (one 51.4 MFLOP contraction ≈ 15.2 GFLOP/s eager Julia BLAS). Crucially this held **on a heavily contended machine** (3 concurrent test suites) — because ΔT cancels additive overhead, contention included — validating that ΔT, like allocation counts, is the contention-robust quantity to measure here.
+
+**2. The overhead term is MEASURED via allocations, replacing the circular ~22ms.** Allocation counts are deterministic (contention-independent), so the eager overhead was quantified directly instead of inferred: `run_inference` (B=256, 784→128→10, 20 steps) = **6565 allocations / 208 MB per call** (328/step); hoist+prune cuts it to 4799 / 140 MB. Root cause CONFIRMED by `@code_warntype` (not inferred): `NodeState`'s 6 fields are `::Any`, `structure.nodes` is `Dict{String,AbstractNode}`, `gather_inputs` returns `Dict{String,Any}` — so `forward(::Linear)` infers to `Tuple{Any,NodeState}` and boxes every latent. `Profile.Allocs` attributes the 6565 events: `put_node` immutable Dict-rebuild (1440, the dominant count), the clamped-input node's needless 256×784 `copy`/`zero` every step (`linear.jl:129`, 48.2 MB, the dominant bytes), `zero_grads` (18.9 MB), matmul temporaries. This is the concrete J-06/J-07 backlog (`docs/AUDIT_REGISTER.md`), now graduated from "should probably fix" to a measured 208 MB/call of GC pressure with per-site attribution.
+
+**3. The flat/positional eager lane is NOT the clean low-overhead test I reached for.** The plan was to run hoist+prune on the Dict-free flat path (`jit_flat.jl`) to see the ratio climb toward the ceiling once the Dict overhead is gone. Implemented it (`flat_run_inference(...; optimize=true)`, bit-identical, the positional twin of the Dict version) — but the flat path's `FlatNodeParams` hold `Vector{Any}` weights and `NodeState` still has `::Any` fields, so its eager GEMMs box and dynamically dispatch, and it measured *slower* than the Dict lane (a real effect, plus contention). So the flat eager lane trades the Dict-rebuild overhead for a different boxing overhead — it is not a clean "overhead-removed" lane. The genuinely low-overhead lane is the **compiled** one (Reactant specializes types during tracing, so `Any` doesn't hurt there — which is exactly why the compiled lane reaches 7.87× without the eager boxing penalty). So the clean confirmation that the ratio climbs once overhead is removed is the compiled `@trace while` re-measurement (§11 update / §25), not an eager flat measurement. The flat `optimize=true` code is kept as forward-prep for that lane (hoist+prune must exist there too), NOT as an eager speedup claim.
+
+**Three-way decomposition, each rung with a named+measured limiter (the defensible artifact — a ladder, not a benchmark):**
+
+| lane | realized | limiter, now measured |
+|---|---|---|
+| eager (Dict) | **5.9×** | boxing/Dict churn (6565 allocs, 208 MB/call — J-06/J-07) **+** eager BLAS on skinny residual dots |
+| compiled (Reactant) | **7.87×** | skinny residual dots only (XLA fuses them + specializes away the boxing) |
+| FLOP ceiling | **26.8×** | neither (all FLOPs at equal efficiency) |
+
+Each step removes exactly one named limiter; the ordering is forced by which overhead each lane still pays. `ΔT_dict = 131.6 ms` is invariant across the first two rungs (same eliminated GEMMs); the ratio differs only because the surviving base differs.
