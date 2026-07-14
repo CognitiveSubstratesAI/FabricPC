@@ -1757,3 +1757,19 @@ Applying the GC/memory-management reference (`docs/specs/Julia/Memeory managemen
 | `BenchmarkTools` + `@timed`/`GC` | cost | 208 MB/call; **57% gc% in sustained loops**; median 2× min from GC variance |
 
 The `two-tier allocator` (reference: small ≤2032 B via the per-thread pool, large via `malloc`) explains the split — the 6565 count is dominated by *small* Dict/NodeState-churn objects (pool) while the 208 MB bytes are dominated by *large* 256×784-class matmul arrays (`malloc`); at 40 calls that is ~262K pooled allocations + gigabytes of large-array churn, and the GC must scan all of it. J-06 removes the small-object churn (fewer, concretely-typed fields) and a pre-allocated loop removes the large-array re-allocation — attacking both tiers. This is now the single best-supported, highest-leverage item in the perf backlog: a measured ~2× on sustained/training workloads, confirmed by four tools and one falsified mitigation.
+
+### §28 addendum 3 — the reference's "Reducing Allocations" list, APPLIED: a proof-of-concept in-place path is bit-identical, 0-alloc, and hits the FLOP ceiling in eager Julia (2026-07-14)
+
+Applying every item on the memory-management reference's "Reducing Allocations" list (in-place ops; pre-allocate + reuse; avoid temporaries; concrete types) to MNIST-MLP inference, as a hand-specialized proof-of-concept (`benchmark/inplace_inference_poc.jl`, hardcoded `x[clamped]→h[tanh]→y[clamped]`), measures what the J-06 refactor actually buys — and it is much more than the "~2×" GC-only estimate:
+
+- **bit-identical** to `run_inference` (`max|diff| = 0.0` on the final latent — the in-place `mul!`/`@.`/`.=` produce the same floats as the allocating `*`/`.+`);
+- **6565 allocations → 0** (208.3 MB → 0 MB per call), so **gc% 40–57% → 0.0%**;
+- single-call decomposition (B=256, 20 steps, BLAS=1): **stock 223 ms → +hoist/prune 37.3 ms (6.0×, the §28 FLOP reduction) → +in-place/type-stable 9.26 ms (4.0× MORE, the J-06 alloc+boxing+bandwidth win) = 24.1× total**; sustained 40-call loop **55.6×**.
+
+Two things this settles:
+
+**J-06's win is ~4×, not ~2× (correcting §28 addendum 2 / the register).** The "~2×" was a GC-only lower bound (`1/(1−0.57)≈2.3×`). The measured in-place-vs-hoist+prune factor is **4.0×**, because removing the allocations also removes the boxing-dispatch overhead (type instability), the 208 MB/call memory-bandwidth traffic, and the `NodeState`/`Dict` construction CPU — none of which is GC time. J-06 (parametric `NodeState{A}` + positional/pre-allocated state) is a ~4× eager-inference win on top of hoist+prune, a ~55× sustained win over the naive path.
+
+**A fully type-stable + in-place EAGER Julia path reaches ~the FLOP ceiling — no compiler required.** 24.1× ≈ the 26.8× FLOP ceiling (§28); the 9.26 ms is essentially FLOP-limited (~77.6M hoisted+pruned FLOPs at ~15 GFLOP/s). This reframes the compiled/Reactant lane's value: it is NOT primarily raw eager speed (plain optimized Julia already reaches the ceiling for this shape), it is (a) SCALING — `@trace while` for the ~89–2300 steps §24/§26 showed the transformer needs, which an eager loop pays per-step for — and (b) cross-language/GPU parity (the J-04 7.87×-vs-`jax.jit` story). The eager-vs-compiled framing in §11's ladder should be read as "compiled removes the boxing/Dict overhead automatically that a hand-optimized eager path removes manually," not "compiled is inherently faster."
+
+The PoC is a demonstration, not the fix: it is a hardcoded 3-node specialization. The general J-06 (parametric `NodeState` + a pre-allocated, mutable-buffer inference loop that works for any graph) is the productionization — now with a measured target (0 allocs, 24× eager, bit-identical) proving it is worth the refactor.
