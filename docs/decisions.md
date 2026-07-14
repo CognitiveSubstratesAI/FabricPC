@@ -304,6 +304,56 @@ would have missed it. (This codebase's existing Tier A-D `.npz`-based fixtures w
 risk — `np.savez`/`NPZ.jl` handle layout correctly; this was specific to this benchmark's
 raw-`.bin`-file loading path, which has since been fixed in-code.)
 
+**Methodology re-audit, on request, against exactly the five failure modes a skeptical
+reviewer would check (2026-07-14):** re-read `benchmark/mnist_inference_vs_jax.{py,jl}` and
+`ext/FabricPCReactantExt.jl` in full, independently, rather than trusting this section's own
+prose, and cross-checked the cited numbers against raw run artifacts recovered from this
+session's own scratchpad (`jax_result.json`, Julia stdout transcripts) rather than trusting
+the summary above. All five hold:
+1. **Compile time is excluded from the ratio on both sides.** Python times the first
+   `jit_run` call into its own `compile_time_s` field, never folded into the speed number
+   (`mnist_inference_vs_jax.py:155-179`). Julia times `Reactant.@compile` into `t_compile`
+   separately, discards the first post-compile call, then — identically to the Python side —
+   runs 5 discarded warmup calls before `min`-ing 30 timed calls (`mnist_inference_vs_jax.jl:50-59`).
+   Both sides force device→host materialization before/inside the timed call (Python's
+   `jax.block_until_ready`, explicitly commented as guarding against "the async-dispatch trap
+   … timing the thunk WITHOUT `block_until_ready` shows a bogus ~1000x"; Julia's
+   `[Array(out[i]) for i in eachindex(out)]` in `FabricPCReactantExt.jl:47`) — neither side
+   times an unresolved async dispatch queue.
+2. **Weights are shared via a real RNG-trap, not independent randomness.** Python's `dump()`
+   writes `Wxh,bh,Why,by,Xb,Yb` as raw bytes; Julia's `load_arr()` reads them back (with a
+   documented, correct row/column-major un-transpose) and builds `GraphParams`/clamps
+   DIRECTLY from the loaded arrays — Julia's own `initialize_params`/RNG is never called for
+   this benchmark (`mnist_inference_vs_jax.jl:87-98`, comment states the RNG-trap explicitly).
+3. **The `xla_gpu_*` flags question is moot for this number, confirmed not assumed.**
+   `mnist_inference_vs_jax.py` never imports upstream's `jax_setup.py` (confirmed by reading
+   its full import list), so none of the three reproducibility-over-speed flags are applied —
+   irrelevant regardless, since this ran CPU-only, independently confirmed three ways: a
+   recovered `jax_result.json` shows `"devices": ["cpu:0"]` (JAX's own `jax.devices()` dump),
+   this machine has no `nvidia-smi`, and `nproc`=2 matches the "2-core dev machine" language
+   already in this section.
+4. **This is genuinely the cross-language, both-compiled number**, not a relabeled
+   Julia-internal one — a real `jax.jit(run_inference)` trace on one side, a real
+   `Reactant.@compile`-traced call on the other, both timed steady-state. The
+   Julia-vs-Julia secondary number this same run also reports (28-38× above, reproduced in
+   the recovered transcripts as 26.23×/28.37×) is textually labeled a sanity cross-check
+   against the pre-existing 32× claim, never substituted for the headline cross-language
+   number anywhere in this file or in `docs/AUDIT_REGISTER.md`'s J-04 entry.
+5. **The numerical-diff figure compares real outputs, same inputs/weights**, not two
+   independently-fast unrelated runs — reproduced exactly from a recovered transcript:
+   `max|julia_jit − jax_jit| h = 2.29e-06`, `x = 0`.
+   The specific ratio numbers were independently re-derived from raw artifacts, not
+   re-quoted: `72.758ms / 9.2452ms = 7.869×`, matching "~7.87×" to the digit; the original
+   pairing's range and the compile-time swing (`19s`-`327s`) also reproduce exactly.
+
+**One precision nuance worth stating plainly, not a flaw:** neither script computes the
+cross-language ratio itself — each independently prints/dumps its own steady-state number,
+and the "~7-8×"/"~7.87×" figure is a manual division of two separately-run scripts' outputs
+sharing a data directory, not one unified harness run. The arithmetic checks out against raw
+artifacts (above), but a maximally precise citation of this number should describe it as
+"computed by comparing the two scripts' independently-reported steady-state numbers," not
+imply a single combined benchmark invocation.
+
 ## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
 
 Date: 2026-06-08
@@ -941,6 +991,21 @@ the compiled lane has a silent-optimizer-bug landmine, and how to benchmark hone
 
 Date: 2026-07-14
 
+> **UPDATE (§26, same date, later same session):** point 1's step-count figures below
+> ("~50-300 steps") were derived from §24's original `lambda_min=2.3` measurement, since
+> corrected in §26 to `lambda_min≈0.17`. The corrected numbers are WORSE, not better:
+> `InferenceSGDMomentum` at its own derived-optimal hyperparameters needs **~89 steps** to
+> reach `1e-3` residual (not the ~24 steps a first, pre-correction pass through this
+> derivation estimated), and plain `InferenceSGD` at its own best stable η needs **~2300
+> steps** (not "50-300"). `@trace while` is therefore not an optional upgrade for a
+> future, larger-scale run — it is a HARD REQUIREMENT for any compiled inference loop on
+> this graph family that actually wants to reach convergence: an 89x-unrolled StableHLO
+> graph (momentum, the BETTER case) is already not a viable `@compile`-time unrolling
+> target, and 2300x (plain SGD) is not remotely close to one. J-04's own 20-step benchmark
+> result is unaffected either way (§6/J-04, scope explicitly stated as inference-only,
+> non-convergent-config) — this changes what J-02/J-03/a future larger-scale J-04 must do,
+> not what J-04 already measured.
+
 Three findings, made reviewing J-04's freshly-closed inference benchmark (§6/J-04) against
 what §24 just established the transformer relaxation actually needs. None of these
 invalidate J-04's own result (its 20-step config is well inside the range where the first
@@ -952,10 +1017,12 @@ own docs are explicit that a native Julia loop over a compile-time-known trip co
 executed AT TRACE TIME and vanishes from the traced program — each iteration becomes its own
 copy of the loop body baked into the StableHLO graph. At 12-20 steps (Tier C/D's fixtures,
 J-04's benchmark) this is invisible — a 20x-unrolled graph compiles fine and the numbers are
-correct. **But §24 measured this transformer's own relaxation needs ~50-300 steps at a stable
-η to actually converge — a 50-300x unrolled graph.** The compiled inference lane, exactly as
-built, does not scale to the configuration §24's own measurements say is needed for a
-meaningfully-converged compiled run.
+correct. **§24 originally estimated this transformer's own relaxation needs ~50-300 steps at
+a stable η to actually converge — since corrected (§26): momentum needs ~89 steps, plain SGD
+needs ~2300 steps, both derived from the corrected `lambda_min≈0.17` spectrum, not the
+original ~50-300 estimate.** Either way, the compiled inference lane, exactly as built, does
+not scale to a meaningfully-converged compiled run — the corrected numbers make this MORE
+true, not less.
 
 **The fix, and it's a genuine upgrade over upstream's own approach, not just a workaround:**
 Reactant's `@trace while` (see the package's own Sinkhorn-iteration tutorial, structurally
@@ -1164,6 +1231,19 @@ from the same post-transient baseline) is the falsification test's actual assert
 growth multiplier isn't robust here because saturation makes the exact bound graph-and-config-
 dependent, but the sign is not.
 
+**Sharper framing, worth stating explicitly since the raw numbers can be misread as "upstream's
+whole proposed config is bad": upstream's `beta=0.9` is fine — their `eta=0.1` is what's fatal.**
+The stability boundary `eta<2(1+beta)/lambda_max` is a function of `lambda_max` ALONE — it doesn't
+care what `beta` is, beyond `beta<1`. At `beta=0.9`, the boundary is `0.0334`; the derived-optimal
+`beta*≈0.857` isn't meaningfully different from upstream's `0.9` (`sqrt(0.9)` vs `sqrt(0.857)` is
+only a ~4% per-step rate difference, i.e. upstream's own `beta` guess costs a modest speed
+penalty, not a correctness defect). The actual gap between "upstream's proposed default" and "the
+derived-optimal config" is almost entirely in `eta`: `0.1` vs `0.0326`, a `3`x difference, and
+`0.1` is the one number that's unconditionally past the stability boundary regardless of `beta`.
+The one-line takeaway for anyone tuning this config by hand rather than deriving it: keep
+momentum's `beta` near `0.85`-`0.9`, fix `eta` to respect `2(1+beta)/lambda_max` for whatever graph
+it's running on — `beta` was never the problem here.
+
 **What this closes and does NOT:**
 - CLOSED: `InferenceSGDMomentum` is implemented, conformance-anchored (momentum=0 exact), and
   genuinely faster than plain SGD on this graph (measured, not assumed) — a real, shippable,
@@ -1193,3 +1273,92 @@ Tests: `test/test_inference_momentum.jl` (conformance anchor, corrected-optimal 
 sanity, falsification — 26/26, always run) and `test/test_inference_momentum_diagnostic.jl` (the
 full renormalized perturb-and-track closure, several minutes — `FABRICPC_MOMENTUM_SPECTRUM_DIAGNOSTIC=1`,
 gated the same way as the demoted Tier D eta=0.1 diagnostic).
+
+## 27. Is `lambda_min≈0.17` a signal-carrying slow mode, or a near-flat direction? A single-vector
+test failed to answer this; a block-subspace test gives a decisive (and reassuring) answer.
+
+Date: 2026-07-14
+
+**The question, precisely.** §26 corrected this graph's condition number from `kappa≈49` to
+`kappa≈668`, implying plain SGD needs `~2300` steps (not `~50-300`) to reach a `1e-3` residual —
+a number worth interrogating before it gets cited as "this graph's relaxation is badly
+unconverged at 12 steps, therefore every prior FabricPC transformer measurement on this family
+ran on unconverged latents." That conclusion only follows if the `lambda_min≈0.17` mode is
+actually EXCITED by the relaxation this graph's real clamp pattern drives — a near-null
+eigenvalue of the energy Hessian means the energy is nearly FLAT along that direction, so slow
+convergence there can be practically harmless if the trajectory barely goes there in the first
+place. This section measures that directly, rather than assuming either answer.
+
+**First attempt (single-vector power iteration) failed, and said so honestly rather than reporting
+a number.** The natural approach — run the SAME renormalized perturb-and-track power iteration
+§26 used to find `lambda_min`, but capture the converged perturbation DIRECTION as an estimate of
+`lambda_min`'s eigenvector `v_min`, then project the real relaxation's step-1 `latent_grad` onto
+it — was tried first and diagnosed as unreliable before its output was trusted:
+- Two independent random-seed power iterations (400 steps each, same protocol as §26) did NOT
+  converge to the same direction: `cos(v_min[seed=7], v_min[seed=99]) = 0.114`, far from `±1`.
+- A Monte Carlo baseline (200 genuinely random unit directions in this graph's `n=576`-dimensional
+  non-clamped joint `z_latent` space, projected against the same real `g_1` signal) gives
+  `mean|proj fraction|=0.036, std=0.026, 95th percentile=0.082` — and the single-vector
+  measurements (`0.030`-`0.042` for one seed, `0.015` for the other) sit squarely inside that
+  noise band.
+- Diagnosis: `lambda_min≈0.17` is not one isolated eigenvalue — it sits inside a near-degenerate
+  CLUSTER of eigenvalues close enough together that 400 steps of single-vector power iteration
+  cannot separate any one of them from the others; the "direction" it converges to depends on
+  which combination of near-tied modes the random start happened to weight, which is why two
+  seeds disagree. Reporting a projection number from either seed as "the" answer would have been
+  presenting noise as signal — caught before it went in a writeup, not after.
+
+**Second attempt: block (simultaneous) subspace iteration, k=6, resolves the cluster instead of
+one ambiguous vector.** Standard fix for near-degenerate spectra: track `k=6` perturbation
+directions simultaneously (not one), re-orthonormalizing via QR every 10 steps (same 400-step,
+renorm-every-10 cadence as the single-vector version) so the k-dimensional subspace they span
+converges to the DOMINANT k-dimensional invariant subspace of the linearized map, without needing
+to resolve individual directions within it. Two results from this:
+- **The cluster is confirmed real, not an artifact.** At convergence, all 6 directions' per-window
+  log-decay rates cluster tightly (`-0.013` to `-0.020` per 10-step window, i.e. `~0.9984`/step
+  each) — consistent with, and independently corroborating, `lambda_min≈0.17`'s predicted
+  `0.9983`/step. A single dominant mode would show one clearly larger-magnitude value among the
+  6; it doesn't — six near-identical decay rates is the signature of a genuine degenerate/
+  near-degenerate cluster, matching what the single-vector seed-disagreement already implied.
+- **The actual relaxation signal has BELOW-CHANCE representation in this cluster.** Projecting the
+  real relaxation's `latent_grad` (plain `InferenceSGD`, `eta=0.01` — the same config `lambda_min`
+  was measured on) onto the resolved 6-dimensional subspace, as a fraction of total gradient
+  energy: `0.47%` at step 1, rising to `0.73%` by step 60. The chance baseline a RANDOM 6-of-576
+  dimensional subspace would capture is `k/n = 1.04%` — the measured fraction is BELOW that
+  baseline throughout the tracked window, not elevated.
+
+**Answer: closer to decorative than load-bearing, for this graph's actual clamp pattern.** The
+slow cluster is not preferentially excited by the real relaxation signal — if anything, slightly
+under-represented relative to a random subspace of the same size, at least across the first 60 of
+the eventual ~2300 steps plain SGD would need for a formal `1e-3` bound. Practically: most of the
+gradient's energy (>99%, by construction, since the slow cluster holds well under 1%) is being
+corrected by the FAST part of the spectrum in the early steps this session has actually measured
+(12-60), and the long tail past that is chasing a small-amplitude, weakly-excited residual, not a
+substantial, load-bearing correction. "This graph needs ~2300 steps to formally converge" and
+"this graph's relaxation is doing meaningful work for ~2300 steps" are different claims — this
+section supports the first, not the second.
+
+**What this does NOT establish, stated as plainly as the finding itself:**
+- **Not a claim that the fraction stays low forever.** By construction (it IS the slowest-decaying
+  subspace), its fractional share of an ever-shrinking total gradient must approach 100%
+  asymptotically as faster content decays away — consistent with, and the same mechanism behind,
+  §26's own earlier finding that a SHORT power-iteration window gives `~0.977-0.98`/step while a
+  long one converges to `~0.998`/step. This section adds WHERE that transition sits relative to
+  the signal's own energy budget (still sub-chance through step 60), not that it never happens.
+- **Specific to this graph, this batch, this clamp pattern.** The energy landscape's local
+  curvature and the specific clamp-driven error direction are what's being measured jointly; a
+  different batch or a genuinely different graph topology is not guaranteed to reproduce this.
+- **`k=6` was a reasonable, not independently proven, choice.** Picked because the resolved
+  subspace's 6 decay rates cluster tightly together (evidence FOR roughly this cluster size, not
+  an a priori guarantee it is exactly right); a slightly larger or smaller `k` was not swept.
+- **Measured on plain `InferenceSGD`, not momentum** — matching the config `lambda_min` itself was
+  measured on, deliberately, so this section answers "is the number `lambda_min` implies about
+  THAT config's convergence practically meaningful," not a momentum-specific question.
+
+Scratch scripts (not committed — this section's numbers are reproducible from them but they were
+throwaway diagnostics, not permanent test infrastructure): renormalized single-vector power
+iteration with an explicit two-seed disagreement check and a 200-sample random-direction Monte
+Carlo baseline; block/simultaneous QR-orthonormalized k=6 subspace iteration with the same
+renorm-every-10 cadence as §26's `perturb_and_track_renorm`, reusing `FabricPC.momentum_inference_step`/
+`FabricPC.inference_step`/`FabricPC.update_node_in_state` (the real production code path) throughout —
+not a hand-derived approximation of it.

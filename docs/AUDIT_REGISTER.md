@@ -687,8 +687,12 @@ not turn on `MuPCConfig` together with `TransformerBlock`/the decomposed family 
 tests are muPC-off) — C-09 (MhaResidualNode/LnMlp1Node under real muPC scaling) remains untested,
 unchanged.
 
-**Batch 3 — performance claim: OPEN, not started.** J-01 → J-02 → J-03 (+J-07) → J-04 benchmark vs
-`jax.jit`. Precondition for any "surpassing JAX" statement.
+**Batch 3 — performance claim: J-04's inference-only arm VERIFIED CLOSED (see section 5); J-01/J-02
+(training/weight-gradient compile) remain OPEN.** J-04 vs `jax.jit` no longer waits on J-01→J-02→J-03
+end-to-end — its inference-only scope was measurable independently (section 5's own J-04 entry) and
+delivered the first real cross-language, both-compiled number (~7-8×, re-verified ~7.87× post-Reactant-bump,
+`docs/decisions.md` §11 update). The training/weight-gradient arm remains gated on J-01/J-02, unchanged
+— any "surpassing JAX" statement about TRAINING (not inference) still has that precondition.
 
 **Continuous:** D-01…D-05 all closed (Documenter.jl + GitHub Pages site stood up, decisions.md
 §21-23 written). R-01…R-05 all closed. R-01's first "closed" pass was itself an overclaim
