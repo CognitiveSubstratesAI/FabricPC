@@ -178,20 +178,23 @@ muPC + the full recipe makes deep PC nets trainable. The diagonal-softmax
 approximation remains for the general (non-CE) softmax case; only the CE pairing
 gets the exact path.
 
-> **⚠️ RISK FLAG (2026-07-14, later same session): the ~7-8×/~7.87× number below is NOT SAFE TO
-> CITE EXTERNALLY yet.** §25 (later this file) mandates replacing `flat_run_inference`'s unrolled
-> loop with `@trace while` — and `@trace while` compiles to the same `stablehlo.while` construct
-> `jax.lax.fori_loop` already uses on the JAX side of THIS benchmark. Direct HLO inspection
-> (`Reactant.@code_xla` vs JAX's `.lower(...).compile().as_text()`, same graph, both sides) shows
-> Julia's current (unrolled) compiled program has **zero `while` loops, ~41 `dot` ops, 350
-> fusions**, while JAX's has a genuine loop (~4 `dot` ops appearing once in the loop body, 74
-> fusions) — a fundamentally different program shape, not just a faster one. This is real evidence
-> that at least part of the measured speedup could be an artifact of the unrolled configuration
-> §25 is about to remove, not an architectural property of the closed-form-gradient approach.
-> **Decisive test ATTEMPTED and BLOCKED** on a genuine Reactant/`CompiledPlan` tracing gap (not a
-> quick fix — see the "§11 update" subsection near the end of this section for the exact error
-> and what's needed). Until the re-measurement actually runs, treat 7.87× as provisional and do
-> not cite it externally or in positioning material.
+> **⚠️ UPDATE (2026-07-14, later same session): the ~7-8×/~7.87× number below is very likely a
+> real, legitimate measurement — NOT primarily an unrolling artifact — but is still NOT SAFE TO
+> CITE EXTERNALLY as settled.** §25 mandates replacing `flat_run_inference`'s unrolled loop with
+> `@trace while`, which compiles to the same `stablehlo.while` `jax.lax.fori_loop` already uses on
+> JAX's side of this benchmark — raising the question of whether the speedup survives that
+> refactor. Direct, operand-level HLO tracing (not just op counts) found the actual mechanism:
+> Julia's unrolled+optimized program genuinely does ~27× fewer FLOPs than JAX's, from two exact
+> algebraic optimizations XLA's optimizer found on the fully-unrolled graph — hoisting a
+> clamped-source forward pass that's provably loop-invariant, and dead-code-eliminating a
+> gradient into a clamped node that's provably never read. Both are real PC-inference-level
+> optimizations, not compilation scheduling tricks — see the "§11 update" subsection near the end
+> of this section for the full operand trace and FLOP accounting. **The risk has substantially
+> lowered, but the number is still contingent, not confirmed**: it survives `@trace while` only if
+> that implementation deliberately preserves these two optimizations (a rolled loop gets neither
+> "for free" the way the unrolled form did) — and the actual re-measurement was attempted and
+> BLOCKED on a genuine Reactant/`CompiledPlan` tracing gap, not yet resolved. Do not cite 7.87×
+> externally or in positioning material until that re-measurement runs.
 
 ## 11. Reactant/XLA JIT: feasible + ~9× — full integration is the GraphState refactor
 
@@ -437,16 +440,104 @@ restructuring the loop-carried state") — except it turns out the STATIC plan/l
 data needs restructuring too, not only `Vector{NodeState}`'s mutation pattern.
 
 **Status, stated plainly: NOT resolved.** The structural HLO evidence leans toward H1 being a
-real, non-trivial contributor; it does not prove the ratio collapses, and the actual
-apples-to-apples re-measurement under `@trace while` could not be completed this session — it
-needs either (a) `CompiledPlan`/`SlotInfo` restructured to be Reactant-tracing-compatible
-(likely: extract only the plain-array/tuple data the loop body actually needs into a
-pre-flattened, trace-friendly form BEFORE entering `@trace for`, rather than closing over the
-whole `CompiledPlan` struct), or (b) a different Reactant-side mechanism for excluding
-loop-invariant closed-over values from the auto-carry sweep, not yet found. **The 7.87× number
-must not be cited externally, in positioning material, or treated as settled until this
-re-measurement actually runs.** This entry supersedes the risk-flag at the top of this section
-with the concrete evidence and the concrete blocker; do not resolve one without the other.
+real, non-trivial contributor. **UPDATE, same date: traced fully, and it's the mechanism, not a
+compilation artifact.** H2's ORIGINAL form (closed-form vs autodiff) is dead — already
+established above, both sides avoid AD. But the dot-op counts (41 vs 4-per-step×20) aren't just
+"XLA does more work"; they reflect a genuine FLOP difference, verified by operand-level HLO
+tracing on the MNIST-MLP graph (`x(784, clamped) → h(128, relaxing) → y(10, clamped)`):
+
+- **`dot.41` (Julia's compiled program) contracts on the shared 784-dimension between `Arg_0`
+  (`W1`, `f32[128,784]`) and `Arg_4` (`x`, `f32[784,256]`) — this is `h.z_mu = f(x·W1)`, and
+  `Arg_0`/`Arg_4` each appear EXACTLY ONCE in the entire ~53KB compiled program, in this single
+  dot.** Since `x` is clamped (constant across all 20 steps) and `W1` never changes, `h.z_mu`
+  is genuinely loop-invariant — XLA's optimizer, given the fully unrolled graph, hoisted it from
+  20 redundant computations to 1. Correctness note: this is an EXACT algebraic optimization, not
+  an approximation — `h.z_mu` truly does not depend on anything that changes step-to-step.
+- **No dot anywhere in the compiled program touches `Arg_0`/`Arg_4` a second time** — confirming
+  `dE_h/dz_x` (the gradient into the clamped `x` node, computed by upstream's `GraphState` design
+  for every node including clamped ones, per `zero_grads`/`forward_value_and_grad` in
+  `src/core/inference.jl:81-137`, and only *skipped at the final update step* by
+  `update_latents`'s `!haskey(clamps, name)` check) is not merely small — it is ABSENT. XLA's
+  dead-code elimination, given the fully unrolled straight-line graph, traced forward from the
+  three returned `z_latent`s and found nothing downstream ever reads it, so the entire subgraph
+  computing it (a `(256,128)@(128,784)` contraction, same cost as the forward) was pruned
+  entirely.
+- The remaining `y.z_mu` (h→y forward) and `dE_y/dz_h` (y→h backward) genuinely change every
+  step (both depend on `h.z_latent`, which is what's being relaxed) — correctly recomputed 20
+  times on both sides, confirmed present at every unrolled step (mostly via XLA's `__ynn_fusion`
+  custom-call kernel, a backend-specific fused-GEMM lowering — verified these are a re-expression
+  of the same dot operations already counted, not additional uncounted work, by reading one
+  fusion's body directly: `fused_computation.1(param_0: f32[256,10], param_1: f32[10,128]) ->
+  f32[256,128] { ROOT %dot.1 = dot(...) }`, exactly the shape expected).
+
+**Why JAX's `fori_loop` gets neither optimization**: the `while`-loop boundary prevents hoisting
+`h.z_mu` out (a loop body must be a self-contained, once-compiled kernel — nothing "outside" one
+iteration to hoist into). And upstream's `GraphState` pytree carries `latent_grad` for EVERY
+node, including clamped ones (mirrored 1:1 in Julia's eager path) — the carry's shape/contents
+must stay structurally invariant across `while` iterations, so `x`'s gradient slot can't be
+dropped from the carry, and nothing in a single-iteration-compiled loop body can prove across
+iteration boundaries that this slot is globally dead. Confirmed directly on the JAX side too:
+`jax_optimized.hlo` shows exactly 4 dots, all tagged `while/body`, including one
+`f32[256,784]`-shaped dot (the live `dE_h/dz_x`, computed and discarded, every one of 20 runtime
+iterations).
+
+**Quantified, not just characterized.** FLOPs (`2×M×K×N` per dot): `h.z_mu`
+(`256×784×128`, contracting 784) ≈ 51.4M; `y.z_mu`/`dE_y/dz_h` (contracting 128 or 10) ≈ 0.66M
+each. Julia's total for the full 20-step relaxation: `51.4M×1 + 0.66M×20 + 0.66M×20 ≈ 77.6M`.
+JAX's: `51.4M×20 + 0.66M×20 + 0.66M×20 + 51.4M×20 ≈ 2081.4M` (the dead gradient costs as much as
+the forward it shadows, since both contract the same 784-dimension). **Theoretical FLOP ratio:
+≈26.8×** — LARGER than the measured 7.87×, which is exactly the expected signature of a real
+algorithmic effect measured on real hardware (memory bandwidth, per-kernel overhead on the tiny
+`y`-related ops, and JAX's own loop-dispatch cost all pull the realized ratio below the pure-FLOP
+ceiling, on both sides). There is no unexplained residual here demanding an additional
+"unrolling is a compilation-scheduling artifact" story — this mechanism is quantitatively
+sufficient to account for the entire measured 7.87×, with room to spare.
+
+**What this changes about "provisional."** The RISK identified from the raw HLO-shape
+comparison (0 while / 41 dot / 350 fusion vs a genuine loop / 4 dot / 74 fusion) is now
+understood: it reflects a real, verifiable ~27x FLOP-count reduction from two exact algorithmic
+optimizations, not primarily a scheduling/fusion artifact of unrolling per se. This substantially
+lowers the odds that `@trace while` collapses the ratio toward 1× — **PROVIDED the eventual
+`@trace while` implementation also performs these two optimizations** (they are compilation-
+structure-independent: hoisting clamped-source-only forwards, and pruning clamped-node gradient
+edges from `CompiledPlan` at plan-build time, both apply equally under a rolled or unrolled
+loop). Neither is implemented as an explicit optimization anywhere yet — Julia's unrolled form
+gets them "for free" from XLA's own optimizer on a fully materialized graph; a rolled
+`@trace while` version, absent deliberate pruning, would very plausibly regress to something
+closer to JAX's own per-step cost (paying the `h.z_mu` recompute every iteration, since a loop
+body has no "outside the loop" to hoist into) UNLESS `CompiledPlan` is restructured (as the
+blocker below already requires) to prune dead edges and separate loop-invariant forwards before
+tracing. **Downgraded, not cleared: 7.87× is now BEST CHARACTERIZED as "very likely a legitimate
+measurement of a real optimization opportunity, contingent on that optimization being
+deliberately preserved under `@trace while`" rather than "possibly an unrolling artifact" — it
+still must not be cited externally as a settled number until the actual re-measurement (with the
+optimizations explicitly implemented, not just inherited from unrolling) runs.**
+
+**Two concrete, upstream-contributable optimizations, independent of the Reactant question
+entirely.** Neither needs `@trace while` or Julia at all — both apply to upstream's own
+`fori_loop`-based `run_inference` exactly as directly: (1) hoist the forward pass for any node
+whose ALL sources are clamped (constant across the relaxation) outside the loop; (2) never
+compute — or explicitly zero without computing — gradients into clamped nodes, since
+`update_latents`'s own logic already discards them. Upstream's `fori_loop` currently pays both
+costs on every inference call, for every PC model with a clamped-input first layer (the common
+case). This is a real, citable, PC-inference-level finding this investigation surfaced as a
+byproduct — not a Julia-vs-JAX story, a genuine algorithmic contribution worth reporting
+upstream regardless of what this repo does with it.
+
+**Decisive test still attempted and BLOCKED, unchanged from the initial finding**:
+`Reactant.@trace for` sweeps every free variable referenced inside the loop body — including the
+closed-over, loop-invariant `CompiledPlan` topology metadata — into traced loop-carried state,
+and `CompiledPlan`'s nested `SlotInfo` struct fails a traced-type round-trip (`Bool` vs
+`Reactant.TracedRNumber{Bool}` inconsistency) regardless of whether `plan` is passed as an
+argument or genuinely closed over. No `Const`-style escape hatch found in Reactant's source for
+excluding a value from this automatic sweep. **Most promising next attempt, given the two
+optimizations above are algorithmic prerequisites anyway**: destructure `CompiledPlan` into
+plain `Int`/`Tuple`/`Vector{Int}` values (never `SlotInfo`/`NodeInfo` structs) BEFORE entering
+`@trace for`, with dead (clamped-target) edges already pruned and loop-invariant forwards already
+separated out at this same destructuring step — this is one refactor serving three needs (fixes
+the tracing blocker, implements optimization 1, implements optimization 2), not three separate
+efforts. Not yet attempted — the specific `SlotInfo` round-trip failure was diagnosed, not yet
+fixed.
 
 ## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
 
