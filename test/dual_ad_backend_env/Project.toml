@@ -1,0 +1,22 @@
+# Minimal, dedicated environment for test_autodiff_backend_registration.jl. That test spawns
+# genuinely fresh `julia` subprocesses (the F-04 dual-AD-backend guard is specifically about
+# precompile-vs-load-time behavior, which cannot be exercised from inside an already-running,
+# already-warm test process — see the test file's own header). Those subprocesses need BOTH
+# Zygote and Enzyme resolvable at once, which the main package's [weakdeps] alone do not
+# guarantee (either extra can be present without the other depending on how the *calling*
+# test env was built, e.g. `.warm/zygote_env` has Zygote but not Enzyme). Kept separate from
+# `.warm/zygote_env` (interactive REPL convenience env, not test infra) and from
+# `benchmark/jit_zygote_expt/` (an uncommitted, ad-hoc diagnostic scratch env from the
+# investigation that found this bug — not meant to be depended on by committed tests).
+[deps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+FabricPC = "733d70e2-d01e-4f7f-a093-72992d87e09f"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[sources]
+FabricPC = {path = "../.."}
+
+[compat]
+Enzyme = "0.13"
+Zygote = "0.6, 0.7"
+julia = "1.12"

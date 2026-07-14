@@ -15,7 +15,13 @@ using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel,
 import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Zygote
 
-_register_ad_backend!(:zygote)
+# __init__(), NOT bare top-level -- see the identical note in FabricPCEnzymeExt.jl. A
+# module-level statement mutating FabricPC._AD_BACKEND only ran once, in this extension's own
+# precompile worker process; it was never replayed on a normal load from the .ji cache, so
+# F-04's guard was a no-op in real sessions for BOTH backends, not just Enzyme.
+function __init__()
+    _register_ad_backend!(:zygote)
+end
 
 # SoA key strings are structural (independent of the differentiated values); the Symbol->String
 # foreigncall (jl_cstr_to_string) is not differentiable, so skip tracing it. This is what lets a

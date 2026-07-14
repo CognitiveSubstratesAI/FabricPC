@@ -20,7 +20,16 @@ using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel
 import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Enzyme
 
-_register_ad_backend!(:enzyme)
+# __init__(), NOT bare top-level: a module-level statement that mutates a DIFFERENT,
+# already-loaded module's global state (FabricPC._AD_BACKEND) only takes effect in the
+# ephemeral worker process that PRECOMPILES this extension -- it is never replayed when the
+# extension is later loaded from its cached .ji in a real session. __init__() is Julia's
+# documented mechanism for exactly this: it runs on EVERY load, precompiled or not. Before
+# this fix, F-04's guard was a no-op in any normal (post-precompile) session -- confirmed by
+# direct probe, 2026-07-14 (see docs/AUDIT_REGISTER.md F-04 / docs/decisions.md #15 update).
+function __init__()
+    _register_ad_backend!(:enzyme)
+end
 
 # The params weights/biases (and, for latent grads, the inputs) are threaded as `NamedTuple`s — the
 # `SoA` container's `.nt` — so Enzyme accumulates gradients into NamedTuples, never a `Dict` (a Dict

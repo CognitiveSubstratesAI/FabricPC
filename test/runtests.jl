@@ -76,3 +76,15 @@ if get(ENV, "FABRICPC_TIER_D_TRANSFORMER", "0") == "1"
         println("\n[conditioning envelope] eta=0.1 config's known-expansive failures printed above ($(e.fail + e.error)/$(e.pass + e.fail + e.error) -- see docs/AUDIT_REGISTER.md section 6). Not counted against the main suite.")
     end
 end
+
+# F-04 dual-AD-backend guard's precompile-vs-load-time regression (test_autodiff_backend_registration.jl,
+# 2026-07-14). Opt-in like the Tier D transformer block above, for the same reason: this spawns up
+# to 5 genuinely fresh `julia` subprocesses (the bug it guards against can only be reproduced
+# across a real precompile-cache boundary, which the already-warm `runtests.jl` process itself
+# cannot exercise) -- real cold-start/precompile cost, not appropriate for the default fast run.
+# Set FABRICPC_AD_BACKEND_SUBPROCESS_TESTS=1 to include it. Independent top-level testset (not
+# nested in "FabricPC.jl" above) for the same reason as the Tier D block: its own subprocess
+# I/O/exit-code assertions should never be silently swallowed into the parent's tally.
+if get(ENV, "FABRICPC_AD_BACKEND_SUBPROCESS_TESTS", "0") == "1"
+    include("test_autodiff_backend_registration.jl")   # defines its own top-level @testset
+end
