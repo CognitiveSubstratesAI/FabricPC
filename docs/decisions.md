@@ -249,6 +249,51 @@ extension is exercised via `examples/jit_inference.jl` (needs Reactant).
 Remaining: a flat weight-grad path to JIT the full train_step (not just
 inference); NTuple-typed state for fully type-stable tracing.
 
+### §11 update — first CROSS-LANGUAGE number (J-04, 2026-07-14): ~7-8× vs real `jax.jit`
+
+Every number above this point is Julia-vs-Julia (eager Dict path vs Reactant-compiled,
+no JAX involved) — do not conflate them with this one. J-04
+(`docs/AUDIT_REGISTER.md` section 5) was scoped correctly: J-01/J-02 block compiling
+`compute_local_weight_gradients` (the weight-gradient/M-step) under Reactant+Enzyme, but
+`compile_inference`/`flat_run_inference` (the E-step relaxation loop only) is a SEPARATE,
+already-validated path, and the MNIST-MLP architecture (`examples/mnist_pc.jl`,
+`Linear`-only) is fully covered by `flat_forward`/`flat_latent_grads` — so compiled PC
+*inference* (not training) vs upstream's real `jax.jit` was measurable without waiting on
+J-01/J-02, and now has a real number: same architecture/batch(256)/`eta_infer`(0.1)/
+`infer_steps`(20), same weights loaded on both sides (RNG-trap discipline, this session's
+established fixture convention) —
+
+**Julia+Reactant's `compile_inference` runs ~7-8× faster than upstream's own
+`jax.jit(run_inference)`** (steady-state 4.75-6.38ms vs 42.1-43.2ms, range 6.6×-8.3× across
+repeated pairings on this shared 2-core dev machine — absolute compile times swung
+19s-327s with concurrent-process contention, but the ratio held steady, which is the more
+trustworthy number here). Numerics validated to float32 precision (max|Julia-compiled −
+JAX-jit| = 2.29e-6 on `h`, the only actually-relaxed latent; exact 0 on the clamped `x`/`y`).
+This is the first CROSS-language, both-sides-compiled comparison this codebase has produced
+— distinct from the 8.8× (§11, Julia eager vs Julia+Reactant, a simplified hand-rolled
+kernel) and 32× (increment 2 above, Julia's real eager Dict path vs Julia+Reactant, same
+architecture as this new measurement) numbers, both Julia-internal. The new measurement's
+own Julia-internal ratio (compiled vs its own eager Dict path, measured in the same run)
+came out 28-38× — independently reproducing the existing 32× claim, a useful cross-check
+that the two benchmarks are measuring compatible things.
+
+**Scope, stated plainly so it isn't overclaimed**: inference only. Weights are fixed
+throughout (no weight update, no `optax`/`Optimisers` step) — this is NOT a "PC training is
+Nx faster" result. J-01/J-02 (compiling the weight-gradient/training step) remain open and
+untouched by this measurement.
+
+A real bug was found and fixed while building the fixture-loading side of this benchmark,
+worth recording as a general caution for any future cross-language array-dumping work in
+this codebase: `numpy.ndarray.tofile()` always writes C-order bytes regardless of the
+array's actual memory layout — `np.asfortranarray(arr).tofile()` is a silent no-op for
+producing column-major bytes, so a naive Julia-side `reshape` of the raw bytes SILENTLY
+SCRAMBLES any non-1×N array. The bug was self-consistent on the Julia side (eager ==
+compiled, since both read the same scrambled data) and only surfaced by comparing against
+JAX's OWN disk round-trip, not a live in-memory JAX array — a live-vs-disk comparison alone
+would have missed it. (This codebase's existing Tier A-D `.npz`-based fixtures were never at
+risk — `np.savez`/`NPZ.jl` handle layout correctly; this was specific to this benchmark's
+raw-`.bin`-file loading path, which has since been fixed in-code.)
+
 ## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
 
 Date: 2026-06-08
