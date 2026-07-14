@@ -1,6 +1,13 @@
 # Julia artifacts
 Manifest.toml
 docs/Manifest.toml
+# EXCEPTION: benchmark Manifests are committed deliberately -- they pin the exact package
+# versions (esp. Reactant, currently `compat = "0.2"`, unbounded across a line that already
+# spans 0.2.252-0.2.273 locally) that produced numbers cited in docs/decisions.md/
+# AUDIT_REGISTER.md (J-01's ~1e-6/1e-7 validation, J-04's ~7-8x claim, #11's 9x/32x). Without
+# this, those claims are not reconstructable against a moved Reactant release.
+!benchmark/jit/Manifest.toml
+!benchmark/pc_vs_backprop/Manifest.toml
 docs/build/
 *.cov
 *.jl.cov
