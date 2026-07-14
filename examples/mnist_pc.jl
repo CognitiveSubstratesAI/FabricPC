@@ -138,4 +138,11 @@ function main()
     @printf("\nDONE  %d train steps  final test_acc=%.4f\n", nb, test_accuracy(params))
 end
 
-main()
+# Guarded so another script can `include(joinpath(@__DIR__, "..", "examples", "mnist_pc.jl"))`
+# to reuse the data-loading helpers (`_fetch`/`load_images`/`load_labels`/`onehot`) without
+# triggering a full training run -- only runs `main()` when this file is the entry point
+# (e.g. `julia --project=. examples/mnist_pc.jl`), the standard Julia/Python idiom.
+# `benchmark/pc_vs_backprop_mnist.jl` (docs/AUDIT_REGISTER.md C-04) relies on this.
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

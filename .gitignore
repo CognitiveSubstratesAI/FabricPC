@@ -33,4 +33,4 @@ secrets.*
 *.secret
 credentials.json
 .warm/
-.warm_zygote/
+.warm*/
