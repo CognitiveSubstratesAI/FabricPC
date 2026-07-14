@@ -195,6 +195,15 @@ gets the exact path.
 > "for free" the way the unrolled form did) — and the actual re-measurement was attempted and
 > BLOCKED on a genuine Reactant/`CompiledPlan` tracing gap, not yet resolved. Do not cite 7.87×
 > externally or in positioning material until that re-measurement runs.
+>
+> **AND (§28): 7.87× is a POINT ON A CURVE, not a FabricPC constant — it is topology-dependent and
+> this MNIST-MLP is the maximally favorable case.** A runnable FLOP analyzer (validated to the
+> digit against the HLO ground truth) shows the win is exactly the fraction of per-step FLOPs on
+> clamped-incident edges: **98.7% on MNIST-MLP** (clamped input is the widest node), **1/(L+1) on a
+> uniform L-layer chain** (3% at L=32), and **EXACTLY 0% on a transformer-LM at any scale** (the
+> clamped input feeds an `EmbeddingNode` gather — zero FLOPs to hoist, discrete-zero gradient to
+> prune). The flagship transformer gets NOTHING from this. Any external citation of 7.87× MUST carry
+> its topology (MNIST-MLP, B=256, 784→128→10) or it badly misleads. See §28.
 
 ## 11. Reactant/XLA JIT: feasible + ~9× — full integration is the GraphState refactor
 
@@ -1570,3 +1579,124 @@ strongly would correctly run longer, one that doesn't would correctly stop soone
 a sharper argument FOR `@trace while` over a fixed step count than §25 currently makes: a fixed
 `infer_steps` has to guess in advance whether a given batch is signal-limited or tail-limited; a
 relative-tolerance while loop measures it per batch instead of guessing once for all batches.
+
+## 28. The J-04 7.87× is a POINT ON A CURVE, not a constant: the win is a static, topology-dependent FLOP fraction — 98.7% (MNIST) → 1/(L+1) (deep chain) → EXACTLY 0% (transformer)
+
+Date: 2026-07-14
+
+§11's update established that Julia's compiled MNIST-MLP inference does ~27× fewer FLOPs than
+upstream's `jax.jit`, from two exact optimizations XLA found on the unrolled graph (hoist a
+clamped-source-only forward; DCE the gradient into a clamped node). The obvious next question,
+raised in review and answered here: **is that a property of FabricPC, or a property of the
+MNIST-MLP topology?** It is the topology — and the difference is the whole finding, because it
+converts "Julia FabricPC is 7.87× faster than JAX" (an overclaim that would badly mislead anyone
+applying it to a transformer) into a formula with a static, per-graph answer.
+
+**Both optimizations key entirely on CLAMPED nodes.** Hoist saves a node's forward FLOPs when all
+its in-sources are clamped (so `z_mu` is constant across the relaxation); prune saves an
+input-gradient's FLOPs when the edge's source (the node the gradient flows into) is clamped (so
+`update_latents`' `!haskey(clamps, name)` skip makes it dead). So the win magnitude is exactly
+**(FLOPs on clamped-incident edges) / (total per-step FLOPs)** — a pure static graph property, no
+timing, no runtime. This was computed by a **runnable analyzer** (not hand-derived — this
+investigation has now caught four right-looking-but-unestablished hand computations, and this
+isn't a fifth), which walks a real `CompiledPlan`, computes per-node forward and per-edge
+input-gradient FLOPs from the actual node types + shapes (`Linear.forward = 2·rows·Kin·Nout` per
+`src/nodes/linear.jl:96`; `Linear` input-grad `= 2·rows·Nout·Kin` per `linear.jl:160`;
+`EmbeddingNode.forward = 0` gather per `transformer_decomposed.jl:294-302`; `EmbeddingNode`
+input-grad `= 0` discrete-zeros per `transformer_decomposed.jl:334`; `VocabProjection`/transformer
+GEMMs), and classifies each op as clamped-incident or not. It **reproduces both MNIST HLO
+ground-truth numbers to the digit** (2081.4M JAX total / 77.6M Julia residual, the operand-level
+`@code_xla`-vs-`jax.jit` figures from §11's update), which is what licenses trusting it on the
+other topologies:
+
+| topology | clamped node(s) | clamped-incident FLOP fraction | FLOP-elimination ceiling |
+|---|---|---|---|
+| **MNIST-MLP** (784→128→10) | input `x` = 784-dim, the **widest** node | **98.7%** | **26.8×** |
+| uniform L-layer chain (width W) | input, one hidden-width edge | **exactly 1/(L+1)** (33% at L=2, 3.03% at L=32) | 1.48× (L=2) → 1.03× (L=32) |
+| **transformer-LM** (any scale, tiny → 279 GFLOP/step) | input → `EmbeddingNode` | **EXACTLY 0.0%** | **1.00×** |
+
+**Why MNIST is the maximally favorable case, stated so it can't be over-generalized.** The
+clamped node on MNIST is the 784-dim *input* — the single widest node in the network — so hoist
+deletes the most expensive forward (256×784×128) and prune deletes an equally-expensive gradient
+(256×128×784), twenty times over, ≈99% of all the arithmetic. That is a genuine property of
+*this specific graph*: a shallow MLP whose clamped input dominates the FLOP budget. It is not a
+FabricPC property and does not transfer.
+
+**Why the transformer gets EXACTLY zero — not "near zero," structurally zero** (verified against
+node code bodies by an independent agent, not asserted): the transformer's clamped input feeds an
+`EmbeddingNode`, whose forward is `_embed_lookup` — a pure indexed row-copy gather with **zero
+multiply-adds** (`transformer_decomposed.jl:299`) — and whose input-gradient is a literal
+`zero(inputs[k])` because the input is discrete integer token ids
+(`transformer_decomposed.jl:334`). So the hoistable forward saves 0 FLOPs and the prunable
+gradient saves 0 FLOPs. The clamped OUTPUT (target `y`, a `VocabProjectionNode`) contributes
+nothing either: its source is the last hidden node (unclamped), so its forward isn't hoistable and
+its gradient-to-the-hidden isn't prunable. Every expensive op on a transformer — attention QKV/O
+projections, FFN, the vocab projection — is NON-clamped-incident. The flagship model gets **nothing**
+from the optimization that makes MNIST 27×. Anyone citing "7.87× faster than JAX" and mentally
+applying it to `char_lm_pc.jl`/`decomposed_lm_pc.jl` would be off by the entire factor.
+
+**The general shape.** The clamped-incident fraction is large only when a clamped node sits on a
+disproportionate share of the per-step matmul FLOPs. On an MLP with a wide clamped input, that's
+~1 (minus the cheap output layers). On a uniform depth-L chain it's 1/(L+1) — the clamped input's
+one edge diluted by L equally-expensive interior edges — decaying to nothing with depth. On a
+transformer it's 0 because the clamped-incident ops are a gather and a discrete-zero, not GEMMs.
+**7.87× must always be reported with its topology (MNIST-MLP, B=256, 784→128→10, 20 steps) — it is
+one point on this curve, and the curve's value elsewhere is computable in advance from the graph
+alone.**
+
+**The 26.8× ceiling vs the 7.87× measured gap has a specific, checkable cause (efficiency, not
+mystery).** The FLOP-elimination ceiling from the table is 26.8×; the measured wall-clock ratio is
+7.87×. The gap is that Julia ELIMINATED THE EFFICIENT FLOPs and KEPT THE INEFFICIENT ones: the
+deleted work was two big 784-contraction GEMMs (256×784 by 784×128 — high arithmetic intensity,
+runs near peak), while Julia's surviving per-step residual is skinny dots (256×128 by 128×10,
+N=10 — memory-bound, poor cache/vectorization, maybe 20–30% of peak). So **time-ratio ≈
+FLOP-ceiling × (η_julia_residual / η_jax_full)**, and `26.8 × 0.294 = 7.87` closes exactly
+(the arithmetic is internally consistent; `0.294` is the implied efficiency ratio, not
+independently measured yet). This makes a falsifiable prediction — **the measured ratio is
+batch- and width-dependent: widen the output layer or grow the batch and Julia's residual GEMMs
+get more efficient, so the measured ratio should climb toward the 26.8× ceiling; shrink them and
+it should fall.** A batch/width timing sweep would confirm this harder than any further static
+analysis (NOT YET RUN — flagged as the immediate confirmatory next experiment; the static
+topology-dependence above, which is the load-bearing overclaim guard, is already decisively
+established without it).
+
+**H1 is demoted, not dead — and the distinction is operational, not semantic.** §11's update
+resolved that the savings are ALGORITHMIC (real FLOP reduction), not a compilation-scheduling
+trick. But they were *performed by* the unrolling: XLA will not hoist across a `stablehlo.while`
+boundary, and will not DCE a value that is live in a `while`-loop's pytree carry (upstream's
+`GraphState` carries every node's `latent_grad`, clamped or not). So under §25's mandated
+`@trace while` refactor, these two optimizations **do not come for free — they must be deliberately
+re-implemented** (hoist clamped-source forwards before the loop; prune clamped-node gradient edges
+at `CompiledPlan`-build time). Precise statement: 7.87× sits comfortably inside a 26.8×
+*algorithmic* ceiling, so no residual demands an unrolling-artifact explanation — but if, after
+hoist+prune are made explicit, a `@trace while` build still trails the unrolled one, *that*
+residual is the true H1, and the H3 partial-unroll sweep (unroll factor ∈ {1,2,4,8,16,20}, keeping
+cross-step fusion while bounding graph size) is the instrument that would measure it.
+
+**Sequencing the implementation (split by the project's own "never two layers in one commit"
+discipline — this is a four-job refactor otherwise: tracing-fix + hoist + prune + `@trace while`).**
+1. **Hoist + prune in the EAGER path first** — pure algorithm, zero Reactant. Because both are
+   EXACT (constant clamped inputs give identical `z_mu`; the pruned gradient is provably unread),
+   **Tier C fixtures must reproduce bit-identically** — the strongest possible gate, already built.
+   This is also the cleanest ATTRIBUTION experiment available: eager-Julia-with vs eager-Julia-without
+   isolates the *algorithmic* win from the *compilation* win, one language, no XLA, no cross-runtime
+   confound. Cheapest item on the list and it de-risks steps 2–3 by proving the optimizations correct
+   before entangling them with a tracing refactor. (In progress — see the git history / a following
+   entry for the result.)
+2. Destructure `CompiledPlan` into plain `Int`/`Tuple` values (fixes the Reactant `SlotInfo`
+   traced-type blocker from §11's update) — with dead edges already pruned and invariant forwards
+   already separated at this step, so it does triple duty.
+3. `@trace while` + re-measure J-04 (the decisive re-measurement §11's update flagged as blocked).
+
+**The correctness caveat that makes the eager change (and the upstream PR) land clean, verified
+against both code bodies:** `zero_grads` uses each node's `latent_grad` (NOT `z_latent`) as the
+zeroed-gradient shape/dtype source (`src/core/inference.jl:123`; upstream `inference.py`'s
+`jnp.zeros_like(node_state.latent_grad)` with the verbatim comment "z_latent may carry an integer
+clamp dtype on source nodes, but gradients are float"). So pruning must skip the gradient
+*accumulation* into clamped nodes but must NOT remove the `latent_grad` field/allocation —
+`zero_grads` iterates every node including clamped ones for shape/dtype, and `latent_grad` is
+allocated as Float32 zeros at init (`state_initializer.jl:38`) independently of any accumulation,
+so that invariant already holds for free. The two optimizations are also a real, Julia-independent
+contribution back to upstream, whose own `fori_loop` pays both costs (recompute the invariant
+forward, compute the dead gradient) on every inference call for every model with a wide clamped
+input — see `docs/upstream_contributions/pc_inference_clamped_hoist_prune.md`.
