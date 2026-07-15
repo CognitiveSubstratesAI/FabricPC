@@ -545,8 +545,19 @@ plain `Int`/`Tuple`/`Vector{Int}` values (never `SlotInfo`/`NodeInfo` structs) B
 `@trace for`, with dead (clamped-target) edges already pruned and loop-invariant forwards already
 separated out at this same destructuring step — this is one refactor serving three needs (fixes
 the tracing blocker, implements optimization 1, implements optimization 2), not three separate
-efforts. Not yet attempted — the specific `SlotInfo` round-trip failure was diagnosed, not yet
-fixed.
+efforts. **ATTEMPTED 2026-07-15 (J-08) — it clears the SlotInfo wall and hits a SECOND one, so this
+plan is necessary but NOT sufficient.** Spiked: a SlotInfo-free destructured plan (nodes as a Tuple,
+`infos` as plain `(in_degree, out_degree)` NamedTuples) changes the failure from `NoFieldMatchError`
+to `UndefRefError` at `traced_type_inner(::Type{RefValue{Tuple{Linear,Linear,Linear}}})` →
+`collect_tvars_in_type!` — because `@trace` sweeps the NODE structs too, not just the topology
+metadata. Root-caused with zero FabricPC involved: `collect_tvars_in_type!(..., Tuple)` throws
+`UndefRefError` (`Tracing.jl:660-661` reads `t.T`/`t.N` off a `Core.TypeofVararg` with no `isdefined`
+guard; `Tuple === Tuple{Vararg{Any}}` has no `.N`), while `NTuple{2,Int}` traces fine. Every node
+struct declares `shape::Tuple`. So the fix is either upstream (guard those two lines — a real Reactant
+bug) or ours (concrete `shape::NTuple{N,Int}`, which also removes one of Linear's FIVE abstract
+fields). Also refuted the cheap hope: `@skip_rewrite_constructor` does not exist, and the real
+`@skip_rewrite_type` targets the IR-rewrite subsystem, not the traced-type sweep — registering
+SlotInfo/NodeInfo/CompiledPlan leaves the error byte-identical.
 
 ## 12. Phase D activated — Enzyme node-local autodiff seam (PC-transformer enabler)
 
