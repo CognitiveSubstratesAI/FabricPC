@@ -34,9 +34,26 @@ entire point of pinning them.
 
 Provenance: generated against the local upstream checkout; the fixture-venv pin is recorded
 in scripts/requirements-fixtures.txt. conv/pool forward math is identical between the pinned
-commit 316367c6 and HEAD 5514c91 (the only deltas there are Python default-object plumbing:
+commit 316367c6 and 5514c91 (the only deltas there are Python default-object plumbing:
 `weight_init: Optional[...] = None` -> `weight_init: "InitializerBase"`), so these fixtures
 are commit-stable across that range.
+
+🔴 THIS SCRIPT DOES NOT RUN AGAINST UPSTREAM HEAD ANY MORE. READ BEFORE RE-RUNNING.
+    fixtures in test/conformance/fixtures/tier_conv.npz were generated at upstream 5514c91.
+    upstream has since moved to b6f64ad, "Remove `pre_activation` from `NodeState`;
+    `forward()` returns `NodeState` only (#25)" — TWO contract changes this file depends on:
+      1. `NodeState.pre_activation` NO LONGER EXISTS. `_dump` records `fwd.pre_activation`
+         (=> AttributeError), and the Julia side stores the field this asserts against.
+      2. `forward()` returns a bare NodeState, not `(total_energy, NodeState)`. Every
+         `_, fwd = node_class.forward(...)` here unpacks a tuple that is gone — and because
+         NodeState is a NamedTuple, that unpack will not raise, it will SILENTLY bind `_` and
+         `fwd` to the first two FIELDS. Fail-open: it would produce garbage fixtures, not an
+         error. (`state.energy` is NOT affected — it was always per-sample; only the summing
+         moved out of forward() into the autodiff callsites' `energy_fn`.)
+    So: re-running this against HEAD without adapting it is a silent-corruption hazard, which
+    is exactly why the SHA is pinned here rather than left as "the local checkout".
+    Tracked as AUDIT_REGISTER C-15 (contract) + A-01 (SHA drift). Do not regenerate casually —
+    the adaptation is a deliberate oracle-first task, not a re-run.
 """
 
 import numpy as np
