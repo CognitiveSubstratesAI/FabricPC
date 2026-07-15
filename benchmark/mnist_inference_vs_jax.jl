@@ -105,7 +105,7 @@ function main()
     # Layer 2 (Reactant/XLA compiled) -- compile time measured separately from execution.
     println("compiling inference with Reactant/XLA ...")
     t_compile = @elapsed (ci = compile_inference(structure, params, clamps; batch=B))
-    zl = ci(params, init)  # first post-compile execution
+    zl = ci(init)  # first post-compile execution (fast path: compile-time params reused)
 
     names = ci.plan.names
     idx = Dict(n => i for (i, n) in enumerate(names))
@@ -122,12 +122,49 @@ function main()
     d_y = maximum(abs.(zl[idx["y"]] .- jax_jit_y))
 
     t_eager = bench(() -> run_inference(params, init, clamps, structure), 10)
-    t_jit = bench(() -> ci(params, init), 30)
+
+    # THREE JIT timings, because "julia_jit_steady_ms" was measuring something the JAX side never
+    # pays. J-04's headline (7.87x) came from `ci(params, init)` — the SLOW path, which
+    # `to_rarray`s every weight on EVERY call (~400 KB host->device for this MLP). JAX's timed
+    # loop passes `params`/`init_state` that are ALREADY device-resident `jax.Array`s, so passing
+    # them to a jitted fn copies nothing. We were charging Julia for a copy JAX doesn't make —
+    # and one our own API already avoids (32b64a6 marshals params once at compile time; the
+    # benchmark just never switched to it). Report all three rather than pick one, so the
+    # marshalling cost is a MEASURED number instead of an attribution:
+    #   remarshal — old headline: params re-marshalled per call (what 7.87x was measured on)
+    #   fast      — params device-resident (compile-time), per-batch state marshalled per call.
+    #               This is what a real E-step does (weights constant, batch arrives on host).
+    #   resident  — params AND state device-resident: JAX's exact setup, isolating compute.
+    # Residual asymmetry, stated not hidden: all three still copy the OUTPUT device->host via
+    # `Array(...)`, which JAX's `block_until_ready` does not. That read is also what makes the
+    # timing honest (decisions.md §11: timing the thunk without it shows a bogus ~1000x), so it
+    # stays — it means these numbers are, if anything, conservative for Julia.
+    t_jit_remarshal = bench(() -> ci(params, init), 30)
+    t_jit = bench(() -> ci(init), 30)
+    zl_host = ntuple(i -> init.nodes[ci.plan.names[i]].z_latent, length(ci.plan.names))
+    zl_r = Reactant.to_rarray(zl_host)
+    t_jit_resident = bench(() -> (o = ci.thunk(ci.params_r, zl_r); [Array(x) for x in o]), 30)
 
     println("=== RESULT ===")
     @printf("compile_time_s              = %.4f\n", t_compile)
     @printf("julia_eager_steady_ms       = %.4f\n", t_eager * 1e3)
-    @printf("julia_jit_steady_ms         = %.4f\n", t_jit * 1e3)
+    @printf("julia_jit_steady_ms         = %.4f   (params device-resident; HEADLINE)\n", t_jit * 1e3)
+    @printf(
+        "julia_jit_remarshal_ms      = %.4f   (params re-marshalled per call — the OLD J-04 path)\n",
+        t_jit_remarshal * 1e3
+    )
+    @printf(
+        "julia_jit_resident_ms       = %.4f   (params AND state device-resident — JAX's setup)\n",
+        t_jit_resident * 1e3
+    )
+    @printf(
+        "  -> per-call param marshalling cost = %.4f ms  (remarshal - headline)\n",
+        (t_jit_remarshal - t_jit) * 1e3
+    )
+    @printf(
+        "  -> per-call state marshalling cost = %.4f ms  (headline - resident)\n",
+        (t_jit - t_jit_resident) * 1e3
+    )
     @printf("julia_jit_vs_julia_eager    = %.2fx\n", t_eager / t_jit)
     @printf("max|julia_jit - julia_eager| (in-language sanity) = %.3g\n", max_eager_vs_jit)
     @printf(

@@ -1917,7 +1917,7 @@ ever run, the coupling to fix first is the momentum pair above.
 > EXACTLY 0% for the transformer); the transformer case is **unmeasured**.
 
 Why the bare `7.87×` misleads: it was measured against the UNOPTIMIZED eager path, it included
-~2.5ms/call marshalling (since fixed, `32b64a6`), and the fused-eager slope test later showed
+~2.5ms/call marshalling (since fixed, `32b64a6`; **that ~2.5ms was a SLOPE-TEST ATTRIBUTION and it was ~2x too high — measured directly in J-04b (2026-07-15) the params marshalling is 0.69-1.23 ms/call and the state 0.26-0.52 ms**), and the fused-eager slope test later showed
 per-step eager/XLA parity — the compiled lane's real value is auto-fusion of complex chains,
 scaling (`@trace while`), and GPU/parity, NOT raw per-step speed on this topology (§28 + addenda
 1–3). Unroll-vs-`@trace while` remains open (H1 demoted).

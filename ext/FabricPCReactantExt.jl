@@ -18,8 +18,13 @@ using Reactant
 `params_r` is the params' `ConcreteRArray`s, marshalled ONCE at compile time: weights are
 CONSTANT across inference (E-step) calls, so re-marshalling them per call (~400 KB of
 host→device copy for the MNIST-MLP) is pure waste. It's held here and reused; only the
-per-batch state is marshalled per call. See `decisions.md` §28 addendum 3 (the slope test
-attributed ~2.5 ms/call fixed cost to this marshalling)."""
+per-batch state is marshalled per call.
+
+Cost, MEASURED directly (J-04b, 2026-07-15, medians of 3 runs): re-marshalling the params costs
+0.69-1.23 ms/call (~11-18% of the call) and the per-batch state 0.26-0.52 ms. Note that
+`decisions.md` §28 addendum 3's slope test attributed ~2.5 ms/call to this marshalling — about
+2x too high. A fitted decomposition is a hypothesis; these numbers come from timing the three
+variants against each other in one process."""
 struct CompiledInference
     plan::CompiledPlan
     layout::Any
