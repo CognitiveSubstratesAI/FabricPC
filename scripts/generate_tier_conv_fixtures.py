@@ -165,7 +165,11 @@ def gen_multi_edge():
           {e: xs[e] for e in edges}, _state(zlat, shape), info, edges)
     put("multi_in", **{f"x_{i}": xs[e] for i, e in enumerate(edges)},
         **{f"W_{i}": Ws[e] for i, e in enumerate(edges)}, b=b, z_latent=zlat)
-    OUT["multi_edge_order"] = np.array("|".join(edges))   # the in_edges order to reproduce
+    # The in_edges order this fixture was generated with, so the Julia side can ASSERT its own
+    # graph reproduces it rather than assuming. Stored as ASCII BYTES, not a numpy str array:
+    # `np.array("...")` has dtype `<U29`, and NPZ.jl cannot parse `<U` dtypes — it fails the
+    # WHOLE npzread ("unsupported type U29"), not just this key. Julia side: `String(UInt8.(v))`.
+    OUT["multi_edge_order_ascii"] = np.frombuffer("|".join(edges).encode("ascii"), dtype=np.uint8)
 
 
 # =====================================================================================
