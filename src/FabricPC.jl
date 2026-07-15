@@ -16,6 +16,7 @@ module FabricPC
 
 using Random
 using Accessors
+using OrderedCollections: OrderedDict
 
 const FABRICPC_VERSION = v"0.1.0"
 

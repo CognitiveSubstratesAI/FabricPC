@@ -20,9 +20,10 @@
 # TransformerBlock and the non-Gaussian energies stay on run_inference (their backward isn't in the
 # flat lane either — see jit_flat.jl / J-01).
 #
-# Inputs are folded in the REFERENCE's Dict-iteration order (see _ref_fold_perm) so multi-input
-# (3+ in-edge) nodes stay bit-identical despite float non-associativity — a naive in_edges-order
-# fold diverges by ~1 ULP for such nodes.
+# Inputs are folded in in_src (== in_edges) order, which matches BOTH upstream JAX (its Python dict
+# iterates in insertion order) and — since gather_inputs was switched to an OrderedDict — the
+# reference run_inference. Float addition is non-associative, so this shared canonical order is what
+# keeps 3+ in-edge nodes bit-identical across all lanes.
 #
 # VERIFIED (2026-07-14, warm .warm/zygote_env): bit-identical (max|diff|=0.0) to run_inference on
 # MNIST-MLP, deep chain, a mixed-source diamond, a 3-in-edge node (multiple key sets), IdentityNode
@@ -50,8 +51,7 @@ struct InplaceInference
     biases::Vector{Union{Matrix{Float32},Nothing}}
     bufs::Vector{NodeBuf}
     z::Vector{Matrix{Float32}}                # per-node z_latent (mutated in place)
-    src::Vector{Vector{Matrix{Float32}}}      # per node: STABLE refs to source z buffers (in REFERENCE fold order)
-    srcidx::Vector{Vector{Int}}               # per node: source positions aligned to src/weights (reference fold order)
+    src::Vector{Vector{Matrix{Float32}}}      # per node: STABLE refs to source z buffers (in_src = in_edges order)
     prec::Vector{Float32}                     # per node: GaussianEnergy.precision (NOT assumed 1)
     eta::Float32
     decay::Float32
@@ -72,21 +72,6 @@ _inplace_supported(node::Linear) =
 # only the Gaussian energy matters for the grad math to be exact.
 _inplace_supported(node::IdentityNode) = node.energy isa GaussianEnergy
 _inplace_supported(node::SkipConnection) = node.energy isa GaussianEnergy
-
-# The reference forward folds a node's inputs in Dict-ITERATION order (nodes/linear.jl:95 /
-# identity.jl / skip_connection.jl iterate `for (_,x) in inputs`, the gather_inputs Dict keyed by
-# in_edges). Float addition is non-associative, so for 3+ in-edges we must fold in that SAME order
-# to stay bit-identical. This replays the exact primitive the reference uses — build a Dict with
-# the in_edge keys (inserted in in_edges order) and read its key-iteration order — so it tracks any
-# Julia Dict-ordering change automatically rather than hardcoding a permutation. Returns a
-# permutation of 1:length(in_keys) giving in_edges positions in the reference's fold order.
-function _ref_fold_perm(in_keys::AbstractVector{<:AbstractString})
-    d = Dict{String,Int}()
-    for (pos, ek) in enumerate(in_keys)
-        d[ek] = pos                       # edge_key => its position in in_edges (== in_src) order
-    end
-    return Int[d[ek] for ek in keys(d)]   # keys(d) == the reference forward's Dict fold order
-end
 
 """
     prealloc_inference(structure, params, clamps; batch) -> InplaceInference
@@ -138,19 +123,15 @@ function prealloc_inference(
     biases = Vector{Union{Matrix{Float32},Nothing}}(undef, n)
     bufs = Vector{NodeBuf}(undef, n)
     z = Vector{Matrix{Float32}}(undef, n)
-    srcidx = Vector{Vector{Int}}(undef, n)                # source positions in REFERENCE fold order
     # Per-node GaussianEnergy precision (the scope guard above guarantees GaussianEnergy).
     prec = Float32[(plan.nodes[i].energy::GaussianEnergy).precision for i in 1:n]
     for i in 1:n
         feat = plan.infos[i].shape[end]
-        perm = _ref_fold_perm(plan.in_key[i])             # reference Dict fold order (3+ in-edges)
         # Linear has one Matrix per in-edge; IdentityNode/SkipConnection are WEIGHTLESS (their
         # to_flat_params placeholders are `nothing`) — filter them out (never indexed) so we don't
-        # call Matrix{Float32}(nothing). Reorder Linear's weights into reference fold order; leave
-        # the (empty) Identity/Skip vector as-is.
-        w_edge = Matrix{Float32}[Matrix{Float32}(w) for w in fparams[i].w if w isa AbstractMatrix]
-        weights[i] = length(w_edge) == length(perm) ? w_edge[perm] : w_edge
-        srcidx[i] = plan.in_src[i][perm]
+        # call Matrix{Float32}(nothing). Weights stay in in_src (== in_edges) order, which now
+        # matches the reference forward's fold order (gather_inputs uses an OrderedDict).
+        weights[i] = Matrix{Float32}[Matrix{Float32}(w) for w in fparams[i].w if w isa AbstractMatrix]
         b = fparams[i].b
         biases[i] = (b !== nothing && length(b) > 0) ? Matrix{Float32}(b) : nothing
         bufs[i] = NodeBuf(
@@ -160,12 +141,13 @@ function prealloc_inference(
         z[i] = Matrix{Float32}(undef, batch, feat)
     end
 
-    # STABLE source-buffer refs in REFERENCE FOLD ORDER, precomputed once. z[s] is mutated in place
-    # (identity never changes across steps), so these vectors stay valid — this is what makes
-    # run_inference! 0-alloc per step (vs rebuilding `[z[s] for s in ...]` every node every step).
+    # STABLE source-buffer refs (in_src order == the reference's OrderedDict fold order), precomputed
+    # once. z[s] is mutated in place (identity never changes across steps), so these vectors stay
+    # valid — this is what makes run_inference! 0-alloc per step (vs rebuilding `[z[s] for s in ...]`
+    # every node every step).
     src = Vector{Vector{Matrix{Float32}}}(undef, n)
     for i in 1:n
-        src[i] = Matrix{Float32}[z[s] for s in srcidx[i]]
+        src[i] = Matrix{Float32}[z[s] for s in plan.in_src[i]]
     end
 
     hoist = falses(n)
@@ -177,7 +159,7 @@ function prealloc_inference(
 
     inf = plan.inference
     return InplaceInference(
-        plan, clamped, hoist, weights, biases, bufs, z, src, srcidx, prec,
+        plan, clamped, hoist, weights, biases, bufs, z, src, prec,
         inf.eta_infer, 1.0f0 - inf.eta_infer * inf.latent_decay, inf.infer_steps,
     )
 end
@@ -277,9 +259,9 @@ function _accum_input_grads!(node::Linear, buf::NodeBuf, ii::InplaceInference, i
     else
         buf.dpre .= prec .* (buf.z_mu .- ii.z[i])                               # f'(identity)=1
     end
-    # srcidx/weights are both in reference fold order, so weights[i][k] pairs with srcidx[i][k].
-    # (Grad accumulation is per-source, so order is irrelevant here — but the pairing must hold.)
-    @inbounds for (k, s) in enumerate(ii.srcidx[i])
+    # weights[i][k] pairs with in_src[i][k] (same order). Grad accumulation is per-source, so the
+    # iteration order is irrelevant to the result — only the forward fold order (src/weights) matters.
+    @inbounds for (k, s) in enumerate(ii.plan.in_src[i])
         ii.clamped[s] && continue                                              # PRUNE clamped target
         mul!(ii.bufs[s].lg, buf.dpre, transpose(ii.weights[i][k]), 1.0f0, 1.0f0)
     end
@@ -288,7 +270,7 @@ end
 # Identity/Skip: input_grad = scale·grad_mu (Identity) or grad_mu (Skip); grad_mu=precision*(z_mu-z)
 function _accum_input_grads!(node::IdentityNode, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32)
     buf.dpre .= (prec * node.scale) .* (buf.z_mu .- ii.z[i])
-    @inbounds for s in ii.srcidx[i]
+    @inbounds for s in ii.plan.in_src[i]
         ii.clamped[s] && continue
         ii.bufs[s].lg .+= buf.dpre
     end
@@ -296,7 +278,7 @@ function _accum_input_grads!(node::IdentityNode, buf::NodeBuf, ii::InplaceInfere
 end
 function _accum_input_grads!(::SkipConnection, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32)
     buf.dpre .= prec .* (buf.z_mu .- ii.z[i])
-    @inbounds for s in ii.srcidx[i]
+    @inbounds for s in ii.plan.in_src[i]
         ii.clamped[s] && continue
         ii.bufs[s].lg .+= buf.dpre
     end

@@ -172,8 +172,9 @@ end
             _assert_ip_bitexact(_ip_diamond(; B=96)...; expect_hoist=Set(["h1", "h2"]))
             # precision != 1, distinct per node (C1: precision is READ, not assumed 1)
             _assert_ip_bitexact(_ip_chain([256, 96, 10]; B=96, pf=(k -> 0.5f0 + 0.7f0 * k))...)
-            # 3-in-edge node: fold order must match the reference's Dict order (float non-assoc).
-            # Every source-name triple below diverged by ~1 ULP before the fold-order fix.
+            # 3-in-edge node across edge-key sets: all lanes fold in in_src (== in_edges) order, the
+            # canonical upstream order. gather_inputs uses an OrderedDict so run_inference agrees;
+            # before that, run_inference (hash-order Dict) diverged from these by ~1 ULP.
             for sn in (["A", "B", "C"], ["s1", "s2", "s3"], ["p", "q", "r"], ["n1", "n2", "n3"], ["h1", "h2", "m"])
                 _assert_ip_bitexact(_ip_multi3(sn)...)
             end

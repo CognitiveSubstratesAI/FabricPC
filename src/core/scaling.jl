@@ -17,9 +17,9 @@ scale_weight_grads(params_grad::NodeParams, ::Nothing) = params_grad
 #
 # Pre-scale inputs: W·(a·x) = a·(W·x), equivalent to scaling the node output but
 # keeping forward() scaling-unaware.
-scale_inputs(inputs::AbstractDict, sc::MuPCScalingFactors) = Dict(
+scale_inputs(inputs::AbstractDict, sc::MuPCScalingFactors) = OrderedDict(
     k => (haskey(sc.forward_scale, k) ? x .* sc.forward_scale[k] : x) for
-    (k, x) in inputs
+    (k, x) in inputs                                # OrderedDict: preserve in_edges fold order
 )
 
 # Post-scale input grads by topdown_grad_scale = a · jacobian_gain (chain-rule

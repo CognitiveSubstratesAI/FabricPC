@@ -104,9 +104,15 @@ InferenceSGDMomentum(; eta_infer=0.1, infer_steps=20, latent_decay=0.0, momentum
 compute_new_latent(inf::InferenceSGDMomentum, z_latent, latent_grad) =
     z_latent .* (1.0f0 - inf.eta_infer * inf.latent_decay) .- inf.eta_infer .* latent_grad
 
-"""Gather each in-edge's source `z_latent` into a Dict keyed by edge key. Port of `gather_inputs`."""
+"""Gather each in-edge's source `z_latent` into an ORDERED map keyed by edge key. Port of
+`gather_inputs`. Uses `OrderedDict` (insertion == `in_edges` order) NOT a hash `Dict`: `forward`
+folds these inputs (`pre += x·W`), and float addition is non-associative, so the fold order must
+match upstream JAX — whose Python `dict` iterates in insertion order (= `in_edges` order). A plain
+Julia `Dict` iterates in hash order, silently diverging by ~1 ULP on 3+ in-edge nodes (masked by
+the rtol-1e-6 conformance, but it broke bit-identity with the flat / in-place lanes, which fold in
+`in_src` = `in_edges` order)."""
 function gather_inputs(info::NodeInfo, structure::GraphStructure, state::GraphState)
-    in_data = Dict{String, Any}()
+    in_data = OrderedDict{String, Any}()
     for edge_key in info.in_edges
         src = structure.edges[edge_key].source
         in_data[edge_key] = state.nodes[src].z_latent
