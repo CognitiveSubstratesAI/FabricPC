@@ -1921,3 +1921,31 @@ Why the bare `7.87×` misleads: it was measured against the UNOPTIMIZED eager pa
 per-step eager/XLA parity — the compiled lane's real value is auto-fusion of complex chains,
 scaling (`@trace while`), and GPU/parity, NOT raw per-step speed on this topology (§28 + addenda
 1–3). Unroll-vs-`@trace while` remains open (H1 demoted).
+
+### §30 corollary 2 — a verification VERB is an overclaim unless the loop it names actually closed (2026-07-15)
+
+§30 is about code whose failure is invisible. This is the same failure one level up, in the
+CLAIMS: a verb that sounds like a strong standard while hiding which half of it ran. Two
+instances, same session, same shape — which is what makes it a category rather than two slips:
+
+* **"decorative"** for §27's finding. The real claim is "closer to decorative than load-bearing,
+  FOR THIS GRAPH'S CLAMP PATTERN, sub-chance through step 60", plus four stated limits. The
+  one-word compression destroyed every qualification that made it true. Caught only by re-reading
+  §27 instead of trusting a summary OF §27 (§31 now states it at strength).
+* **"verified by execution"** for the tier_conv oracle (`6414412`, corrected by `e04326c`). It was
+  verified to GENERATE. Nothing had CONSUMED it — and the first Julia consumer found the fixture
+  unreadable (`<U29` dtype; NPZ.jl fails the whole `npzread`). "Execution" hid which half ran.
+
+**The rule: name the closed loop, not the verb.** Every verification verb has a hidden half —
+ask for it explicitly:
+| Verb | The half it hides |
+|---|---|
+| "tested" | Did the test ever FAIL? (a test that cannot fail asserts nothing — cf. the all-tied MaxPool window, which passes under BOTH tie-break orders) |
+| "verified" | Did anything CONSUME the artifact, or did the producer merely exit 0? |
+| "measured" | Was the INPUT the thing you think? (cf. §24's under-converged power iteration, and B4's "no JAX" — measured against the SYSTEM python, while the pinned venv worked fine) |
+| "matches upstream" | At what TOLERANCE, and can that tolerance see the bug you care about? (rtol 1e-5 cannot see a ULP-scale fold-order difference — which is fine, but only if said out loud: §the C-01 fold-order note) |
+
+Applies to this file too. A methodology record that grades itself more loosely than it grades the
+code is a testimonial — and testimonials are exactly what an outside reviewer discounts. When a
+receipt in `AUDIT_REGISTER.md` A-03 says a thing was verified, it must name the loop: which two
+sides were compared, by what, at what tolerance.
