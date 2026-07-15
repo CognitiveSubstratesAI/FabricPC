@@ -135,8 +135,10 @@ Happy to open a PR for both sites with the repro lines as tests.
   `RefValue{Tuple{Linear,Linear,Linear}}` under `ConcreteToTraced` returns fine.
 * **This fix does not make our own use case work, and we're not asking it to.** With the guard
   applied, our node struct correctly yields `NoFieldMatchError` — it's non-parametric with `Bool`
-  fields, so no traced version is constructible. That's a separate, legitimate limitation. We're
-  reporting the crash-instead-of-diagnostic, nothing more.
+  fields, so no traced version is constructible. We have since solved our own side the intended
+  way, using the documented extension point (a custom `traced_type_inner` plus `make_tracer`, per
+  `test/core/constructor.jl`), and our loop now compiles. So this report is purely about the
+  crash-instead-of-diagnostic — not a request to support our struct.
 
 ### How we hit it in practice
 
