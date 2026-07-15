@@ -70,8 +70,31 @@ Bridge `GraphParams` (Dict-of-Dicts) to position-indexed `FlatNodeParams`, one p
 `plan.names` entry. Eager-only (builds `Union{Nothing,Matrix{Float32}}` vectors — not itself
 traceable; run before `Reactant.@compile`, not inside it — see [`flatten_param_arrays`](@ref)/
 [`repack_params`](@ref) for the traced bridge).
+
+SCOPE: the flat lane is RANK-2 (dense) only — `w` below is `Matrix{Float32}`. That is the lane's
+long-standing scope (J-03: Linear/Identity/Skip/LinearResidual; the transformer flat backward is
+J-01/J-02 architecturally-blocked), NOT an oversight: C-01's ConvNode/MaxPool/AvgPool ship on the
+EAGER seam, which was the claim, and were never claimed for this lane. But scope has to FAIL
+CLOSED to be a scope: without `_flat_supported` below, a rank-4 conv kernel died on
+`MethodError: Matrix{Float32}(::Array{Float32,4})` — a divergence that happens to crash, with a
+message naming neither the node nor the lane (decisions.md §29: match the property; do not leave a
+divergence defended by the fact that it happens to blow up). Found by the C-01 adversarial audit.
 """
+# Rank-2/dense only — see the scope note in `to_flat_params`. Fail-CLOSED default.
+_flat_supported(::AbstractNode) = true          # dense nodes + TransformerBlock's own bridge
+_flat_supported(::ConvNode) = false
+_flat_supported(::PoolNode) = false
+
 function to_flat_params(plan::CompiledPlan, params::GraphParams)
+    for (i, name) in enumerate(plan.names)
+        _flat_supported(plan.nodes[i]) || error(
+            "to_flat_params: node '$name' ($(typeof(plan.nodes[i]))) is outside the FLAT lane's " *
+            "scope. The flat/JIT lane is rank-2 (dense) only — Linear/IdentityNode/" *
+            "SkipConnection/LinearResidual (+ TransformerBlock via its own bridge). Conv/pool " *
+            "nodes are rank-3+ and ship on the EAGER seam instead: use `run_inference` (or " *
+            "`run_inference(...; optimize=true)`), not `flat_run_inference`/`prealloc_inference`."
+        )
+    end
     out = FlatNodeParams[]
     for (i, name) in enumerate(plan.names)
         np = params.nodes[name]

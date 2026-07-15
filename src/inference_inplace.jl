@@ -85,7 +85,16 @@ function prealloc_inference(
     plan = CompiledPlan(structure)
     n = length(plan.names)
     clamped = Bool[nm in keys(clamps) for nm in plan.names]
-    fparams = to_flat_params(plan, params)
+
+    # 🔴 EVERY SCOPE GUARD MUST RUN BEFORE `to_flat_params` (called after this block). It builds
+    # `Union{Nothing,Matrix{Float32}}` vectors (jit_flat.jl), i.e. rank-2 ONLY — so for a ConvNode
+    # (rank-4 kernel) it throws `MethodError: Matrix{Float32}(::Array{Float32,4})` and PRE-EMPTS
+    # the guards below. That is exactly what happened: this guard was documented as failing closed
+    # with a clear scope message, had THREE passing @test_throws (NormClip / non-Gaussian energy /
+    # unclamped sink) — and was DEAD CODE for conv, because all three tests build rank-2 Linear
+    # graphs where to_flat_params succeeds and the guard is reachable. A guard is only as good as
+    # the reachability of the input it rejects (decisions.md §30 corollary 2, verb "guarded").
+    # Found by the C-01 adversarial audit; the tests below now feed the guard a CONV graph.
 
     # The in-place loop hardcodes the plain-SGD update (z ← z·(1-η·decay) - η·grad). NormClip
     # and Momentum override run_inference itself (clipping / cross-step velocity), so reading only
@@ -118,6 +127,10 @@ function prealloc_inference(
             "increment 1 — clamp it, or use run_inference."
         )
     end
+
+    # Only NOW — every node is proven in-scope (rank-2 dense), so to_flat_params' rank-2
+    # `Union{Nothing,Matrix{Float32}}` build cannot be the thing that reports a scope violation.
+    fparams = to_flat_params(plan, params)
 
     weights = Vector{Vector{Matrix{Float32}}}(undef, n)
     biases = Vector{Union{Matrix{Float32},Nothing}}(undef, n)

@@ -18,6 +18,7 @@
 using Test
 using FabricPC
 using FabricPC: forward, forward_and_weight_grads, forward_and_latent_grads
+using FabricPC: to_flat_params, CompiledPlan   # audit regressions: flat-lane scope gate
 # OrderedDict via FabricPC (it depends on OrderedCollections; the test target does not, and this
 # suite must not need a dep the package already provides). The multi-edge testset NEEDS an ordered
 # map: `gather_inputs` produces one, and in_edges order is what the fold must follow.
@@ -225,5 +226,62 @@ _info(name, shape, edges) = NodeInfo(
         c = ConvNode((6, 5, 3), "c", (3, 2))
         @test FabricPC.get_weight_fan_in(c, (6, 5, 2)) == 2 * 3 * 2
         @test FabricPC.get_weight_fan_in(MaxPool((2, 2, 2), "m", (2, 2)), (4, 4, 2)) == 1
+    end
+
+    # ---- C-01 adversarial-audit regressions -------------------------------------------------
+    # EVERY test here feeds the guard THE INPUT IT MUST REJECT. That is the whole lesson of the
+    # bug in the first testset below: the in-place guard had three passing @test_throws and was
+    # still dead code for conv, because all three fed it rank-2 graphs that could REACH it.
+    # Asserting "a valid pool constructs" would prove no false-positive, not that a guard fires.
+    @testset "audit: in-place guard is REACHABLE for a conv graph (was pre-empted)" begin
+        # to_flat_params (rank-2 only) used to run BEFORE the scope guards, so a ConvNode died on
+        # `MethodError: Matrix{Float32}(::Array{Float32,4})` instead of the documented scope error.
+        rng = Random.MersenneTwister(4)
+        x = Linear((5, 5, 2), "x"; use_bias=false)
+        cv = ConvNode((5, 5, 3), "cv", (3, 2); padding="SAME")
+        o = Linear((3,), "o"; energy=GaussianEnergy())
+        g = AvgPool((3,), "gp"; global_pool=true)
+        st = graph([x, cv, g, o], [Edge(x, cv), Edge(cv, g), Edge(g, o)],
+                   TaskMap(x=x, y=o), InferenceSGD(eta_infer=0.1, infer_steps=2))
+        p = initialize_params(st, rng)
+        cl = Dict{String,Any}("x" => randn(rng, Float32, 2, 5, 5, 2), "o" => randn(rng, Float32, 2, 3))
+        err = try; FabricPC.prealloc_inference(st, p, cl; batch=2); nothing
+              catch e; sprint(showerror, e) end
+        @test err !== nothing
+        @test occursin("prealloc_inference", err)         # OUR message, not a MethodError
+        @test occursin("outside the in-place lane", err)
+        @test !occursin("MethodError", err)               # the pre-emption's signature
+    end
+
+    @testset "audit: flat lane fails CLOSED on conv/pool (was a bare MethodError)" begin
+        rng = Random.MersenneTwister(4)
+        x = Linear((5, 5, 2), "x"; use_bias=false)
+        cv = ConvNode((5, 5, 3), "cv", (3, 2); padding="SAME")
+        st = graph([x, cv], [Edge(x, cv)], TaskMap(x=x, y=cv), InferenceSGD(infer_steps=2))
+        p = initialize_params(st, rng)
+        err = try; to_flat_params(CompiledPlan(st), p); nothing
+              catch e; sprint(showerror, e) end
+        @test err !== nothing
+        @test occursin("outside the FLAT lane's scope", err)   # names the node AND the lane
+        @test occursin("run_inference", err)                   # and points at the right lane
+        @test !occursin("MethodError", err)
+    end
+
+    @testset "audit: MaxPool/AvgPool spatial-rank guard (ConvNode had one; they did not)" begin
+        # Feed the REJECTED input: rank-4 spatial. (A rank-2 pool constructing proves nothing.)
+        @test_throws ArgumentError MaxPool((2, 2, 2, 2, 2), "m", (2, 2, 2, 2))
+        @test_throws ArgumentError AvgPool((2, 2, 2, 2, 2), "a"; window_shape=(2, 2, 2, 2))
+        @test_throws ArgumentError ConvNode((2, 2, 2, 2, 2), "c", (2, 2, 2, 2))   # already had it
+        # non-vacuous: the ACCEPTED ranks still construct
+        @test MaxPool((2, 2, 2), "m", (2, 2)) isa MaxPool
+        @test AvgPool((4, 2), "a"; window_shape=(2,)) isa AvgPool
+    end
+
+    @testset "audit: AvgPool(global) ACCEPTS explicit padding (upstream ignores it)" begin
+        # Global mode ignores window/stride/padding upstream (pooling.py:288-290). We used to
+        # REJECT an explicit pad here — stricter than upstream on a config it accepts silently.
+        @test AvgPool((3,), "g"; global_pool=true, padding=[(1, 1), (1, 1)]) isa AvgPool
+        @test AvgPool((3,), "g"; global_pool=true, window_shape=(9, 9)) isa AvgPool  # also ignored
+        @test_throws ArgumentError AvgPool((3, 3), "g"; global_pool=true)  # rank-1 rule still fires
     end
 end

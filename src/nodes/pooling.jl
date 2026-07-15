@@ -92,11 +92,26 @@ function MaxPool(
 )
     shp = Tuple(shape)
     R = length(shp) - 1
+    # Same spatial-rank guard ConvNode has. Its ABSENCE here was an asymmetry the C-01
+    # adversarial audit caught: ConvNode rejected a rank-4-spatial shape at construction while
+    # MaxPool/AvgPool accepted it and failed later (or silently), for no reason other than that
+    # nobody wrote the check. `_window_plan`/`_pads` are the same rank-1/2/3 machinery either way.
+    _pool_rank_guard(R, shp, name, "MaxPool")
     ws = NTuple{R,Int}(window_shape)
     st = stride === nothing ? ws : NTuple{R,Int}(stride)     # upstream: defaults to the window
     p = padspec(padding, R)
     return MaxPool{R,typeof(p)}(shp, String(name), ws, st, p, activation, energy, latent_init)
 end
+
+"""Spatial-rank guard shared by MaxPool/AvgPool, mirroring ConvNode's. Windowed pooling is
+1D/2D/3D like conv; a shape outside that has no `_window_plan` and must fail CLOSED at
+construction rather than deeper in."""
+_pool_rank_guard(R::Int, shp::Tuple, name, op::String) =
+    R in (1, 2, 3) || throw(ArgumentError(
+        "$op $name: shape must be (spatial…, C) with spatial rank 1, 2 or 3; " *
+        "got shape=$shp (spatial rank $R). For global pooling use " *
+        "`AvgPool(shape, name; global_pool=true)` with a rank-1 (C,) shape."
+    ))
 
 _pool_validate(n::MaxPool, node_shape::Tuple, input_shapes::AbstractDict) =
     validate_windowed_output(
@@ -151,7 +166,13 @@ function AvgPool(
         length(shp) == 1 || throw(ArgumentError(
             "AvgPool global_pool=true requires a rank-1 shape (C,), got shape=$shp."
         ))
-        p = padspec(padding, 0)
+        # Global mode IGNORES window/stride/padding (`pooling.py:288-290`: upstream sets
+        # window_shape/stride to () and never reads padding — it means over every spatial axis).
+        # So accept-and-ignore, do NOT validate: `padspec(padding, 0)` used to REJECT any explicit
+        # pad here ("2 spatial pairs but spatial_rank is 0") on a config upstream accepts silently.
+        # Matching upstream means being equally permissive where it is permissive — §29 cuts both
+        # ways. Found by the C-01 adversarial audit (upstream-diff lens).
+        p = ValidPad()
         return AvgPool{0,typeof(p)}(shp, String(name), (), (), p, true, count_include_pad,
                                     activation, energy, latent_init)
     end
@@ -159,6 +180,7 @@ function AvgPool(
         "AvgPool: window_shape is required when global_pool=false."
     ))
     R = length(shp) - 1
+    _pool_rank_guard(R, shp, name, "AvgPool")     # same guard ConvNode has (audit finding #11)
     ws = NTuple{R,Int}(window_shape)
     st = stride === nothing ? ws : NTuple{R,Int}(stride)
     p = padspec(padding, R)

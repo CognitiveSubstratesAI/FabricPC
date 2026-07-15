@@ -1943,6 +1943,9 @@ ask for it explicitly:
 | "tested" | Did the test ever FAIL? (a test that cannot fail asserts nothing — cf. the all-tied MaxPool window, which passes under BOTH tie-break orders) |
 | "verified" | Did anything CONSUME the artifact, or did the producer merely exit 0? |
 | "measured" | Was the INPUT the thing you think? (cf. §24's under-converged power iteration, and B4's "no JAX" — measured against the SYSTEM python, while the pinned venv worked fine) |
+| "guarded" | Can the input the guard REJECTS actually REACH the guard? (2026-07-15, the deepest instance yet: J-06's `prealloc_inference` scope guard is documented "errors early if any node is outside increment-1 scope" and is covered by THREE passing `@test_throws` — NormClip, non-Gaussian energy, unclamped sink. All three build rank-2 Linear graphs, where `to_flat_params` succeeds at line 88 and the guard at 93 is reached. For a **ConvNode** — the one node family the guard most needs to reject — `to_flat_params` hard-codes `Matrix{Float32}` and throws `MethodError: Matrix{Float32}(::Array{Float32,4})` FIRST. The guard is dead code behind a landmine: tested, passing, and unreachable for its most important input class. Not "did the test fail" and not "did anything consume it" — **did the test's inputs exercise the branch the guard exists to protect?**) |
+| "confirmed" / "refuted" (an audit verdict) | AGAINST WHICH COMMIT? Both directions bit this session: the J-06 verify phase read the POST-fix tree and reported real bugs absent (false negatives); the C-01 verifiers are pinned to the PRE-fix commit and re-confirm bugs already fixed (false positives). See §33.2. |
+| "found a crash" (an audit FINDING) | Did it crash WHEN RUN? A lens claimed `validate_windowed_output`'s ExplicitPad branch MethodErrors; executing it showed ctor, validation and forward all work. Findings are verification verbs too — 2026-07-15. |
 | "matches upstream" | At what TOLERANCE, and can that tolerance see the bug you care about? (rtol 1e-5 cannot see a ULP-scale fold-order difference — which is fine, but only if said out loud: §the C-01 fold-order note) |
 
 Applies to this file too. A methodology record that grades itself more loosely than it grades the
@@ -1973,3 +1976,55 @@ class, and why "the suite is green" is never a sufficient answer to "is it right
 
 **Corollary for reviewers:** when a layer is added, state what it is blind to. A layer whose
 blindness is unstated will eventually be cited as covering something it cannot see.
+
+---
+
+## 33. A PORT audit has THREE verdicts, not two — and a verdict is meaningless without its tree state (2026-07-15)
+
+Two protocol findings from the C-01 adversarial audit. Both are §30-corollary-2 shaped (a verb
+with a hidden half), both apply to the AUDIT'S OWN OUTPUT, and one of them a verifier discovered
+unprompted.
+
+### 33.1 The third verdict: REAL-BUT-PARITY-PRESERVED
+
+A verifier refuted a finding with: *"factually accurate about the code, but a parity-preserved
+upstream design hole, not a port defect."* That is the correct frame for a PORT, and it is not
+"confirmed" or "refuted" — it is a third axis:
+
+| Verdict | Meaning | Action |
+|---|---|---|
+| **confirmed-ours** | we diverge from upstream, or we broke something upstream gets right | FIX |
+| **refuted** | the claim does not reproduce | drop |
+| **real-but-parity-preserved** | the behaviour is real AND upstream does the same thing | **DO NOT FIX** — record as parity; optionally report upstream |
+
+**Why this axis is mandatory for a port, not a nicety:** without it, an adversarial pass keeps
+flagging upstream's own design choices as port bugs, and "fixing" them BREAKS PARITY — the §29
+failure in reverse (destroying fidelity to repair a non-bug). A hole we share with upstream is not
+a fidelity failure; reproducing it faithfully WAS THE JOB. Precedents this session: X-02 (we are
+immune to an upstream mask bug BY CONSTRUCTION — a divergence in our favour, still recorded as a
+divergence), our `Linear` ≡ upstream `LinearExplicitGrad` (a "divergence" that dissolved once the
+correspondence was checked — [[feedback_verify_the_correspondence_not_just_the_code]]), and
+`Linear(flatten_input=true)` being inert at rank-2 (correct, because upstream's ResNet head feeds
+it a rank-2 input).
+
+**The test:** before a finding counts as a PORT defect, ask *does upstream do this too?* If yes it
+is parity, not a bug — and the burden flips from "fix it" to "record it, and decide separately
+whether to report it upstream."
+
+### 33.2 A verdict is a verification verb: its hidden half is AGAINST WHICH COMMIT
+
+Both directions of this bit in ONE session, on the same kind of workflow:
+
+* **J-06 audit — false NEGATIVES.** The verify phase read the file AFTER the fixes landed, so it
+  reported real bugs as "not present" (`is_real=false`, "the current file already has the guard").
+  The findings were true against the tree the FINDERS read; the verdicts were computed against a
+  different one.
+* **C-01 audit — false POSITIVES.** Verifiers are pinned to the audited commit (9045981), i.e.
+  BEFORE the fix pass. So they legitimately re-confirm findings that are already fixed.
+
+Same root: **the label does not carry the tree it was computed against.** So:
+1. An audit must state the commit it audited (the C-01 verifiers do: "CONFIRMED at 9045981").
+2. Every `confirmed` must be **re-checked against HEAD** before it is treated as live work —
+   do not take the label, re-run it.
+3. Do not push into a running audit (the J-06 lesson,
+   [[feedback_dont_dismiss_running_audit_finders]]) — it is what creates direction (1).
