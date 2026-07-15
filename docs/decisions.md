@@ -1796,3 +1796,128 @@ On TOTALS, fused eager (intercept ~1.5 ms) beats XLA (intercept 2.53 ms) at low 
 **Which number goes where:** `run_inference` is called every training step, so the **sustained/GC-amortized figure is the training-relevant one** (a training loop pays the 40–57% GC on every step); the single-call decomposition is the microbenchmark. Do not use them interchangeably.
 
 **Productionizing J-06 IS the same refactor as the `CompiledPlan` destructure (§11 update / §25 blocker) — one refactor, two payoffs.** A generic pre-allocated buffer pool must be sized from the plan and indexed positionally, i.e. the plan must carry concrete typed metadata instead of Dicts and `Bool`-field structs — exactly what blocked `@trace while` (the `SlotInfo` traced-type wall). Caution: a mutable buffer container passed as a *struct* into a traced region hits the same wall, so design it as plain arrays + positional indices from the start, not a new struct. This is the same convergence as hoist+prune/destructure already found. The PoC (hardcoded 3-node) proves the target — 0 allocs, ~6% off the FLOP floor, matches XLA, bit-identical — justifying that refactor with a measurement, not a principle.
+
+---
+
+## 29. Match the property; don't inherit a divergence and defend it with a reachability argument (2026-07-15)
+
+**The rule.** When choosing an implementation, if the upstream-faithful option is available at
+comparable cost, take it — even when a divergent option is provably safe *given a guard*. A
+property that holds unconditionally beats a divergence that holds "as long as the validator runs
+first", because the defense is only as strong as every future caller respecting the guard, and
+guards get refactored, bypassed by new call sites, or relaxed by someone who doesn't know they
+are load-bearing. Don't manufacture a proof obligation to save nothing.
+
+**Two instances, same session, different guises — which is why this is a principle and not a
+one-off call:**
+
+1. **The NNlib proposal's max-pool fill.** `NNlib`'s max-pool initialises with
+   `nextfloat(typemin(T))`; upstream fills with `-jnp.inf` (`pooling.py:228`). The proposal's
+   unreachability argument was *genuinely correct* — an all-padding window is the only case that
+   distinguishes them, and upstream's `MaxPool` passes `reject_pad_ge_window=True`
+   (`pooling.py:213`), which our validator ports, so the case cannot arise. It still ranked
+   third on that axis: it converts a bit-exact property into a proof obligation contingent on a
+   validator, for no gain.
+
+2. **Our own `_pool_max` fill (`src/nodes/windowed.jl`).** The identical trade re-appeared from
+   the other side: `typemin(Float32)` (== -3.4f38, FINITE) is the "obvious" Julia spelling, and
+   the same `reject_pad_ge_window` guard would make it safe. Rejected for the same reason —
+   `_pool_max` uses `-Inf32`, a true IEEE infinity, matching JAX unconditionally.
+
+**The distinction that keeps this from over-firing** (it is NOT "unreachability arguments are
+always bad"): this rule is about *choosing an implementation*, where the faithful option is free.
+It does not contradict triaging an EXISTING defect as low-priority because it is unreachable
+(e.g. F-03's `CONFIRMED-BUT-UNREACHABLE` `sgd_update` key-drop, `docs/AUDIT_REGISTER.md`) — that
+is prioritisation of a fix, not the deliberate purchase of a divergence. Ask: *am I paying a
+proof obligation to buy something?* If the answer is "nothing", match upstream.
+
+**Generalisation.** This is the same shape as `feedback_guarantee_not_convention`: prefer the
+construction that cannot be wrong over the construction that is correct provided something else
+holds. Compare §the conv/pool window plans, where cross-correlation is structural (the window
+index runs forward with the kernel — there is no flip flag to set wrongly) rather than a
+`flipped=true` boolean that one call site could get wrong.
+
+---
+
+## 30. Order of work: the part that fails SILENTLY goes first (2026-07-15)
+
+**The rule.** When sequencing work on a numerically treacherous surface, do the part whose
+failure is *invisible* first — against the oracle, while suspicion is still high. The part whose
+failure is *loud* will announce itself whenever you get to it; it does not need to be protected
+by ordering. The instinct to build the obviously-right thing first and bolt verification onto the
+treacherous part later inverts exactly the wrong axis.
+
+**One principle, three scales, all in the C-01 port (2026-07-15):**
+
+1. **Oracle before kernel.** `tier_conv.npz` was generated from upstream JAX *before a line of
+   the conv kernel existed*. A forward that matches while the backward folds differently is
+   invisible; a missing oracle is not (you just cannot run). So the oracle came first.
+2. **Backward before forward.** The forward is the loud half — wrong shapes, wrong magnitudes,
+   obvious. The backward is the quiet half: our AD reversing an im2col gather→GEMM vs XLA's fused
+   conv VJP. So the gradients are first-class fixtures, not an afterthought.
+3. **Divisor before numerator** (`_pool_avg`, `src/nodes/windowed.jl`). The numerator is
+   obviously right (zeros add nothing). The `count_include_pad=false` divisor fails SILENTLY —
+   right numerator, wrong divisor, green on every VALID case, wrong only where padding reaches a
+   window. So the divisor gets written and gated on `avgpool_cip_0` first.
+
+Same shape as `feedback_adversarial_test_inputs` and the "verification before celebration" rule
+in CLAUDE.md, applied to SEQUENCING rather than to test content.
+
+**The corollary that makes it operational:** to know which part fails silently, you must first
+ask what a wrong version would *look like*. If the answer is "the same as a right one, on the
+data I would naturally test", that part goes first. See §29's `_pool_max` fill (zero sentinel
+beats a negative activation — identical output on non-negative test data) and the MaxPool
+tie-routing case in `docs/AUDIT_REGISTER.md` A-03 (an all-tied window passes under BOTH
+tie-break orders — the test one would naturally write cannot discriminate).
+
+---
+
+## 31. Consolidated ledger: which spectrum numbers are CURRENT, which are SUPERSEDED — and the J-04 figure's honest form (2026-07-15)
+
+**Why this exists.** §24→§26→§27 and `AUDIT_REGISTER.md` C-09 were written incrementally as
+findings landed, and some CORRECT each other (§26 corrected §24's own measurement). The current
+picture is therefore only reconstructable by reading four places in the right order — which is
+how someone re-derives from a superseded figure. This section is the single source of truth. It
+adds NO new measurement; it states what is already on file. If a future re-measurement moves a
+number, update it HERE and leave the narrative sections as history.
+
+### 31.1 The `transformer_lm()` diagnostic graph's spectrum
+
+| Quantity | Value | State |
+|---|---|---|
+| `λmax` | ≈ 113.6 | **CURRENT.** Never moved — §24 and §26 agree. |
+| `λmin` | ≈ 0.17 | **CURRENT** (§26; renormalized power iteration, long window). |
+| `κ = λmax/λmin` | ≈ 668 | **CURRENT** (§26). |
+| `λmin ≈ 2.3`, `κ ≈ 49` | — | **SUPERSEDED** (§24). Its power iteration was too short to converge on this graph's near-degenerate spectrum. §24's QUALITATIVE conclusions stand; only the numbers moved. |
+| `η*` (plain SGD stability boundary) | ≈ 0.0176 | **CURRENT, AND UNAFFECTED by the λmin correction** — it is a function of `λmax`, which never moved. A reader who assumes "κ was corrected ⇒ η* moved" is wrong; this is the most likely misreading. |
+| `η* ≈ 0.0326`, `β* ≈ 0.857` (momentum) | — | **CURRENT** (§26). These DO depend on the corrected spectrum (both `λmin` AND `λmax`) — the ONLY numbers here coupled to `κ`. **Silent-coupling warning: if `κ` is ever re-measured, these move WITH it.** They are not independently tuned, and the old values were correct-for-the-old-κ, not wrong. |
+| muPC's effect on `κ`: ~16% (`~49→~41`), `λmin ~2.31→~2.74` | — | **PENDING RE-MEASUREMENT** (C-09, self-flagged). Measured with the SAME power iteration §26 later found under-converged. The QUALITATIVE conclusion (`λmax` essentially untouched ⇒ muPC does NOT fix the η=0.1 instability) is independently supported by §26's near-init stability cross-check and by upstream's own deep-chain result, and is not expected to move. The specific `16%`/`2.31`/`2.74` figures may. |
+
+**Is the slow cluster load-bearing? (§27, stated at its real strength — do not compress further.)**
+§27's finding is **"closer to decorative than load-bearing, FOR THIS GRAPH'S ACTUAL CLAMP
+PATTERN"** — the real relaxation signal has **below-chance** representation in the resolved
+6-dimensional slow subspace (`0.47%` at step 1 → `0.73%` by step 60, versus a `k/n = 1.04%`
+random-subspace baseline). It supports "this graph needs ~2300 steps to formally converge" while
+NOT supporting "this graph's relaxation is doing meaningful work for ~2300 steps". §27's own
+stated limits, which a one-word summary ("decorative") destroys: (a) the fraction MUST approach
+100% asymptotically by construction — the claim is only that it is sub-chance through step 60;
+(b) specific to this graph/batch/clamp pattern; (c) `k=6` was reasonable, not proven; (d) measured
+on plain `InferenceSGD`, not momentum.
+
+**No re-measurement is currently scheduled.** No Lanczos/`κ_eff` retune exists on file — if one is
+ever run, the coupling to fix first is the momentum pair above.
+
+### 31.2 The J-04 figure
+
+`7.87×` requires three caveats assembled from two files to be honest, so state it as one line:
+
+> **Current honest form:** per-step XLA compute is ~15–20% faster than *optimized* eager on
+> MNIST-MLP; total-time crossover is ~39 steps; the win is **topology-dependent — a FLOOR, not a
+> ceiling** (98.7% of MNIST-MLP FLOPs are clamped-incident, → `1/(L+1)` for a uniform chain, →
+> EXACTLY 0% for the transformer); the transformer case is **unmeasured**.
+
+Why the bare `7.87×` misleads: it was measured against the UNOPTIMIZED eager path, it included
+~2.5ms/call marshalling (since fixed, `32b64a6`), and the fused-eager slope test later showed
+per-step eager/XLA parity — the compiled lane's real value is auto-fusion of complex chains,
+scaling (`@trace while`), and GPU/parity, NOT raw per-step speed on this topology (§28 + addenda
+1–3). Unroll-vs-`@trace while` remains open (H1 demoted).
