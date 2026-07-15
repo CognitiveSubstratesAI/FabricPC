@@ -85,12 +85,16 @@ function initialize_params(
 end
 
 """
-    forward(node::Linear, params, inputs, state) -> (total_energy, NodeState)
+    _forward_with_preact(node::Linear, params, inputs, state) -> (NodeState, pre_activation)
 
-Forward pass: pre = Σ_e xₑ Wₑ (+ b); z_mu = activation(pre); error = z - z_mu;
-energy. Leaves `z_latent` and `latent_grad` untouched (matching upstream).
+The real forward, additionally handing back the pre-activation. `pre` is needed only by the
+explicit-gradient paths below (for `f'(pre)`), and since `NodeState` no longer carries a
+`pre_activation` field they take it from here — computed once, consumed locally, never stored.
+Port of upstream `Linear._forward_with_preact` (`b6f64ad`).
 """
-function forward(node::Linear, params::NodeParams, inputs::AbstractDict, state::NodeState)
+function _forward_with_preact(
+    node::Linear, params::NodeParams, inputs::AbstractDict, state::NodeState
+)
     batch = size(state.z_latent, 1)
     out_features = node.shape[end]
     pre = zeros(Float32, batch, out_features)
@@ -103,10 +107,24 @@ function forward(node::Linear, params::NodeParams, inputs::AbstractDict, state::
 
     z_mu = forward(node.activation, pre)
     err = state.z_latent .- z_mu
-    new_state = update_state(state; pre_activation=pre, z_mu=z_mu, error=err)
+    new_state = update_state(state; z_mu=z_mu, error=err)
     new_state = energy_functional(node, new_state)
-    return sum(new_state.energy), new_state
+    return new_state, pre
 end
+
+"""
+    forward(node::Linear, params, inputs, state) -> NodeState
+
+Forward pass: pre = Σ_e xₑ Wₑ (+ b); z_mu = activation(pre); error = z - z_mu;
+energy. Leaves `z_latent` and `latent_grad` untouched (matching upstream).
+
+Returns the NodeState alone. The scalar `sum(energy)` it used to return first is now taken by
+the callers that actually need a scalar (the autodiff seam, which must hand one to
+`value_and_grad`) — `state.energy` itself is per-sample `(batch,)` and always was, on both
+stacks. Port of upstream `b6f64ad`.
+"""
+forward(node::Linear, params::NodeParams, inputs::AbstractDict, state::NodeState) =
+    first(_forward_with_preact(node, params, inputs, state))
 
 """
     forward_and_latent_grads(node::Linear, params, inputs, state, info, is_clamped)
@@ -128,12 +146,7 @@ function forward_and_latent_grads(
 )
     if info.in_degree == 0
         # Terminal source node: z_mu = z_latent ⇒ zero error / energy / grads.
-        ns = update_state(
-            state;
-            z_mu=copy(state.z_latent),
-            error=zero(state.error),
-            pre_activation=zero(state.pre_activation)
-        )
+        ns = update_state(state; z_mu=copy(state.z_latent), error=zero(state.error))
         ns = energy_functional(node, ns)
         input_grads = Dict{String, Any}()
         self_grad = zero(state.latent_grad)
@@ -141,7 +154,7 @@ function forward_and_latent_grads(
     elseif info.out_degree == 0 && !is_clamped
         # Output node in eval/inference mode (no targets, not clamped):
         # keep the projection, contribute no gradient.
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         ns = update_state(
             ns;
             z_latent=ns.z_mu,
@@ -154,9 +167,9 @@ function forward_and_latent_grads(
         return ns, input_grads, self_grad
     else
         # Internal or clamped-output node: explicit input + self-latent grads.
-        _, ns = forward(node, params, inputs, state)
+        ns, pre = _forward_with_preact(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        dpre = pre_grad(node, ns)
+        dpre = pre_grad(node, ns, pre)
         input_grads = Dict{String, Any}()
         for (edge_key, _) in inputs
             input_grads[edge_key] = dpre * transpose(params.weights[edge_key])
@@ -179,8 +192,8 @@ function forward_and_weight_grads(
     state::NodeState;
     info=nothing
 )
-    _, ns = forward(node, params, inputs, state)
-    dpre = pre_grad(node, ns)
+    ns, pre = _forward_with_preact(node, params, inputs, state)
+    dpre = pre_grad(node, ns, pre)
 
     weight_grads = Dict{String, Matrix{Float32}}()
     for (edge_key, x) in inputs

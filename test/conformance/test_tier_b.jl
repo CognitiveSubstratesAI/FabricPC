@@ -53,7 +53,7 @@ allclose_b(a, b; rtol=1.0f-5, atol=1.0f-5) = all(abs.(a .- b) .<= atol .+ rtol .
         inputs = Dict{String, Any}(edge_key => x)
         st = NodeState(
             zlat, zeros(Float32, B, OUT), zeros(Float32, B, OUT),
-            zeros(Float32, B), zeros(Float32, B, OUT), zeros(Float32, B, OUT)
+            zeros(Float32, B), zeros(Float32, B, OUT)
         )
         # NodeInfo: in_degree=1, out_degree=1 (matches the Python fixture's info) so
         # forward_and_latent_grads lands in the "internal/clamped" branch on both sides.
@@ -62,9 +62,8 @@ allclose_b(a, b; rtol=1.0f-5, atol=1.0f-5) = all(abs.(a .- b) .<= atol .+ rtol .
             1, 1, [edge_key], String[], nothing
         )
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_b(ns.z_mu, FIX_B["linear_fwd_z_mu"])
-        @test allclose_b(ns.pre_activation, FIX_B["linear_fwd_pre_activation"])
         @test allclose_b(ns.error, FIX_B["linear_fwd_error"])
         @test allclose_b(ns.energy, FIX_B["linear_fwd_energy"])
 
@@ -102,16 +101,15 @@ allclose_b(a, b; rtol=1.0f-5, atol=1.0f-5) = all(abs.(a .- b) .<= atol .+ rtol .
         inputs_r = Dict{String, Any}(edge_in_r => xr, edge_skip_r => xskip)
         st_r = NodeState(
             zlat_r, zeros(Float32, Br, OUTr), zeros(Float32, Br, OUTr),
-            zeros(Float32, Br), zeros(Float32, Br, OUTr), zeros(Float32, Br, OUTr)
+            zeros(Float32, Br), zeros(Float32, Br, OUTr)
         )
         info_r = NodeInfo(
             "linresid", (OUTr,), "LinearResidual", Dict{String, SlotInfo}(),
             2, 1, [edge_in_r, edge_skip_r], String[], nothing
         )
 
-        _, ns_r = forward(node_r, params_r, inputs_r, st_r)
+        ns_r = forward(node_r, params_r, inputs_r, st_r)
         @test allclose_b(ns_r.z_mu, FIX_B["linresid_fwd_z_mu"])
-        @test allclose_b(ns_r.pre_activation, FIX_B["linresid_fwd_pre_activation"])
         @test allclose_b(ns_r.error, FIX_B["linresid_fwd_error"])
         @test allclose_b(ns_r.energy, FIX_B["linresid_fwd_energy"])
 
@@ -150,18 +148,15 @@ end
         inputs = Dict{String, Any}("e1" => x1, "e2" => x2)
         state = NodeState(
             z_latent, zeros(Float32, size(x1)...), zeros(Float32, size(x1)...),
-            zeros(Float32, B), zeros(Float32, size(x1)...), zeros(Float32, size(x1)...)
+            zeros(Float32, B), zeros(Float32, size(x1)...)
         )
 
         # forward
-        total_energy, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
+        total_energy = sum(ns.energy)
         @test allclose_b([total_energy], FIX_B["identity_skip_identity_fwd_energy"])
         @test allclose_b(ns.z_mu, FIX_B["identity_skip_identity_fwd_z_mu"])
         @test allclose_b(ns.error, FIX_B["identity_skip_identity_fwd_error"])
-        @test allclose_b(
-            ns.pre_activation, FIX_B["identity_skip_identity_fwd_pre_activation"]
-        )
-
         # forward_and_latent_grads: general branch (in_degree=2>0, out_degree=1>0)
         # -- matches upstream's autodiff "else" branch in NodeBase.forward_and_latent_grads.
         info = NodeInfo(
@@ -200,17 +195,14 @@ end
         inputs_s = Dict{String, Any}("f1" => y1, "f2" => y2)
         state_s = NodeState(
             z_latent_s, zeros(Float32, size(y1)...), zeros(Float32, size(y1)...),
-            zeros(Float32, Bs), zeros(Float32, size(y1)...), zeros(Float32, size(y1)...)
+            zeros(Float32, Bs), zeros(Float32, size(y1)...)
         )
 
-        total_energy_s, ns_s = forward(node_s, params_s, inputs_s, state_s)
+        ns_s = forward(node_s, params_s, inputs_s, state_s)
+        total_energy_s = sum(ns_s.energy)
         @test allclose_b([total_energy_s], FIX_B["identity_skip_skip_fwd_energy"])
         @test allclose_b(ns_s.z_mu, FIX_B["identity_skip_skip_fwd_z_mu"])
         @test allclose_b(ns_s.error, FIX_B["identity_skip_skip_fwd_error"])
-        @test allclose_b(
-            ns_s.pre_activation, FIX_B["identity_skip_skip_fwd_pre_activation"]
-        )
-
         info_s = NodeInfo(
             "skip", Dshape_s, "SkipConnection", Dict{String, SlotInfo}(),
             2, 1, ["f1", "f2"], String["skip->out:in"], nothing
@@ -286,7 +278,7 @@ end
     inputs = Dict{String, Any}(edge_key => x)
     st = NodeState(
         zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-        zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+        zeros(Float32, B), zeros(Float32, B, S, E)
     )
 
     @testset "forward: compute_mu vs upstream" begin
@@ -452,7 +444,7 @@ end
         zlat = Float32.(FIX_B[GW * "z_latent"])
         st = NodeState(
             zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
         _, gp = forward_and_weight_grads(node, params, inputs, st)
         @test allclose_b(gp.weights["W_q"], FIX_B[GW * "gW_q"])
@@ -502,7 +494,7 @@ end
         zlat = Float32.(FIX_B[GW * "z_latent"])
         st = NodeState(
             zlat, zeros(Float32, B, S, ff), zeros(Float32, B, S, ff),
-            zeros(Float32, B), zeros(Float32, B, S, ff), zeros(Float32, B, S, ff)
+            zeros(Float32, B), zeros(Float32, B, S, ff)
         )
         _, gp = forward_and_weight_grads(node, params, inputs, st)
         @test allclose_b(gp.weights["W_ff1"], FIX_B[GW * "gW_ff1"])
@@ -540,7 +532,7 @@ end
         zlat = Float32.(FIX_B[GW * "z_latent"])
         st = NodeState(
             zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
         _, gp = forward_and_weight_grads(node, params, inputs, st)
         @test allclose_b(gp.weights["W_ff2"], FIX_B[GW * "gW_ff2"])
@@ -602,11 +594,11 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
         inputs = Dict{String, Any}("tok->emb:in" => idx)
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_b(ns.z_mu, FIX_B["embedding_vocab_embed_fwd_mu"])
         @test allclose_b(ns.energy, FIX_B["embedding_vocab_embed_fwd_energy"])
         @test isapprox(
@@ -628,7 +620,7 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
         inputs = Dict{String, Any}("tok->emb:in" => idx)
 
@@ -651,7 +643,7 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
         inputs = Dict{String, Any}("tok->emb:in" => idx)
         info = NodeInfo(
@@ -679,11 +671,11 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout),
-            zeros(Float32, B), zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout)
+            zeros(Float32, B), zeros(Float32, B, S, Vout)
         )
         inputs = Dict{String, Any}("h->vocab:in" => x)
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_b(ns.z_mu, FIX_B["embedding_vocab_vocab_fwd_mu"])
         @test allclose_b(ns.energy, FIX_B["embedding_vocab_vocab_fwd_energy"])
         @test isapprox(
@@ -706,7 +698,7 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout),
-            zeros(Float32, B), zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout)
+            zeros(Float32, B), zeros(Float32, B, S, Vout)
         )
         inputs = Dict{String, Any}("h->vocab:in" => x)
 
@@ -733,7 +725,7 @@ end
         )
         st = NodeState(
             z_latent, zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout),
-            zeros(Float32, B), zeros(Float32, B, S, Vout), zeros(Float32, B, S, Vout)
+            zeros(Float32, B), zeros(Float32, B, S, Vout)
         )
         inputs = Dict{String, Any}("h->vocab:in" => x)
         info = NodeInfo(
@@ -804,11 +796,12 @@ end
     inputs = Dict{String, Any}(edge_key => probe)
     st = NodeState(
         zlat, zeros(Float32, B, D), zeros(Float32, B, D),
-        zeros(Float32, B), zeros(Float32, B, D), zeros(Float32, B, D)
+        zeros(Float32, B), zeros(Float32, B, D)
     )
 
     @testset "forward: z_mu, error, per-sample energy, total energy" begin
-        tot, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
+        tot = sum(ns.energy)
         @test isapprox(
             tot, only(FIX_B["storkey_fwd_total_energy"]); rtol=1.0f-5, atol=1.0f-5
         )

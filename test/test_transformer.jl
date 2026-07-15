@@ -228,7 +228,7 @@ end
         zlat = randn(rng, Float32, B, S, E)
         st = NodeState(
             zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E)
+            zeros(Float32, B), zeros(Float32, B, S, E)
         )
 
         _, gp_unscaled = TF.forward_and_weight_grads(node, params, inputs, st)

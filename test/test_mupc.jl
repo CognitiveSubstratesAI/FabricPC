@@ -104,8 +104,8 @@ end
             clamps=Dict{String, Any}("x" => xdata),
             params=params
         )
-        # FeedforwardStateInit stores z_mu (not pre_activation); for identity
-        # activation z_mu == pre_activation, the quantity whose variance muPC controls.
+        # FeedforwardStateInit stores z_mu; for an identity activation that equals the
+        # pre-activation, the quantity whose variance muPC controls.
         return rms(state.nodes["h"].z_mu)
     end
 

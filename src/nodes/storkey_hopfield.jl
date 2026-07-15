@@ -131,10 +131,10 @@ function forward(
     node::StorkeyHopfield, params::NodeParams, inputs::AbstractDict, state::NodeState
 )
     z_mu = compute_mu(node, params, inputs)
-    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=state.z_latent .- z_mu)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
     ns = energy_functional(node, ns)                                   # E_pc per sample
     ns = update_state(
         ns; energy=ns.energy .+ _hopfield_energy(node, params, state.z_latent)
     )
-    return sum(ns.energy), ns
+    return ns
 end

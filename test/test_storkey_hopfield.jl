@@ -22,10 +22,10 @@ const SH = FabricPC
     zlat = randn(rng, Float32, B, D)
     inputs = Dict{String, Any}(ek => probe)
     st = NodeState(zlat, zeros(Float32, B, D), zeros(Float32, B, D),
-        zeros(Float32, B), zeros(Float32, B, D), zeros(Float32, B, D))
+        zeros(Float32, B), zeros(Float32, B, D))
 
     @testset "forward energy = E_pc + E_hop" begin
-        tot, _ = SH.forward(node, params, inputs, st)
+        tot = sum(SH.forward(node, params, inputs, st).energy)
         z_mu = compute_mu(node, params, inputs)
         Wp = SH._prepare_W(node, params.weights[ek])
         s = SH._strength(node, params)

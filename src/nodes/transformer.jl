@@ -262,7 +262,7 @@ function forward_and_weight_grads(
     node::TransformerBlock, params::NodeParams, inputs::AbstractDict, state::NodeState;
     info=nothing
 )
-    _, ns = forward(node, params, inputs, state)
+    ns = forward(node, params, inputs, state)
     grad_params = _ad_param_grads(node, params, _concrete_inputs(inputs), state.z_latent)
     if info !== nothing && info.scaling_config !== nothing
         a = 1.0f0

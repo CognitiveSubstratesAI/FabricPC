@@ -77,7 +77,6 @@ def dump_state(prefix, state):
             z_mu=ns.z_mu,
             error=ns.error,
             energy=ns.energy,
-            pre_activation=ns.pre_activation,
             latent_grad=ns.latent_grad,
         )
 

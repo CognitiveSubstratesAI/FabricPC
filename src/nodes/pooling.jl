@@ -204,10 +204,3 @@ _pool_reduce(n::AvgPool, x) =
 compute_mu(node::PoolNode, params::NodeParams, inputs) =
     forward(node.activation, _pool_reduce(node, _pool_sum(inputs)))
 
-# B5: upstream's `_PoolBase.forward` stores the reduction's output as `pre_activation`
-# (`pooling.py:153-158`), i.e. the value BEFORE the activation. Dormant while the default
-# activation is Identity (pre == z_mu), live the moment a caller sets a real one.
-function compute_pre_and_mu(node::PoolNode, params::NodeParams, inputs)
-    pre = _pool_reduce(node, _pool_sum(inputs))
-    return (pre, forward(node.activation, pre))
-end

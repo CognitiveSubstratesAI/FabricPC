@@ -31,7 +31,7 @@ allclose_c(a, b; rtol=1.0f-5, atol=1.0f-5) = all(abs.(a .- b) .<= atol .+ rtol .
 
 _st(z, shape) = NodeState(
     z, zeros(Float32, size(z)), zeros(Float32, size(z)),
-    zeros(Float32, size(z, 1)), zeros(Float32, size(z)), zeros(Float32, size(z))
+    zeros(Float32, size(z, 1)), zeros(Float32, size(z))
 )
 _info(name, shape, edges) = NodeInfo(
     name, shape, "conv", Dict{String,SlotInfo}(), length(edges), 1, collect(edges), String[], nothing
@@ -51,9 +51,8 @@ _info(name, shape, edges) = NodeInfo(
         inputs = Dict{String,Any}(e => x)
         st, info = _st(z, (6, 5, 3)), _info("conv", (6, 5, 3), [e])
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["overlap_fwd_z_mu"])
-        @test allclose_c(ns.pre_activation, FIX_C["overlap_fwd_pre_activation"])
         @test allclose_c(ns.error, FIX_C["overlap_fwd_error"])
         @test allclose_c(ns.energy, FIX_C["overlap_fwd_energy"])
 
@@ -82,7 +81,7 @@ _info(name, shape, edges) = NodeInfo(
         inputs = OrderedDict{String,Any}(e => xs[e] for e in edges)
         st, info = _st(z, (5, 4, 3)), _info("c", (5, 4, 3), edges)
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["multi_fwd_z_mu"])
         _, gp = forward_and_weight_grads(node, params, inputs, st)
         for (i, e) in enumerate(edges)
@@ -95,9 +94,16 @@ _info(name, shape, edges) = NodeInfo(
         @test allclose_c(sg, FIX_C["multi_gradz_self_grad"])
     end
 
-    @testset "conv: ReLU + strided + VALID — pre_activation is genuinely != z_mu (B5)" begin
-        # Pins the compute_pre_and_mu seam hook: with ReLU, `pre` carries negatives that `z_mu`
-        # cannot. Before B5 the seam reported pre = z_mu; measured gap on this fixture: 4.81.
+    @testset "conv: ReLU + strided + VALID — activation is genuinely exercised" begin
+        # Was "pre_activation != z_mu (B5)", pinning the compute_pre_and_mu seam hook. Upstream
+        # b6f64ad removed pre_activation from NodeState (it is consumed inside one forward and
+        # never stored), so that hook and the quantity it reported are both gone — there is no
+        # longer a pre to compare against, on either stack.
+        #
+        # What the testset was FOR survives and is kept: this fixture is the strided/VALID/ReLU
+        # conformance case, and the non-vacuity guard below still proves the ReLU actually bites
+        # here (z_mu has exact zeros where the convolution went negative) rather than the testset
+        # passing on an all-positive fixture where ReLU would be an identity no-op.
         e = "s->c:in"
         x, W, b, z = FIX_C["relu_valid_in_x"], FIX_C["relu_valid_in_W"],
                      FIX_C["relu_valid_in_b"], FIX_C["relu_valid_in_z_latent"]
@@ -108,10 +114,10 @@ _info(name, shape, edges) = NodeInfo(
         inputs = Dict{String,Any}(e => x)
         st, info = _st(z, shape), _info("c", shape, [e])
 
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["relu_valid_fwd_z_mu"])
-        @test allclose_c(ns.pre_activation, FIX_C["relu_valid_fwd_pre_activation"])
-        @test any(ns.pre_activation .< 0) && all(ns.z_mu .>= 0)     # non-vacuous: they differ
+        # Non-vacuous: ReLU clipped real negatives here (exact zeros), and clipped nothing below 0.
+        @test any(ns.z_mu .== 0) && all(ns.z_mu .>= 0)
         _, gp = forward_and_weight_grads(node, params, inputs, st)
         @test allclose_c(gp.weights[e], FIX_C["relu_valid_gradw_gW_0"])
         _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
@@ -130,7 +136,7 @@ _info(name, shape, edges) = NodeInfo(
             inputs = Dict{String,Any}(e => FIX_C["$(tag)_in_x"])
             z = FIX_C["$(tag)_in_z_latent"]
             state, info = _st(z, shp), _info("c", shp, [e])
-            _, ns = forward(node, params, inputs, state)
+            ns = forward(node, params, inputs, state)
             @test allclose_c(ns.z_mu, FIX_C["$(tag)_fwd_z_mu"])
             _, gp = forward_and_weight_grads(node, params, inputs, state)
             @test allclose_c(gp.weights[e], FIX_C["$(tag)_gradw_gW_0"])
@@ -150,7 +156,7 @@ _info(name, shape, edges) = NodeInfo(
         )
             params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
             inputs = Dict{String,Any}(e => x)
-            _, ns = forward(node, params, inputs, st)
+            ns = forward(node, params, inputs, st)
             @test allclose_c(ns.z_mu, FIX_C["$(tag)_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
             _, ig, sg = forward_and_latent_grads(node, params, inputs, st, info, true)
             @test allclose_c(ig[e], FIX_C["$(tag)_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)
@@ -168,7 +174,7 @@ _info(name, shape, edges) = NodeInfo(
         params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
         inputs = Dict{String,Any}(e => xp)
         st, info = _st(zp, (2, 2, 2)), _info("p", (2, 2, 2), [e])
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["maxpool_ptie_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
         _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
         @test allclose_c(ig[e], FIX_C["maxpool_ptie_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)
@@ -188,7 +194,7 @@ _info(name, shape, edges) = NodeInfo(
                            count_include_pad=flag)
             params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
             inputs = Dict{String,Any}(e => xo)
-            _, ns = forward(node, params, inputs, st)
+            ns = forward(node, params, inputs, st)
             @test allclose_c(ns.z_mu, FIX_C["avgpool_cip_$(Int(flag))_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
             _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
             @test allclose_c(ig[e], FIX_C["avgpool_cip_$(Int(flag))_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)
@@ -241,7 +247,7 @@ _info(name, shape, edges) = NodeInfo(
         params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
         inputs = Dict{String,Any}(e => xg)
         st, info = _st(zg, (2,)), _info("p", (2,), [e])
-        _, ns = forward(node, params, inputs, st)
+        ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["avgpool_global_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
         _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
         @test allclose_c(ig[e], FIX_C["avgpool_global_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)

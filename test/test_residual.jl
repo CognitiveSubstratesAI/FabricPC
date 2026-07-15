@@ -29,7 +29,7 @@ multi_info(name, shape, in_edges) = NodeInfo(
     z = Float32[0 0 0]
     inputs = Dict(ek => x)
 
-    _, st = forward(node, params, inputs, bare_state(z))
+    st = forward(node, params, inputs, bare_state(z))
     @test st.z_mu ≈ Float32[1 2 3]            # pure sum, no scale
     @test st.error ≈ Float32[-1 -2 -3]
 
@@ -58,10 +58,10 @@ end
     inputs = Dict(in_ek => x_in, skip_ek => x_skip)
 
     # transform = x_in·W = [4 5]; z_mu = [4 5] + [10 20] = [14 25]
-    _, st = forward(node, params, inputs, bare_state(z))
+    st = forward(node, params, inputs, bare_state(z))
     @test st.z_mu ≈ Float32[14 25]
     @test st.error ≈ Float32[-14 -25]
-    @test first(forward(node, params, inputs, bare_state(z))) ≈ 410.5f0  # 0.5*(196+625)
+    @test sum(forward(node, params, inputs, bare_state(z)).energy) ≈ 410.5f0  # 0.5*(196+625)
 
     info = multi_info("r", (2,), [in_ek, skip_ek])
     _, input_grads, self_grad = forward_and_latent_grads(

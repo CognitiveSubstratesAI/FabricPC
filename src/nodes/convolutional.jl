@@ -143,10 +143,3 @@ end
 compute_mu(node::ConvNode, params::NodeParams, inputs) =
     forward(node.activation, _conv_pre(node, params, inputs))
 
-# B5: report the TRUE pre-activation. Upstream's forward stores it (`convolutional.py:234`) and
-# the conformance fixtures compare it. Live for ConvNode, whose default activation is ReLU: `pre`
-# can be negative where `z_mu` cannot (measured: max|pre - z_mu| = 4.81 on the oracle's fixture).
-function compute_pre_and_mu(node::ConvNode, params::NodeParams, inputs)
-    pre = _conv_pre(node, params, inputs)
-    return (pre, forward(node.activation, pre))
-end

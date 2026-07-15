@@ -70,9 +70,9 @@ function forward(
     z_mu = z_mu .* node.scale
     # No activation transform: pre_activation == z_mu (matches upstream).
     err = state.z_latent .- z_mu
-    new_state = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=err)
+    new_state = update_state(state; z_mu=z_mu, error=err)
     new_state = energy_functional(node, new_state)
-    return sum(new_state.energy), new_state
+    return new_state
 end
 
 function forward_and_latent_grads(
@@ -87,13 +87,12 @@ function forward_and_latent_grads(
         ns = update_state(
             state;
             z_mu=copy(state.z_latent),
-            error=zero(state.error),
-            pre_activation=zero(state.pre_activation)
+            error=zero(state.error)
         )
         ns = energy_functional(node, ns)
         return ns, Dict{String, Any}(), zero(state.latent_grad)
     elseif info.out_degree == 0 && !is_clamped
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         ns = update_state(
             ns;
             z_latent=ns.z_mu,
@@ -104,7 +103,7 @@ function forward_and_latent_grads(
         input_grads = Dict{String, Any}(k => zero(inputs[k]) for k in keys(inputs))
         return ns, input_grads, zero(state.z_latent)
     else
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
         # z_mu = scale·Σx bypasses the activation ⇒ dE/dxₑ = scale·(∂E/∂z_mu).
         dmu = mu_grad(node, ns)
@@ -124,6 +123,6 @@ function forward_and_weight_grads(
     state::NodeState;
     info=nothing
 )
-    _, ns = forward(node, params, inputs, state)
+    ns = forward(node, params, inputs, state)
     return ns, NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}())
 end

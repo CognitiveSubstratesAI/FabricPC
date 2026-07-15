@@ -76,7 +76,7 @@ const TIER_DT_FULL_NODES = ("embed", "transformer_0", "skip_0", "output")
 """
     check_tier_dt_state(prefix, state)
 
-Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/pre_activation/
+Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/
 latent_grad) for fixture prefix `prefix` (e.g. "init"/"converged"/"grad_final"/
 "trained_final") against the live Julia `state`, for every node with no cross-language
 divergence ([`TIER_DT_FULL_NODES`](@ref)), plus a divergence-aware partial check of "input".
@@ -88,23 +88,17 @@ function check_tier_dt_state(prefix::AbstractString, state::GraphState)
         @test allclose_dt(ns.z_mu, FIX_DT["$(prefix)_$(name)_z_mu"])
         @test allclose_dt(ns.error, FIX_DT["$(prefix)_$(name)_error"])
         @test allclose_dt(ns.energy, FIX_DT["$(prefix)_$(name)_energy"])
-        # "output" (VocabProjectionNode) pre_activation EXCLUDED here -- confirmed (by
-        # reading transformer_v2.py's VocabProjectionNode.forward body directly, and by
-        # dumping the fixture's own raw array) that upstream's override never assigns
-        # `pre_activation` at all (only `z_mu`/`error` via `_replace`), unlike the
-        # NodeBase docstring's own general contract ("if the node applies no activation,
-        # set pre_activation = z_mu" -- base.py:321-322) -- so
-        # `FIX_DT["..._output_pre_activation"]` is simply the all-zero state-init default,
-        # frozen for the entire fixture, never upstream's logits or z_mu. Julia's generic
-        # seam (autodiff.jl's `forward`) unconditionally sets `pre_activation = z_mu` for
-        # EVERY seam-based node, so this field is a genuinely different (and, on the
-        # upstream side, never-populated) quantity for this one node -- not a numerical
-        # tolerance issue. Matches test_tier_b.jl's own established precedent: its
-        # "VocabProjectionNode: forward" testset (line ~686) likewise asserts only
-        # z_mu/energy/total_energy, never pre_activation, for this exact node class.
-        if name != "output"
-            @test allclose_dt(ns.pre_activation, FIX_DT["$(prefix)_$(name)_pre_activation"])
-        end
+        # SHAPE, not just values — energy is per-sample `(batch,)` on both stacks; upstream
+        # b6f64ad moved only WHERE the batch->scalar sum happens, never the field's shape.
+        # An allclose alone would let a scalar broadcast against the fixture; this fails first.
+        @test size(ns.energy) == size(FIX_DT["$(prefix)_$(name)_energy"]) == (state.batch_size,)
+        # A long-standing carve-out lived here: "output" (VocabProjectionNode) was excluded from
+        # the pre_activation assertion because upstream's override never assigned that field,
+        # while our generic seam always set pre_activation = z_mu — so the fixture key held the
+        # all-zero state-init default and the two sides were comparing different quantities.
+        # Upstream b6f64ad deleted pre_activation from NodeState outright, which dissolves the
+        # divergence rather than papering over it: there is no field, no carve-out, and every
+        # node is asserted uniformly above.
         @test allclose_dt(ns.latent_grad, FIX_DT["$(prefix)_$(name)_latent_grad"])
     end
 
@@ -130,13 +124,12 @@ function check_tier_dt_state(prefix::AbstractString, state::GraphState)
     expected_input_zmu = prefix == "init" ? zeros(Float32, size(ni.z_mu)) :
         (FIX_DT["$(prefix)_input_z_latent"] .+ 1.0f0)
     @test allclose_dt(ni.z_mu, expected_input_zmu)
-    # error/energy/pre_activation/latent_grad carry NO token-id encoding at all -- the
+    # error/energy/latent_grad carry NO token-id encoding at all -- the
     # terminal special case forces every one of them to exactly zero on both sides at every
     # phase (verified against the fixture directly) -- so these ARE plain cross-language
     # comparisons, and would catch a real bug in the terminal-source branch.
     @test allclose_dt(ni.error, FIX_DT["$(prefix)_input_error"])
     @test allclose_dt(ni.energy, FIX_DT["$(prefix)_input_energy"])
-    @test allclose_dt(ni.pre_activation, FIX_DT["$(prefix)_input_pre_activation"])
     @test allclose_dt(ni.latent_grad, FIX_DT["$(prefix)_input_latent_grad"])
 end
 

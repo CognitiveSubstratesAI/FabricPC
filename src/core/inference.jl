@@ -229,7 +229,7 @@ every conformance test and the whole training path use, so their behaviour is un
 `optimize=true` selects the algebraically-equivalent HOIST+PRUNE loop (`_run_inference_loop_opt`,
 below) for the two stateless SGD algorithms. That loop is bit-identical on every field the rest of
 the system ever CONSUMES — all unclamped nodes' `z_latent` (the actual inference result) and every
-node's `z_mu`/`error`/`energy`/`pre_activation`, hence identical downstream weight gradients and
+node's `z_mu`/`error`/`energy`, hence identical downstream weight gradients and
 energy (`compute_local_weight_gradients`/`get_graph_param_gradient` recompute those from the
 converged state and never read `latent_grad`). Its ONLY observable divergence is the `latent_grad`
 of *clamped* nodes, which it leaves at zero instead of accumulating the provably-dead value that
@@ -281,7 +281,7 @@ end
 #          or a clamped node's own self-grad into its own accumulator — is dead work.
 #   HOIST  a node whose in-edge sources are ALL clamped sees constant inputs across
 #          every step (clamped z_latent never changes), so its matmul-heavy forward
-#          (`pre_activation`, `z_mu`) is loop-invariant and can be computed ONCE. Its
+#          (`z_mu`) is loop-invariant and can be computed ONCE. Its
 #          `error`/`energy`/`self_grad` still depend on its OWN (relaxing) z_latent, so
 #          those are recomputed each step from the hoisted z_mu — cheap elementwise, no
 #          matmul. And every one of its input-grads flows to a clamped source, so by
@@ -295,7 +295,7 @@ end
 """
     _hoistable_nodes(clamps, structure) -> Set{String}
 
-Nodes whose forward (`pre_activation`/`z_mu`) is loop-invariant AND take the plain
+Nodes whose forward (`z_mu`) is loop-invariant AND take the plain
 `else` branch of `forward_and_latent_grads`: `in_degree > 0` (not a terminal source),
 `out_degree > 0` and unclamped (so NOT the eval/`unclamped-output` special case), and
 every in-edge source clamped (so inputs are constant and all back-edges prune away).
@@ -321,7 +321,7 @@ end
 
 """
 Phase-2 forward+accumulate with HOIST+PRUNE. `hoisted` maps each hoistable node to its
-loop-invariant forwarded `NodeState` (source of `z_mu`/`pre_activation`); `hoist` is that
+loop-invariant forwarded `NodeState` (source of `z_mu`); `hoist` is that
 node set. Bit-identical to `forward_value_and_grad` on all consumed fields (see the block
 comment above): hoisted nodes reuse cached `z_mu`/`pre` and recompute `error`/`energy`/
 `self_grad` from the current z_latent (skipping their all-pruned back-edges); every other
@@ -347,7 +347,7 @@ function _forward_value_and_grad_opt(
             ns = state.nodes[name]
             err = ns.z_latent .- cached.z_mu
             ns = update_state(
-                ns; z_mu=cached.z_mu, pre_activation=cached.pre_activation, error=err
+                ns; z_mu=cached.z_mu, error=err
             )
             ns = energy_functional(node, ns)
             self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
@@ -415,7 +415,7 @@ function _run_inference_loop_opt(
         node = structure.nodes[name]
         in_data = gather_inputs(info, structure, state)
         scaled_inputs = scale_inputs(in_data, info.scaling_config)
-        _, ns_fwd = forward(node, params.nodes[name], scaled_inputs, state.nodes[name])
+        ns_fwd = forward(node, params.nodes[name], scaled_inputs, state.nodes[name])
         hoisted[name] = ns_fwd
     end
     for _ in 1:inf.infer_steps

@@ -66,8 +66,9 @@ using Statistics
         for n in st.node_names
             @test all(isfinite, s2.nodes[n].z_latent)
         end
-        @test all(s2.nodes["conv"].z_mu .>= 0)                     # ReLU actually applied
-        @test any(s2.nodes["conv"].pre_activation .< 0)            # …and pre != z_mu (B5), non-vacuously
+        # ReLU actually applied, non-vacuously: it clipped real negatives to exact zeros.
+        # (Was `any(pre_activation .< 0)`; upstream b6f64ad removed that field from NodeState.)
+        @test all(s2.nodes["conv"].z_mu .>= 0) && any(s2.nodes["conv"].z_mu .== 0)
     end
 
     @testset "B2: a rank-4 kernel survives the optimizers (was an ARGUMENT until this ran)" begin

@@ -169,7 +169,7 @@ placeholders (recomputed in inference step 1, so unused — matches the eager in
 state_from_latents(zl) = NodeState[
     NodeState(
         zl[i], zero(zl[i]), zero(zl[i]),
-        zeros(eltype(zl[i]), size(zl[i], 1)), zero(zl[i]), zero(zl[i])
+        zeros(eltype(zl[i]), size(zl[i], 1)), zero(zl[i])
     ) for i in eachindex(zl)
 ]
 
@@ -209,7 +209,7 @@ compile_inference(args...; kwargs...) =
 # `ins` / `slots` are aligned to the node's in-edges (plan.in_src / plan.in_slot);
 # `fp.w` is aligned likewise. Each mirrors the corresponding eager `forward`.
 
-function flat_forward(node::Linear, fp::FlatNodeParams, ins, slots, state::NodeState)
+function _flat_fwd_pre(node::Linear, fp::FlatNodeParams, ins, slots, state::NodeState)
     batch = size(state.z_latent, 1)
     pre = zeros(Float32, batch, node.shape[end])
     for k in eachindex(ins)
@@ -217,9 +217,12 @@ function flat_forward(node::Linear, fp::FlatNodeParams, ins, slots, state::NodeS
     end
     fp.b !== nothing && length(fp.b) > 0 && (pre = pre .+ fp.b)
     z_mu = forward(node.activation, pre)
-    ns = update_state(state; pre_activation=pre, z_mu=z_mu, error=state.z_latent .- z_mu)
-    return energy_functional(node, ns)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
+    return energy_functional(node, ns), pre
 end
+
+flat_forward(node::Linear, fp::FlatNodeParams, ins, slots, state::NodeState) =
+    first(_flat_fwd_pre(node, fp, ins, slots, state))
 
 function flat_forward(node::IdentityNode, ::FlatNodeParams, ins, slots, state::NodeState)
     z_mu = nothing
@@ -227,7 +230,7 @@ function flat_forward(node::IdentityNode, ::FlatNodeParams, ins, slots, state::N
         z_mu = z_mu === nothing ? x : z_mu .+ x
     end
     z_mu = z_mu .* node.scale
-    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=state.z_latent .- z_mu)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
     return energy_functional(node, ns)
 end
 
@@ -236,11 +239,11 @@ function flat_forward(node::SkipConnection, ::FlatNodeParams, ins, slots, state:
     for x in ins
         z_mu = z_mu === nothing ? x : z_mu .+ x
     end
-    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=state.z_latent .- z_mu)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
     return energy_functional(node, ns)
 end
 
-function flat_forward(
+function _flat_fwd_pre(
     node::LinearResidual, fp::FlatNodeParams, ins, slots, state::NodeState
 )
     batch = size(state.z_latent, 1)
@@ -256,9 +259,12 @@ function flat_forward(
     fp.b !== nothing && length(fp.b) > 0 && (pre = pre .+ fp.b)
     transformed = forward(node.activation, pre)
     z_mu = skip === nothing ? transformed : transformed .+ skip
-    ns = update_state(state; pre_activation=pre, z_mu=z_mu, error=state.z_latent .- z_mu)
-    return energy_functional(node, ns)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
+    return energy_functional(node, ns), pre
 end
+
+flat_forward(node::LinearResidual, fp::FlatNodeParams, ins, slots, state::NodeState) =
+    first(_flat_fwd_pre(node, fp, ins, slots, state))
 
 # TransformerBlock (J-03, docs/AUDIT_REGISTER.md section 5): wires the already-validated
 # `_tb_block_flat` kernel (transformer.jl) into this file's dispatch — FORWARD ONLY. No
@@ -288,7 +294,7 @@ function flat_forward(
             x, args..., Val(node.num_heads), Val(B), Val(node.use_rope), Val(node.causal)
         )
     )
-    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=state.z_latent .- z_mu)
+    ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
     return energy_functional(node, ns)
 end
 
@@ -297,10 +303,7 @@ end
 
 function flat_latent_grads(node::AbstractNode, fp, ins, slots, state, info, is_clamped)
     if info.in_degree == 0
-        ns = update_state(
-            state; z_mu=copy(state.z_latent),
-            error=zero(state.error), pre_activation=zero(state.pre_activation)
-        )
+        ns = update_state(state; z_mu=copy(state.z_latent), error=zero(state.error))
         ns = energy_functional(node, ns)
         return ns, Any[], zero(state.latent_grad)
     elseif info.out_degree == 0 && !is_clamped
@@ -311,28 +314,39 @@ function flat_latent_grads(node::AbstractNode, fp, ins, slots, state, info, is_c
         )
         return ns, Any[zero(ins[k]) for k in eachindex(ins)], zero(state.z_latent)
     else
-        ns = flat_forward(node, fp, ins, slots, state)
+        ns, pre = _flat_fwd_for_grads(node, fp, ins, slots, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        igrads = _flat_input_grads(node, fp, ins, slots, ns)
+        igrads = _flat_input_grads(node, fp, ins, slots, ns, pre)
         return ns, igrads, self_grad
     end
 end
 
+# Forward for the gradient branch, additionally handing back the pre-activation the explicit
+# `f'(pre)` path needs — NodeState no longer carries it (upstream b6f64ad). Only Linear and
+# LinearResidual have a distinct pre; for everything else it is `nothing`, and each method is
+# separately specialized, so `pre` stays concretely typed rather than boxed on this lane.
+_flat_fwd_for_grads(node::AbstractNode, fp, ins, slots, state) =
+    (flat_forward(node, fp, ins, slots, state), nothing)
+_flat_fwd_for_grads(node::Linear, fp, ins, slots, state) =
+    _flat_fwd_pre(node, fp, ins, slots, state)
+_flat_fwd_for_grads(node::LinearResidual, fp, ins, slots, state) =
+    _flat_fwd_pre(node, fp, ins, slots, state)
+
 # Per-node input gradients (positional), reusing the shared pre_grad / mu_grad.
-function _flat_input_grads(node::Linear, fp, ins, slots, ns)
-    dpre = pre_grad(node, ns)
+function _flat_input_grads(node::Linear, fp, ins, slots, ns, pre)
+    dpre = pre_grad(node, ns, pre)
     return Any[dpre * transpose(fp.w[k]) for k in eachindex(ins)]
 end
-function _flat_input_grads(node::IdentityNode, fp, ins, slots, ns)
+function _flat_input_grads(node::IdentityNode, fp, ins, slots, ns, _pre)
     dmu = mu_grad(node, ns)
     return Any[node.scale .* dmu for _ in eachindex(ins)]
 end
-function _flat_input_grads(node::SkipConnection, fp, ins, slots, ns)
+function _flat_input_grads(node::SkipConnection, fp, ins, slots, ns, _pre)
     dmu = mu_grad(node, ns)
     return Any[dmu for _ in eachindex(ins)]
 end
-function _flat_input_grads(node::LinearResidual, fp, ins, slots, ns)
-    dpre = pre_grad(node, ns)
+function _flat_input_grads(node::LinearResidual, fp, ins, slots, ns, pre)
+    dpre = pre_grad(node, ns, pre)
     dmu = mu_grad(node, ns)
     return Any[slots[k] == "in" ? dpre * transpose(fp.w[k]) : dmu for k in eachindex(ins)]
 end
@@ -416,7 +430,7 @@ function _flat_hoistable(plan, clamped::Vector{Bool})
 end
 
 """HOIST+PRUNE flat step. `hoist[i]` marks hoistable positions; `hoisted[i]` caches their
-loop-invariant forwarded `NodeState` (`z_mu`/`pre_activation`). Bit-identical to
+loop-invariant forwarded `NodeState` (`z_mu`). Bit-identical to
 `flat_inference_step` on every consumed field: hoisted positions reuse the cached forward and
 recompute only the `z_latent`-dependent `error`/`energy`/`self_grad`; all back-edge grads into
 clamped sources and self-grads into clamped positions (the values Phase 3 discards) are skipped."""
@@ -432,7 +446,7 @@ function _flat_inference_step_opt(
             cached = hoisted[i]
             s = fstate[i]
             err = s.z_latent .- cached.z_mu
-            ns = update_state(s; z_mu=cached.z_mu, pre_activation=cached.pre_activation, error=err)
+            ns = update_state(s; z_mu=cached.z_mu, error=err)
             ns = energy_functional(node, ns)
             self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
             fstate[i] = update_state(ns; latent_grad=ns.latent_grad .+ self_grad)

@@ -61,7 +61,6 @@ function _assert_bit_identical(params, init, clamps, structure)
         @test bitexact(a.z_mu, b.z_mu)
         @test bitexact(a.error, b.error)
         @test bitexact(a.energy, b.energy)
-        @test bitexact(a.pre_activation, b.pre_activation)
         if haskey(clamps, name)
             # (b) clamped node's latent_grad: optimized leaves it at zero (pruned dead value)...
             @test all(iszero, b.latent_grad)

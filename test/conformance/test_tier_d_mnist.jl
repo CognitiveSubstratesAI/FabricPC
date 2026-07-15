@@ -35,7 +35,7 @@ const TIER_D_NODES = ("x", "h", "y")
 """
     check_tier_d_state(prefix, state)
 
-Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/pre_activation/
+Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/
 latent_grad, per node) for fixture prefix `prefix` (e.g. "final") against the live Julia
 `state`.
 """
@@ -46,7 +46,10 @@ function check_tier_d_state(prefix::AbstractString, state::GraphState)
         @test allclose_d(ns.z_mu, FIX_D["$(prefix)_$(name)_z_mu"])
         @test allclose_d(ns.error, FIX_D["$(prefix)_$(name)_error"])
         @test allclose_d(ns.energy, FIX_D["$(prefix)_$(name)_energy"])
-        @test allclose_d(ns.pre_activation, FIX_D["$(prefix)_$(name)_pre_activation"])
+        # SHAPE, not just values — energy is per-sample `(batch,)` on both stacks; upstream
+        # b6f64ad moved only WHERE the batch->scalar sum happens, never the field's shape.
+        # An allclose alone would let a scalar broadcast against the fixture; this fails first.
+        @test size(ns.energy) == size(FIX_D["$(prefix)_$(name)_energy"]) == (state.batch_size,)
         @test allclose_d(ns.latent_grad, FIX_D["$(prefix)_$(name)_latent_grad"])
     end
 end

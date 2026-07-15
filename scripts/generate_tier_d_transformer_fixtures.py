@@ -243,7 +243,6 @@ def dump_state(prefix, state):
             z_mu=ns.z_mu,
             error=ns.error,
             energy=ns.energy,
-            pre_activation=ns.pre_activation,
             latent_grad=ns.latent_grad,
         )
 
@@ -428,7 +427,7 @@ dump_state("converged", converged)
 _max_sanity_diff = 0.0
 for _name, _ns in converged.nodes.items():
     _rns = relax_state.nodes[_name]
-    for _field in ("z_latent", "z_mu", "error", "energy", "pre_activation", "latent_grad"):
+    for _field in ("z_latent", "z_mu", "error", "energy", "latent_grad"):
         _a = np.asarray(getattr(_ns, _field))
         _b = np.asarray(getattr(_rns, _field))
         _d = float(np.max(np.abs(_a - _b))) if _a.size else 0.0

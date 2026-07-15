@@ -34,7 +34,6 @@ function initialize_state(
             zeros(Float32, shp...),              # z_mu
             zeros(Float32, shp...),              # error
             zeros(Float32, batch_size),          # energy (per-sample)
-            zeros(Float32, shp...),              # pre_activation
             zeros(Float32, shp...)              # latent_grad
         )
     end
@@ -49,7 +48,7 @@ function initialize_state(
         ns = state.nodes[name]
         in_data = gather_inputs(info, structure, state)
         scaled_inputs = scale_inputs(in_data, info.scaling_config)
-        _, projected = forward(node, params.nodes[name], scaled_inputs, ns)
+        projected = forward(node, params.nodes[name], scaled_inputs, ns)
 
         if !haskey(clamps, name)
             ns = update_state(ns; z_latent=projected.z_mu, z_mu=projected.z_mu)

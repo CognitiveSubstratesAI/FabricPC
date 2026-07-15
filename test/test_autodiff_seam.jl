@@ -107,7 +107,7 @@ end
         params = NodeParams(Dict(ekey => W), Dict("b" => b))
         inputs = Dict{String, Any}(ekey => x)
         st = NodeState(z, zeros(Float32, batch, out_f), zeros(Float32, batch, out_f),
-            zeros(Float32, batch), zeros(Float32, batch, out_f),
+            zeros(Float32, batch),
             zeros(Float32, batch, out_f))
         info = NodeInfo("h", (out_f,), "node", Dict{String, SlotInfo}(),
             1, 1, [ekey], String[], nothing)

@@ -1087,7 +1087,7 @@ Date: 2026-07-14
 Closing Tier D's transformer-LM conformance track (`docs/AUDIT_REGISTER.md` §6) required
 diagnosing why a real 12-step relaxation on the assembled `TransformerBlock` graph would not
 reproduce across two independent float32 implementations at any reasonable tolerance, even
-with port fidelity independently established (Tier B 151/151). The PC inference loop
+with port fidelity independently established (Tier B 151/151; now 147/147 after C-16 — see below). The PC inference loop
 (`inference_step`'s `zero_grads → forward_value_and_grad → update_latents`, iterated
 `infer_steps` times) is literally gradient descent on energy w.r.t. latents: one step is
 `z ← z − η·∇E(z)`, i.e. the local linearization is `z_{n+1} = (I − η·H)·z_n` for the local

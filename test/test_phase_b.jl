@@ -22,7 +22,7 @@ using FabricPC:
     run_inference
 
 # Helper: build a bare NodeState whose non-latent fields are zeroed placeholders
-# (forward overwrites z_mu/error/energy/pre_activation; latent_grad is unused for
+# (forward overwrites z_mu/error/energy; latent_grad is unused for
 # energy). batch × features inferred from z_latent.
 function bare_state(z_latent::AbstractMatrix)
     b, f = size(z_latent)
@@ -31,7 +31,6 @@ function bare_state(z_latent::AbstractMatrix)
         zeros(Float32, b, f),
         zeros(Float32, b, f),
         zeros(Float32, b),
-        zeros(Float32, b, f),
         zeros(Float32, b, f)
     )
 end
@@ -49,8 +48,10 @@ internal_info(name, shape, edge_key) = NodeInfo(
     nothing
 )
 
+# `sum(...energy)`, not `first(forward(...))`: forward returns the NodeState alone now
+# (upstream b6f64ad) and the scalar is the caller's to take — `state.energy` is per-sample.
 local_energy(node, params, inputs, z_latent) =
-    first(forward(node, params, inputs, bare_state(z_latent)))
+    sum(forward(node, params, inputs, bare_state(z_latent)).energy)
 
 @testset "Linear explicit gradients — exact hand-check" begin
     ek = "x->y:in"
@@ -63,10 +64,10 @@ local_energy(node, params, inputs, z_latent) =
     z_target = Float32[0 0]             # clamped target latent
 
     # z_mu = x·W = [4 5]; error = z - z_mu = [-4 -5]; E = 0.5*(16+25) = 20.5
-    _, st = forward(node, params, inputs, bare_state(z_target))
+    st = forward(node, params, inputs, bare_state(z_target))
     @test st.z_mu ≈ Float32[4 5]
     @test st.error ≈ Float32[-4 -5]
-    @test first(forward(node, params, inputs, bare_state(z_target))) ≈ 20.5f0
+    @test sum(forward(node, params, inputs, bare_state(z_target)).energy) ≈ 20.5f0
 
     info = internal_info("y", (2,), ek)
     _, input_grads, self_grad = forward_and_latent_grads(
@@ -159,7 +160,7 @@ end
     z = Float32[0 0 0]
     inputs = Dict(ek => x)
 
-    _, st = forward(node, params, inputs, bare_state(z))
+    st = forward(node, params, inputs, bare_state(z))
     @test st.z_mu ≈ Float32[2 4 6]            # scale * sum(inputs)
     @test st.error ≈ Float32[-2 -4 -6]
 

@@ -45,40 +45,26 @@ energy_kernel(node::AbstractNode, params::NodeParams, inputs, z_latent) =
     sum(energy(node.energy, z_latent, compute_mu(node, params, inputs)))
 
 """
-    compute_pre_and_mu(node, params, inputs) -> (pre_activation, z_mu)
-
-Seam hook for nodes whose prediction has a distinct PRE-activation. The generic default
-reports `pre_activation = z_mu`, which is what every seam node did historically (the explicit
-`pre_grad` path is unused on this lane, so gradients never read it) — so this default keeps
-every existing node byte-identical.
-
-Nodes that DO apply an activation inside `compute_mu` should override this to report the true
-pre-activation, because upstream's `forward` stores it (`nodes/convolutional.py:234`,
-`nodes/pooling.py:158` set `pre_activation` to the value BEFORE the activation) and the
-conformance fixtures compare that field. It matters concretely for a ReLU node: `pre` can be
-negative where `z_mu` cannot, so reporting `z_mu` as the pre is observably wrong.
-
-Only `NodeState.pre_activation` bookkeeping is affected — `energy_kernel` still differentiates
-`compute_mu`, so no gradient path changes.
-"""
-compute_pre_and_mu(node::AbstractNode, params::NodeParams, inputs) =
-    (z_mu = compute_mu(node, params, inputs); (z_mu, z_mu))
-
-"""
-    forward(node::AbstractNode, params, inputs, state) -> (total_energy, NodeState)
+    forward(node::AbstractNode, params, inputs, state) -> NodeState
 
 Generic forward for autodiff-backed nodes (no explicit override). Builds `z_mu` via
-`compute_pre_and_mu` (which defaults to `compute_mu`), fills `error`/`energy`, and packs the
-NodeState. Mirrors `Linear`'s `forward` bookkeeping but defers the prediction math to the seam.
+`compute_mu`, fills `error`/`energy`, and packs the NodeState. Mirrors `Linear`'s `forward`
+bookkeeping but defers the prediction math to the seam.
+
+Returns the NodeState alone; the scalar total energy moved to the callers that need one
+(upstream `b6f64ad`). The seam's `compute_pre_and_mu` hook went with it: it existed ONLY to fill
+`NodeState.pre_activation`, and nothing on this lane ever read that field — these nodes get
+their gradients from `energy_kernel`, which differentiates `compute_mu` directly. The one place
+a pre-activation is genuinely needed is `Linear`'s explicit `f'(pre)` path, which now computes
+it locally (`_forward_with_preact`).
 """
 function forward(
     node::AbstractNode, params::NodeParams, inputs::AbstractDict, state::NodeState
 )
-    pre, z_mu = compute_pre_and_mu(node, params, inputs)
+    z_mu = compute_mu(node, params, inputs)
     err = state.z_latent .- z_mu
-    ns = update_state(state; pre_activation=pre, z_mu=z_mu, error=err)
-    ns = energy_functional(node, ns)
-    return sum(ns.energy), ns
+    ns = update_state(state; z_mu=z_mu, error=err)
+    return energy_functional(node, ns)
 end
 
 # --- autodiff hooks: real implementations live in FabricPCEnzymeExt / FabricPCZygoteExt -------
@@ -209,7 +195,7 @@ function forward_and_weight_grads(
     node::AbstractNode, params::NodeParams, inputs::AbstractDict, state::NodeState;
     info=nothing
 )
-    _, ns = forward(node, params, inputs, state)
+    ns = forward(node, params, inputs, state)
     grad_params = _ad_param_grads(node, params, _concrete_inputs(inputs), state.z_latent)
     return ns, grad_params
 end
@@ -235,13 +221,12 @@ function forward_and_latent_grads(
         ns = update_state(
             state;
             z_mu=copy(state.z_latent),
-            error=zero(state.error),
-            pre_activation=zero(state.pre_activation)
+            error=zero(state.error)
         )
         ns = energy_functional(node, ns)
         return ns, Dict{String, Any}(), zero(state.latent_grad)
     elseif info.out_degree == 0 && !is_clamped
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         ns = update_state(
             ns;
             z_latent=ns.z_mu,
@@ -252,7 +237,7 @@ function forward_and_latent_grads(
         input_grads = Dict{String, Any}(k => zero(inputs[k]) for k in keys(inputs))
         return ns, input_grads, zero(state.z_latent)
     else
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         dinputs, self_grad = _ad_latent_grads(
             node, params, _concrete_inputs(inputs), state.z_latent
         )

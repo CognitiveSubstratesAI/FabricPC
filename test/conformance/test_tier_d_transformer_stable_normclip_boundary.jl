@@ -84,9 +84,6 @@ function collect_state_pairs!(pairs, prefix::AbstractString, state, FIX)
         push!(pairs, ("$(prefix)_$(name)_z_mu", ns.z_mu, FIX["$(prefix)_$(name)_z_mu"]))
         push!(pairs, ("$(prefix)_$(name)_error", ns.error, FIX["$(prefix)_$(name)_error"]))
         push!(pairs, ("$(prefix)_$(name)_energy", ns.energy, FIX["$(prefix)_$(name)_energy"]))
-        if name != "output"
-            push!(pairs, ("$(prefix)_$(name)_pre_activation", ns.pre_activation, FIX["$(prefix)_$(name)_pre_activation"]))
-        end
         push!(pairs, ("$(prefix)_$(name)_latent_grad", ns.latent_grad, FIX["$(prefix)_$(name)_latent_grad"]))
     end
     ni = state.nodes["input"]
@@ -96,7 +93,6 @@ function collect_state_pairs!(pairs, prefix::AbstractString, state, FIX)
     push!(pairs, ("$(prefix)_input_z_mu", ni.z_mu, expected_input_zmu))
     push!(pairs, ("$(prefix)_input_error", ni.error, FIX["$(prefix)_input_error"]))
     push!(pairs, ("$(prefix)_input_energy", ni.energy, FIX["$(prefix)_input_energy"]))
-    push!(pairs, ("$(prefix)_input_pre_activation", ni.pre_activation, FIX["$(prefix)_input_pre_activation"]))
     push!(pairs, ("$(prefix)_input_latent_grad", ni.latent_grad, FIX["$(prefix)_input_latent_grad"]))
     return pairs
 end

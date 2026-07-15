@@ -16,9 +16,8 @@ update_state(
     z_mu=s.z_mu,
     error=s.error,
     energy=s.energy,
-    pre_activation=s.pre_activation,
     latent_grad=s.latent_grad
-) = NodeState(z_latent, z_mu, error, energy, pre_activation, latent_grad)
+) = NodeState(z_latent, z_mu, error, energy, latent_grad)
 
 """Return a new GraphState with `name`'s NodeState replaced by `ns`."""
 put_node(state::GraphState, name::AbstractString, ns::NodeState) =

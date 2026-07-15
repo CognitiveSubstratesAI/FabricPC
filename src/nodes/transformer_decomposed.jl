@@ -308,7 +308,7 @@ function forward(
     z_mu = _embed_lookup(params.weights["embeddings"], idx)
     ns = update_state(state; z_mu=z_mu, error=state.z_latent .- z_mu)
     ns = energy_functional(node, ns)
-    return sum(ns.energy), ns
+    return ns
 end
 
 function forward_and_weight_grads(
@@ -316,7 +316,7 @@ function forward_and_weight_grads(
     info=nothing
 )
     idx = first(values(inputs))
-    _, ns = forward(node, params, inputs, state)
+    ns = forward(node, params, inputs, state)
     gm = mu_grad(node, ns)                       # ∂E/∂z_mu, (B,S,embed)
     demb = zero(params.weights["embeddings"])
     B, S = size(idx, 1), size(idx, 2)
@@ -330,7 +330,7 @@ function forward_and_latent_grads(
     node::EmbeddingNode, params::NodeParams, inputs::AbstractDict,
     state::NodeState, info::NodeInfo, is_clamped::Bool
 )
-    _, ns = forward(node, params, inputs, state)
+    ns = forward(node, params, inputs, state)
     input_grads = Dict{String, Any}(k => zero(inputs[k]) for k in keys(inputs))  # discrete
     self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
     return ns, input_grads, self_grad

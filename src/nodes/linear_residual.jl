@@ -89,7 +89,15 @@ function initialize_params(
     return NodeParams(weights, biases)
 end
 
-function forward(
+"""
+    _forward_with_preact(node::LinearResidual, params, inputs, state) -> (NodeState, pre)
+
+The real forward, additionally handing back the TRANSFORM path's pre-activation. Only the
+explicit-gradient path needs it (`f'(pre)` for the transform edges; the skip edges bypass the
+activation and use `mu_grad`), and `NodeState` no longer stores it. Mirrors `Linear`'s split and
+upstream's `_forward_with_preact` (`b6f64ad`).
+"""
+function _forward_with_preact(
     node::LinearResidual,
     params::NodeParams,
     inputs::AbstractDict,
@@ -118,10 +126,19 @@ function forward(
 
     z_mu = skip_sum === nothing ? transformed : transformed .+ skip_sum
     err = state.z_latent .- z_mu
-    new_state = update_state(state; pre_activation=pre, z_mu=z_mu, error=err)
+    new_state = update_state(state; z_mu=z_mu, error=err)
     new_state = energy_functional(node, new_state)
-    return sum(new_state.energy), new_state
+    return new_state, pre
 end
+
+"""
+    forward(node::LinearResidual, params, inputs, state) -> NodeState
+
+Transform path + skip path, summed. Returns the NodeState alone (upstream `b6f64ad`); callers
+needing a scalar take `sum(ns.energy)` themselves.
+"""
+forward(node::LinearResidual, params::NodeParams, inputs::AbstractDict, state::NodeState) =
+    first(_forward_with_preact(node, params, inputs, state))
 
 function forward_and_latent_grads(
     node::LinearResidual,
@@ -135,13 +152,12 @@ function forward_and_latent_grads(
         ns = update_state(
             state;
             z_mu=copy(state.z_latent),
-            error=zero(state.error),
-            pre_activation=zero(state.pre_activation)
+            error=zero(state.error)
         )
         ns = energy_functional(node, ns)
         return ns, Dict{String, Any}(), zero(state.latent_grad)
     elseif info.out_degree == 0 && !is_clamped
-        _, ns = forward(node, params, inputs, state)
+        ns = forward(node, params, inputs, state)
         ns = update_state(
             ns;
             z_latent=ns.z_mu,
@@ -152,9 +168,9 @@ function forward_and_latent_grads(
         input_grads = Dict{String, Any}(k => zero(inputs[k]) for k in keys(inputs))
         return ns, input_grads, zero(state.z_latent)
     else
-        _, ns = forward(node, params, inputs, state)
+        ns, pre = _forward_with_preact(node, params, inputs, state)
         self_grad = grad_latent(node.energy, ns.z_latent, ns.z_mu)
-        dpre = pre_grad(node, ns)        # transform path: ∂E/∂pre
+        dpre = pre_grad(node, ns, pre)   # transform path: ∂E/∂pre
         dmu = mu_grad(node, ns)          # skip path: ∂E/∂z_mu (bypasses activation)
         input_grads = Dict{String, Any}()
         for (edge_key, _) in inputs
@@ -177,8 +193,8 @@ function forward_and_weight_grads(
     state::NodeState;
     info=nothing
 )
-    _, ns = forward(node, params, inputs, state)
-    dpre = pre_grad(node, ns)
+    ns, pre = _forward_with_preact(node, params, inputs, state)
+    dpre = pre_grad(node, ns, pre)
 
     weight_grads = Dict{String, Matrix{Float32}}()
     for (edge_key, x) in inputs

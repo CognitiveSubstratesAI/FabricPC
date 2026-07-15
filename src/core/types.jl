@@ -117,13 +117,18 @@ end
 Dynamic per-node state during inference. `energy` is per-sample, shape (batch,);
 the rest are (batch, features...). `latent_grad` accumulates dE/dz_latent across
 the node's own self-grad and downstream successors' contributions.
+
+No `pre_activation` field: it is computed and consumed WITHIN a single forward, never stored.
+Only the explicit-gradient path needs it (for `f'(pre)` in `pre_grad`), and it gets it directly
+from `_forward_with_preact`. Mirrors upstream `b6f64ad`, which cut per-node inference state from
+5 `(batch, features...)` tensors to 4 — a real saving in the in-place lane, which allocates one
+of these per node per step.
 """
 struct NodeState
     z_latent::Any
     z_mu::Any
     error::Any
     energy::Any
-    pre_activation::Any
     latent_grad::Any
 end
 

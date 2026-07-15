@@ -38,22 +38,27 @@ commit 316367c6 and 5514c91 (the only deltas there are Python default-object plu
 `weight_init: Optional[...] = None` -> `weight_init: "InitializerBase"`), so these fixtures
 are commit-stable across that range.
 
-🔴 THIS SCRIPT DOES NOT RUN AGAINST UPSTREAM HEAD ANY MORE. READ BEFORE RE-RUNNING.
-    fixtures in test/conformance/fixtures/tier_conv.npz were generated at upstream 5514c91.
-    upstream has since moved to b6f64ad, "Remove `pre_activation` from `NodeState`;
-    `forward()` returns `NodeState` only (#25)" — TWO contract changes this file depends on:
-      1. `NodeState.pre_activation` NO LONGER EXISTS. `_dump` records `fwd.pre_activation`
-         (=> AttributeError), and the Julia side stores the field this asserts against.
-      2. `forward()` returns a bare NodeState, not `(total_energy, NodeState)`. Every
-         `_, fwd = node_class.forward(...)` here unpacks a tuple that is gone — and because
-         NodeState is a NamedTuple, that unpack will not raise, it will SILENTLY bind `_` and
-         `fwd` to the first two FIELDS. Fail-open: it would produce garbage fixtures, not an
-         error. (`state.energy` is NOT affected — it was always per-sample; only the summing
-         moved out of forward() into the autodiff callsites' `energy_fn`.)
-    So: re-running this against HEAD without adapting it is a silent-corruption hazard, which
-    is exactly why the SHA is pinned here rather than left as "the local checkout".
-    Tracked as AUDIT_REGISTER C-15 (contract) + A-01 (SHA drift). Do not regenerate casually —
-    the adaptation is a deliberate oracle-first task, not a re-run.
+ADAPTED TO UPSTREAM b6f64ad (C-15, closed). This script previously carried a red warning that it
+could NOT be re-run against upstream HEAD. It can now. What changed, and why the warning existed:
+
+  1. `NodeState.pre_activation` no longer exists (upstream b6f64ad, "Remove `pre_activation` from
+     `NodeState`; `forward()` returns `NodeState` only (#25)"). `_dump` used to record
+     `fwd.pre_activation` => AttributeError. That field is no longer dumped, and the Julia side
+     no longer stores it either — it is produced and consumed inside one forward.
+  2. `forward()` returns a bare NodeState, not `(total_energy, NodeState)`. The old
+     `_, fwd = node_class.forward(...)` was the DANGEROUS one: NodeState is a NamedTuple, so that
+     unpack does not raise — it silently binds `_`/`fwd` to the first two FIELDS (z_latent, z_mu)
+     and writes garbage fixtures. Fail-open, which is why the SHA was pinned rather than left as
+     "the local checkout". Callers that need the scalar now take `jnp.sum(state.energy)`
+     themselves, exactly as upstream's own tests do.
+
+`state.energy` was never affected: it is per-sample `(batch,)` on both stacks and always was
+(`fabricpc/core/energy.py` sums `axis=tuple(range(1, ndim))` and was not touched by b6f64ad).
+Only the batch->scalar summing moved out of `forward()` into the autodiff call sites' `energy_fn`.
+
+Because that change is pure plumbing, regenerating produces numerically IDENTICAL arrays to the
+5514c91 fixtures apart from the dropped `*_pre_activation` keys — which is the check that proves
+the adaptation is faithful rather than merely runnable. See AUDIT_REGISTER C-15 / A-01.
 """
 
 import numpy as np
@@ -88,7 +93,6 @@ def _state(z_latent, shape):
         z_mu=jnp.zeros((B, *shape)),
         error=jnp.zeros((B, *shape)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, *shape)),
         latent_grad=jnp.zeros((B, *shape)),
     )
 
@@ -118,9 +122,8 @@ def _conv_info(node, shape, in_edges, act, en):
 
 def _dump(prefix, node_class, params, inputs, state, info, edges):
     """forward + BOTH autodiff grad paths for one configuration."""
-    _, fwd = node_class.forward(params, inputs, state, info)
-    put(prefix + "_fwd", z_mu=fwd.z_mu, pre_activation=fwd.pre_activation,
-        error=fwd.error, energy=fwd.energy)
+    fwd = node_class.forward(params, inputs, state, info)
+    put(prefix + "_fwd", z_mu=fwd.z_mu, error=fwd.error, energy=fwd.energy)
     # ---- BACKWARD (the point of this file) ----
     _, gp = node_class.forward_and_weight_grads(params, inputs, state, info)
     gw = {f"gW_{i}": gp.weights[e] for i, e in enumerate(edges) if e in gp.weights}

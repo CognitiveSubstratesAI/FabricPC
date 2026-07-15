@@ -16,7 +16,7 @@ import FabricPC: GraphState, NodeState, _sample_next
     pred = Float32[0.7 0.2 0.1]
     tgt = Float32[1 0 0]
     st = GraphState(
-        Dict("y" => NodeState(nothing, pred, nothing, nothing, nothing, nothing)), 1
+        Dict("y" => NodeState(nothing, pred, nothing, nothing, nothing)), 1
     )
     @test compute_loss(st, tgt, "y") ≈ -log(0.7f0) atol = 1.0f-5
     @test compute_loss(st, tgt, "y"; loss_type=:mse) ≈ (0.3f0^2 + 0.2f0^2 + 0.1f0^2) / 3 atol =
@@ -26,7 +26,7 @@ import FabricPC: GraphState, NodeState, _sample_next
     st2 = GraphState(
         Dict(
             "y" => NodeState(nothing, Float32[0.7 0.2 0.1; 0.7 0.2 0.1],
-                nothing, nothing, nothing, nothing)
+                nothing, nothing, nothing)
         ), 2)
     @test compute_loss(st2, Float32[1 0 0; 1 0 0], "y") ≈ -log(0.7f0) atol = 1.0f-5
 

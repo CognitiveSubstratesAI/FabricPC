@@ -99,7 +99,6 @@ def generate_linear_family_fixtures(put, split):
         z_mu=jnp.zeros((B, OUT)),
         error=jnp.zeros((B, OUT)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, OUT)),
         latent_grad=jnp.zeros((B, OUT)),
     )
     # NodeInfo fields actually READ by Linear/LinearExplicitGrad's forward/grad methods
@@ -125,7 +124,7 @@ def generate_linear_family_fixtures(put, split):
         scaling_config=None,
     )
 
-    _, fwd_state = LinearExplicitGrad.forward(params, inputs, state, info)
+    fwd_state = LinearExplicitGrad.forward(params, inputs, state, info)
     put(
         "linear_fwd",
         x=x,
@@ -133,7 +132,6 @@ def generate_linear_family_fixtures(put, split):
         b=b,
         z_latent=zlat,
         z_mu=fwd_state.z_mu,
-        pre_activation=fwd_state.pre_activation,
         error=fwd_state.error,
         energy=fwd_state.energy,
     )
@@ -169,7 +167,6 @@ def generate_linear_family_fixtures(put, split):
         z_mu=jnp.zeros((B, OUT)),
         error=jnp.zeros((B, OUT)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, OUT)),
         latent_grad=jnp.zeros((B, OUT)),
     )
     info_r = NodeInfo(
@@ -190,7 +187,7 @@ def generate_linear_family_fixtures(put, split):
         scaling_config=None,
     )
 
-    _, fwd_state_r = LinearResidual.forward(params_r, inputs_r, state_r, info_r)
+    fwd_state_r = LinearResidual.forward(params_r, inputs_r, state_r, info_r)
     put(
         "linresid_fwd",
         x=xr,
@@ -199,7 +196,6 @@ def generate_linear_family_fixtures(put, split):
         skip=xskip,
         z_latent=zlat_r,
         z_mu=fwd_state_r.z_mu,
-        pre_activation=fwd_state_r.pre_activation,
         error=fwd_state_r.error,
         energy=fwd_state_r.energy,
     )
@@ -261,7 +257,6 @@ def generate_identity_skip_fixtures(put, split):
         z_mu=jnp.zeros((B, D)),
         error=jnp.zeros((B, D)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, D)),
         latent_grad=jnp.zeros((B, D)),
     )
     slots = {
@@ -302,13 +297,13 @@ def generate_identity_skip_fixtures(put, split):
         z_latent=z_latent,
         scale=jnp.reshape(jnp.asarray(scale, dtype=jnp.float32), (1,)),
     )
-    total_energy, new_state = IdentityNode.forward(params, inputs, state, node_info)
+    new_state = IdentityNode.forward(params, inputs, state, node_info)
+    total_energy = jnp.sum(new_state.energy)
     put(
         "identity_skip_identity_fwd",
         energy=jnp.reshape(total_energy, (1,)),
         z_mu=new_state.z_mu,
         error=new_state.error,
-        pre_activation=new_state.pre_activation,
     )
 
     ns_g, input_grads, self_grad = IdentityNode.forward_and_latent_grads(
@@ -348,7 +343,6 @@ def generate_identity_skip_fixtures(put, split):
         z_mu=jnp.zeros((Bs, Ds)),
         error=jnp.zeros((Bs, Ds)),
         energy=jnp.zeros((Bs,)),
-        pre_activation=jnp.zeros((Bs, Ds)),
         latent_grad=jnp.zeros((Bs, Ds)),
     )
     slots_s = {
@@ -380,15 +374,15 @@ def generate_identity_skip_fixtures(put, split):
     )
 
     put("identity_skip_skip_fwd", x1=y1, x2=y2, z_latent=z_latent_s)
-    total_energy_s, new_state_s = SkipConnection.forward(
+    new_state_s = SkipConnection.forward(
         params_s, inputs_s, state_s, node_info_s
     )
+    total_energy_s = jnp.sum(new_state_s.energy)
     put(
         "identity_skip_skip_fwd",
         energy=jnp.reshape(total_energy_s, (1,)),
         z_mu=new_state_s.z_mu,
         error=new_state_s.error,
-        pre_activation=new_state_s.pre_activation,
     )
 
     ns_g_s, input_grads_s, self_grad_s = SkipConnection.forward_and_latent_grads(
@@ -519,7 +513,6 @@ def generate_transformer_block_fixtures(put, split):
         z_mu=jnp.zeros((B, S, E)),
         error=jnp.zeros((B, S, E)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, S, E)),
         latent_grad=jnp.zeros((B, S, E)),
     )
     inputs = {edge_key: x}
@@ -571,16 +564,16 @@ def generate_transformer_block_fixtures(put, split):
     causal_mask = jnp.tril(jnp.ones((S, S)))[None, None, :, :]  # (1,1,S,S)
 
     info_fwd = make_node_info(None)
-    _, st_causal_base = TransformerBlock.forward(
+    st_causal_base = TransformerBlock.forward(
         params, {edge_key: x_base, mask_key: causal_mask}, state, info_fwd
     )
-    _, st_causal_pert = TransformerBlock.forward(
+    st_causal_pert = TransformerBlock.forward(
         params, {edge_key: x_pert, mask_key: causal_mask}, state, info_fwd
     )
-    _, st_full_base = TransformerBlock.forward(
+    st_full_base = TransformerBlock.forward(
         params, {edge_key: x_base}, state, info_fwd
     )
-    _, st_full_pert = TransformerBlock.forward(
+    st_full_pert = TransformerBlock.forward(
         params, {edge_key: x_pert}, state, info_fwd
     )
 
@@ -633,7 +626,6 @@ def generate_decomposed_mha_mlp_fixtures(put, split):
             z_mu=jnp.zeros(shp),
             error=jnp.zeros(shp),
             energy=jnp.zeros((shp[0],)),
-            pre_activation=jnp.zeros(shp),
             latent_grad=jnp.zeros(shp),
         )
 
@@ -685,7 +677,7 @@ def generate_decomposed_mha_mlp_fixtures(put, split):
         scaling_config=None,
     )
 
-    _, mha_fwd_state = MhaResidualNode.forward(mha_params, mha_inputs, mha_state, mha_info)
+    mha_fwd_state = MhaResidualNode.forward(mha_params, mha_inputs, mha_state, mha_info)
     put(
         "dmm_mha_fwd",
         ln_gamma=ln_gamma, ln_beta=ln_beta, W_q=W_q, W_k=W_k, W_v=W_v, W_o=W_o,
@@ -751,7 +743,7 @@ def generate_decomposed_mha_mlp_fixtures(put, split):
         scaling_config=None,
     )
 
-    _, lnmlp1_fwd_state = LnMlp1Node.forward(
+    lnmlp1_fwd_state = LnMlp1Node.forward(
         lnmlp1_params, lnmlp1_inputs, lnmlp1_state, lnmlp1_info
     )
     put(
@@ -810,7 +802,7 @@ def generate_decomposed_mha_mlp_fixtures(put, split):
         scaling_config=None,
     )
 
-    _, mlp2_fwd_state = Mlp2ResidualNode.forward(
+    mlp2_fwd_state = Mlp2ResidualNode.forward(
         mlp2_params, mlp2_inputs, mlp2_state, mlp2_info
     )
     put(
@@ -891,7 +883,6 @@ def generate_embedding_vocab_fixtures(put, split):
         z_mu=jnp.zeros((B, S, E), dtype=jnp.float32),
         error=jnp.zeros((B, S, E), dtype=jnp.float32),
         energy=jnp.zeros((B,), dtype=jnp.float32),
-        pre_activation=jnp.zeros((B, S, E), dtype=jnp.float32),
         latent_grad=jnp.zeros((B, S, E), dtype=jnp.float32),
     )
     emb_energy_obj = GaussianEnergy()
@@ -914,7 +905,8 @@ def generate_embedding_vocab_fixtures(put, split):
     )
     inputs_emb = {"tok->emb:in": idx0}
 
-    total_e, new_state = EmbeddingNode.forward(emb_params, inputs_emb, emb_state, emb_info)
+    new_state = EmbeddingNode.forward(emb_params, inputs_emb, emb_state, emb_info)
+    total_e = jnp.sum(new_state.energy)
     put(
         "embedding_vocab_embed_fwd",
         idx=idx0,
@@ -961,7 +953,6 @@ def generate_embedding_vocab_fixtures(put, split):
         z_mu=jnp.zeros((B, S, Vout), dtype=jnp.float32),
         error=jnp.zeros((B, S, Vout), dtype=jnp.float32),
         energy=jnp.zeros((B,), dtype=jnp.float32),
-        pre_activation=jnp.zeros((B, S, Vout), dtype=jnp.float32),
         latent_grad=jnp.zeros((B, S, Vout), dtype=jnp.float32),
     )
     vocab_energy_obj = CrossEntropyEnergy()
@@ -985,9 +976,10 @@ def generate_embedding_vocab_fixtures(put, split):
     )
     inputs_vocab = {"h->vocab:in": x_vocab}
 
-    total_ev, new_state_v = VocabProjectionNode.forward(
+    new_state_v = VocabProjectionNode.forward(
         vocab_params, inputs_vocab, vocab_state, vocab_info
     )
+    total_ev = jnp.sum(new_state_v.energy)
     put(
         "embedding_vocab_vocab_fwd",
         x=x_vocab,
@@ -1083,7 +1075,6 @@ def generate_storkey_fixtures(put, split):
         z_mu=jnp.zeros((B, D)),
         error=jnp.zeros((B, D)),
         energy=jnp.zeros((B,)),
-        pre_activation=jnp.zeros((B, D)),
         latent_grad=jnp.zeros((B, D)),
     )
     node_info = NodeInfo(
@@ -1105,7 +1096,8 @@ def generate_storkey_fixtures(put, split):
     )
 
     # --- forward ---
-    total_energy, new_state = StorkeyHopfield.forward(params, {edge_key: probe}, state, node_info)
+    new_state = StorkeyHopfield.forward(params, {edge_key: probe}, state, node_info)
+    total_energy = jnp.sum(new_state.energy)
     put(
         "storkey_fwd",
         w=W, b=b, s_raw=jnp.reshape(s_raw_scalar, (1, 1)), probe=probe, zlat=zlat,

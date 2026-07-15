@@ -4,7 +4,7 @@
 # by dispatch on the node type:
 #   get_slots(node)                                  -> Dict{String,SlotSpec}
 #   initialize_params(node, rng, shape, in_shapes, weight_init) -> NodeParams
-#   forward(node, params, inputs, state)             -> (total_energy, NodeState)
+#   forward(node, params, inputs, state)             -> NodeState
 #   forward_and_latent_grads(node, params, inputs, state, info, is_clamped)
 #                                                    -> (NodeState, input_grads, self_grad)
 #   forward_and_weight_grads(node, params, inputs, state) -> (NodeState, NodeParams)
@@ -45,27 +45,32 @@ mu_grad(node::AbstractNode, state::NodeState) =
     grad_mu(node.energy, state.z_latent, state.z_mu)
 
 """
-    pre_grad(node, state) -> array
+    pre_grad(node, state, pre) -> array
 
 `∂E/∂pre = (∂E/∂z_mu) · f'(pre)` — the energy gradient w.r.t. the pre-activation,
 for nodes whose `z_mu = activation(pre)`. The linear-path input/weight gradients
 are built from this (`input_grad = pre_grad·Wᵀ`, `dW = xᵀ·pre_grad`,
 `db = Σ pre_grad`). Replaces the Gaussian-only `error·f'` from Phase B (identical
 at precision 1, but correct for any energy/precision).
+
+`pre` is passed EXPLICITLY rather than read back from `state.pre_activation`, which no longer
+exists: it is produced and consumed inside one forward, via `_forward_with_preact`. Mirrors
+upstream `b6f64ad`, where `compute_gain_mod_error(state, node_info)` became
+`compute_gain_mod_error(pre_activation, error, node_info)` for exactly this reason.
 """
-pre_grad(node::AbstractNode, state::NodeState) =
-    _pre_grad(node.activation, node.energy, node, state)
+pre_grad(node::AbstractNode, state::NodeState, pre) =
+    _pre_grad(node.activation, node.energy, node, state, pre)
 
 # Generic element-wise case: dE/dpre = (∂E/∂z_mu) · f'(pre).
-_pre_grad(act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::NodeState) =
-    mu_grad(node, state) .* derivative(act, state.pre_activation)
+_pre_grad(act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::NodeState, pre) =
+    mu_grad(node, state) .* derivative(act, pre)
 
 # Exact Softmax + CrossEntropy coupling: the off-diagonal softmax Jacobian and
 # the CE gradient combine to the clean closed form dE/dpre = s - y (= z_mu -
 # z_latent). This is exact (no autodiff, no diagonal approximation) and is what
 # makes a softmax+CE classifier train properly on hard multi-class tasks — the
 # diagonal `s·(1-s)` approximation used elsewhere is too crude there.
-_pre_grad(::SoftmaxActivation, ::CrossEntropyEnergy, node::AbstractNode, state::NodeState) =
+_pre_grad(::SoftmaxActivation, ::CrossEntropyEnergy, node::AbstractNode, state::NodeState, _pre) =
     state.z_mu .- state.z_latent
 
 """

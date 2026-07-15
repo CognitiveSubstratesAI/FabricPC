@@ -24,7 +24,7 @@ const TIER_C_NODES = ("x", "h", "y")
 """
     check_tier_c_state(prefix, state)
 
-Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/pre_activation/
+Assert every dumped `GraphState` field (z_latent/z_mu/error/energy/
 latent_grad, per node) for fixture prefix `prefix` (e.g. "init"/"step1"/"converged"/
 "grad_final"/"trained_final") against the live Julia `state`.
 """
@@ -35,8 +35,14 @@ function check_tier_c_state(prefix::AbstractString, state::GraphState)
         @test allclose_c(ns.z_mu, FIX_C["$(prefix)_$(name)_z_mu"])
         @test allclose_c(ns.error, FIX_C["$(prefix)_$(name)_error"])
         @test allclose_c(ns.energy, FIX_C["$(prefix)_$(name)_energy"])
-        @test allclose_c(ns.pre_activation, FIX_C["$(prefix)_$(name)_pre_activation"])
         @test allclose_c(ns.latent_grad, FIX_C["$(prefix)_$(name)_latent_grad"])
+        # SHAPE, not just values: energy is per-sample `(batch,)` on BOTH stacks, and upstream
+        # b6f64ad moved only WHERE the batch->scalar sum happens (out of forward(), into the AD
+        # call sites) — it never made state.energy a scalar. An `allclose` alone would let a
+        # scalar-collapsed energy broadcast against the fixture and could pass whenever the
+        # per-sample values happen to coincide; this fails on the shape first, which is the half
+        # "matches upstream" hides. Same guard, same reason, in the D tiers.
+        @test size(ns.energy) == size(FIX_C["$(prefix)_$(name)_energy"]) == (state.batch_size,)
     end
 end
 

@@ -81,7 +81,7 @@ const TD = FabricPC
         # (incl. the skip "residual"), pushing them to each source.
         zlat = randn(rng, Float32, B, S, E)
         st = NodeState(zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E))
+            zeros(Float32, B), zeros(Float32, B, S, E))
         info = NodeInfo("mlp2", (E,), "Mlp2ResidualNode", Dict{String, SlotInfo}(),
             2, 1, collect(keys(inputs)), String[], nothing)
         _, igrads, sg = TD.forward_and_latent_grads(node, params, inputs, st, info, false)
@@ -105,8 +105,8 @@ const TD = FabricPC
         inputs = Dict{String, Any}("tok->emb:in" => idx)
         zlat = randn(rng, Float32, B, S, E)
         st = NodeState(zlat, zeros(Float32, B, S, E), zeros(Float32, B, S, E),
-            zeros(Float32, B), zeros(Float32, B, S, E), zeros(Float32, B, S, E))
-        _, ns = TD.forward(en, ep, inputs, st)
+            zeros(Float32, B), zeros(Float32, B, S, E))
+        ns = TD.forward(en, ep, inputs, st)
         emb = ep.weights["embeddings"]
         @test all(ns.z_mu[b, s, :] ≈ emb[Int(idx[b, s]), :] for b in 1:B, s in 1:S)
         # weight grad = scatter-add of ∂E/∂z_mu into rows by token id (vs manual)

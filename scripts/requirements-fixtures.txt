@@ -12,17 +12,21 @@
 # test/conformance/fixtures/*.npz and cited in the register/decisions log.
 #
 # Upstream pin: the editable install line below records the exact commit
-# (trueagi-io/FabricPC@316367c6aa4895b0bf0f789ad1c2f58ce70f4242) fixtures were generated
+# (trueagi-io/FabricPC@b6f64adf9314863ce665085a92d544807d585819) fixtures were generated
 # against -- the authoritative marker, since upstream's own pyproject.toml version string
-# ("0.3.1") was last bumped 2026-05-04 and is six merged PRs stale relative to this SHA
-# (see docs/AUDIT_REGISTER.md A-01).
+# ("0.3.1") was last bumped 2026-05-04 and is several merged PRs stale relative to this SHA
+# (see docs/AUDIT_REGISTER.md A-01). Updated 2026-07-15: was 316367c6, now b6f64ad -- every
+# tier_*.npz in test/conformance/fixtures/ was regenerated against b6f64ad and verified
+# BIT-IDENTICAL to the previous arrays apart from the dropped *_pre_activation keys (C-15).
+# NOTE this is an EDITABLE install of the LOCAL checkout (~/JuliaAGI/dev-zone/FabricPC): a
+# `git pull` there silently re-points the oracle. The SHA here is the record, not a lock.
 absl-py==2.5.0
 aiofiles==25.1.0
 alembic==1.18.5
 chex==0.1.92
 colorlog==6.10.1
 etils==1.14.0
--e git+https://github.com/trueagi-io/FabricPC.git@316367c6aa4895b0bf0f789ad1c2f58ce70f4242#egg=fabricpc
+-e git+https://github.com/trueagi-io/FabricPC.git@b6f64adf9314863ce665085a92d544807d585819#egg=fabricpc
 flax==0.12.7
 fsspec==2026.6.0
 greenlet==3.5.3
