@@ -441,7 +441,7 @@ fails) — Reactant's `@trace for`/`@trace while` machinery sweeps EVERY free va
 inside the loop body into a `Base.RefValue`-wrapped, tentatively-traced state — including
 `CompiledPlan` (static topology metadata: node order, edge sources, which slots are
 multi-input), which should be loop-INVARIANT and never needs tracing at all, closure or no
-closure. No `Const`-style escape hatch was found in Reactant's source for excluding a value
+closure. ~~No `Const`-style escape hatch was found in Reactant's source for excluding a value~~ **[CORRECTED 2026-07-15, J-09 — THIS CLAIM WAS FALSE and stood for weeks. The hatch EXISTS and is how Reactant itself does it: `src/Tracing.jl:30-54` registers a do-not-trace list via identity `traced_type_inner`, and `Tracing.jl:1087` is the value-half `make_tracer(...) = prev`; packages define both for their own types (Reactant issue #1595 — Oceananigans does exactly this for its grids). Applying both halves to our static-config families COMPILED the `@trace for` loop, numerics 1.49e-8 vs eager. Nobody had re-checked this against upstream's issue tracker — that is the lesson, not the macro.]** 
 from this automatic sweep (checked: no general-purpose `Reactant.Const`, no
 `@nonreactant`/opaque-type declaration mechanism turned up in `Tracing.jl`). This is a real,
 deeper version of exactly what §25 already flagged ("the real implementation work is
@@ -538,7 +538,7 @@ upstream regardless of what this repo does with it.
 closed-over, loop-invariant `CompiledPlan` topology metadata — into traced loop-carried state,
 and `CompiledPlan`'s nested `SlotInfo` struct fails a traced-type round-trip (`Bool` vs
 `Reactant.TracedRNumber{Bool}` inconsistency) regardless of whether `plan` is passed as an
-argument or genuinely closed over. No `Const`-style escape hatch found in Reactant's source for
+argument or genuinely closed over. ~~No `Const`-style escape hatch found in Reactant's source for~~ **[CORRECTED 2026-07-15, J-09 — THIS CLAIM WAS FALSE and stood for weeks. The hatch EXISTS and is how Reactant itself does it: `src/Tracing.jl:30-54` registers a do-not-trace list via identity `traced_type_inner`, and `Tracing.jl:1087` is the value-half `make_tracer(...) = prev`; packages define both for their own types (Reactant issue #1595 — Oceananigans does exactly this for its grids). Applying both halves to our static-config families COMPILED the `@trace for` loop, numerics 1.49e-8 vs eager. Nobody had re-checked this against upstream's issue tracker — that is the lesson, not the macro.]** 
 excluding a value from this automatic sweep. **Most promising next attempt, given the two
 optimizations above are algorithmic prerequisites anyway**: destructure `CompiledPlan` into
 plain `Int`/`Tuple`/`Vector{Int}` values (never `SlotInfo`/`NodeInfo` structs) BEFORE entering
