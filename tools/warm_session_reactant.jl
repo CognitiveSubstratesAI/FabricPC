@@ -17,45 +17,7 @@ using FabricPC, Random, Printf
 using FabricPC: run_inference, initialize_graph_state, compile_inference
 using Reactant   # triggers FabricPCReactantExt
 
-const DIR = abspath(joinpath(@__DIR__, "..", ".warm_reactant"))
-mkpath(DIR)
-const INF = joinpath(DIR, "in.jl")
-const OUTF = joinpath(DIR, "out.txt")
-const SEQF = joinpath(DIR, "seq")
-const DONE = joinpath(DIR, "done")
-function _serve()
-    rm(INF; force=true)
-    rm(DONE; force=true)
-    write(joinpath(DIR, "ready"), "1")
-    println("WARM REACTANT SESSION READY (FabricPC+Reactant loaded)")
-    seen = ""
-    while true
-        if isfile(SEQF) && isfile(INF)
-            n = strip(read(SEQF, String))
-            if n != seen && !isempty(n)
-                seen = n
-                code = read(INF, String)
-                try
-                    isdefined(Main, :Revise) && Base.invokelatest(Main.Revise.revise)
-                catch
-                end
-                open(OUTF, "w") do io
-                    redirect_stdout(io) do
-                        redirect_stderr(io) do
-                            try
-                                Base.include_string(Main, code)
-                            catch e
-                                showerror(io, e, catch_backtrace())
-                                println(io)
-                            end
-                        end
-                    end
-                end
-                write(DONE, n)
-            end
-        end
-        sleep(0.15)
-    end
-end
 
-_serve()
+# The serve loop (and its revise-or-fail-loud policy) is shared — see tools/warm_serve.jl.
+include(joinpath(@__DIR__, "warm_serve.jl"))
+warm_serve(".warm_reactant", "WARM REACTANT SESSION READY (FabricPC+Reactant loaded)")

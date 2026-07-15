@@ -41,3 +41,4 @@ secrets.*
 credentials.json
 .warm/
 .warm*/
+.warm_snippet.jl
