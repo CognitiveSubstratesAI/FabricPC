@@ -162,9 +162,9 @@ version = "1.0.7"
 
 [[deps.Enzyme]]
 deps = ["CEnum", "EnzymeCore", "Enzyme_jll", "GPUCompiler", "InteractiveUtils", "LLVM", "Libdl", "LinearAlgebra", "ObjectFile", "PrecompileTools", "Preferences", "Printf", "Random", "SparseArrays"]
-git-tree-sha1 = "706a1412d9823816ee62cca42e2193c21c3fcdde"
+git-tree-sha1 = "72533e00d4a3918c546d413fec0ce7eb8ef0a4a7"
 uuid = "7da242da-08ed-463a-9acd-ee780be4f1d9"
-version = "0.13.154"
+version = "0.13.185"
 
     [deps.Enzyme.extensions]
     EnzymeBFloat16sExt = "BFloat16s"
@@ -195,9 +195,9 @@ weakdeps = ["Adapt", "ChainRulesCore"]
 
 [[deps.Enzyme_jll]]
 deps = ["Artifacts", "JLLWrappers", "LazyArtifacts", "Libdl", "TOML"]
-git-tree-sha1 = "f593504cf82a80c38986e6f68b29223d02c01e97"
+git-tree-sha1 = "6ef5790b091d4d3a05164771dde619db07518883"
 uuid = "7cc45869-7501-5eee-bdea-0790c847d4ef"
-version = "0.0.265+0"
+version = "0.0.282+0"
 
 [[deps.ExprTools]]
 git-tree-sha1 = "27415f162e6028e81c72b82ef756bf321213b6ec"
@@ -510,10 +510,10 @@ uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 version = "1.11.0"
 
 [[deps.Reactant]]
-deps = ["Adapt", "BFloat16s", "CEnum", "Crayons", "Downloads", "EnumX", "Enzyme", "EnzymeCore", "FileWatching", "Functors", "GPUArraysCore", "GPUCompiler", "JSON", "LLVM", "LLVMOpenMP_jll", "Libdl", "LinearAlgebra", "OrderedCollections", "PrecompileTools", "Preferences", "PrettyTables", "ProtoBuf", "Random", "ReactantCore", "Reactant_jll", "ScopedValues", "Scratch", "Serialization", "Setfield", "Sockets", "StableRNGs", "StructUtils", "StyledStrings", "UUIDs", "p7zip_jll"]
-git-tree-sha1 = "9b8c3a7954730b67c450cef2400ea9c1cf6144ca"
+deps = ["Adapt", "BFloat16s", "CEnum", "Crayons", "Downloads", "EnumX", "Enzyme", "EnzymeCore", "FileWatching", "Functors", "GPUArraysCore", "GPUCompiler", "JSON", "LLVM", "LLVMOpenMP_jll", "Libdl", "LinearAlgebra", "OrderedCollections", "PrecompileTools", "Preferences", "PrettyTables", "ProtoBuf", "Random", "ReactantCore", "Reactant_jll", "SHA", "ScopedValues", "Scratch", "Serialization", "Setfield", "Sockets", "StableRNGs", "StructUtils", "StyledStrings", "UUIDs", "p7zip_jll"]
+git-tree-sha1 = "6c5d4c7641fc98c8f0ecc35e9fb858949ccbcb55"
 uuid = "3c362404-f566-11ee-1572-e11a4b42c853"
-version = "0.2.273"
+version = "0.2.274"
 
     [deps.Reactant.extensions]
     ReactantAbstractFFTsExt = "AbstractFFTs"
@@ -532,6 +532,7 @@ version = "0.2.273"
     ReactantNPZExt = "NPZ"
     ReactantOffsetArraysExt = "OffsetArrays"
     ReactantOneHotArraysExt = "OneHotArrays"
+    ReactantPDMatsExt = "PDMats"
     ReactantPythonCallExt = "PythonCall"
     ReactantRandom123Ext = "Random123"
     ReactantSparseArraysExt = "SparseArrays"
@@ -563,6 +564,7 @@ version = "0.2.273"
     NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
     OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
     OneHotArrays = "0b1bfda6-eb8a-41d2-88d8-f5af5cad476f"
+    PDMats = "90014a1f-27ba-587c-ab20-58faa44d9150"
     Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
     PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
     Random123 = "74087812-796a-5b5d-8853-05524746bad3"
@@ -585,9 +587,9 @@ version = "0.1.21"
 
 [[deps.Reactant_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "TOML"]
-git-tree-sha1 = "3e36010a340bdace904b29c8dfc10c95af66d26e"
+git-tree-sha1 = "96326b70e19563d3da9825158347862e960e4677"
 uuid = "0192cb87-2b54-54ad-80e0-3be72ad8a3c0"
-version = "0.0.394+0"
+version = "0.0.395+0"
 
 [[deps.Reexport]]
 git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"

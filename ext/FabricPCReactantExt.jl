@@ -10,7 +10,8 @@ module FabricPCReactantExt
 using FabricPC
 using FabricPC:
     CompiledPlan, to_flat_params, flatten_param_arrays, jit_inference_runner,
-    GraphParams, GraphStructure, GraphState
+    GraphParams, GraphStructure, GraphState, repack_params, state_from_latents,
+    flat_inference_step
 import FabricPC: compile_inference
 using Reactant
 
@@ -34,8 +35,39 @@ struct CompiledInference
     params_r::Any     # params' ConcreteRArrays, marshalled once (weights are inference-constant)
 end
 
+"""
+    compile_inference(structure, params, clamps; batch, loop=false)
+
+`loop=false` (default): the `infer_steps` are UNROLLED into the traced graph — long-standing
+behaviour, and what J-04's numbers were measured on.
+
+`loop=true`: emit a real `@trace for` loop (J-09). Both compile and agree with the eager path to
+1.49e-8 (float32 reassociation noise). They are different PROGRAMS, which is the point: §28 argues
+XLA's ~27x FLOP advantage over `jax.jit` comes from optimizing the fully-UNROLLED graph (hoisting a
+clamped-source-only forward out of every step; DCE-ing the gradient into a clamped node) — neither
+of which a loop body can structurally do. That was an argument from HLO; `loop=true` makes it a
+measurement. Measured bonus: it compiles ~2.8x faster (the body is emitted once, not `infer_steps`
+times), which matters more the more steps you run.
+
+`track_numbers=false` IS THE WHOLE TRICK, and it is Reactant's own documented `@trace` option
+(`ReactantCore`'s docstring: "whether Julia numbers should be automatically promoted to traced
+numbers upon entering the loop"). Default `true` promotes every Julia number the loop body touches,
+which is what made `SlotInfo.is_multi_input::Bool` and `Linear.use_bias::Bool` derive as
+`TracedRNumber{Bool}` — unholdable by a non-parametric struct (`NoFieldMatchError`) — and made
+`if !clamped[i]` fail with "non-boolean (TracedRNumber{Bool}) used in boolean context" (upstream
+#2441). It also keeps Reactant from walking into `shape::Tuple`, dodging the upstream `Vararg`
+`UndefRefError` we reported. With it, NO destructure, NO custom `traced_type_inner`/`make_tracer`,
+and NO `Val`-wrapped mask are needed: the plain `CompiledPlan`/`SlotInfo`/`Vector{Bool}` trace fine.
+
+⚠️ It is correct HERE because every loop-carried value in this loop is an ARRAY (`NodeState`
+fields); `eta`/`decay`/topology are compile-time constants. If a future dynamic SCALAR ever joins
+the loop-carried state (a convergence error, a step counter — cf. the frozen-`t` AdamW hazard in
+decisions.md §25), `track_numbers=false` would silently freeze it at its trace-time value rather
+than erroring. Re-check this flag if the loop's carried state stops being arrays-only.
+"""
 function compile_inference(
-    structure::GraphStructure, params::GraphParams, clamps::AbstractDict; batch::Int
+    structure::GraphStructure, params::GraphParams, clamps::AbstractDict; batch::Int,
+    loop::Bool=false
 )
     plan = CompiledPlan(structure)
     arr_tuple, layout = flatten_param_arrays(to_flat_params(plan, params))
@@ -43,9 +75,19 @@ function compile_inference(
     # Sample z_latents (zeros of each node's (batch, features) shape) to trace shapes.
     zl = ntuple(i -> zeros(Float32, batch, plan.infos[i].shape...), length(plan.names))
 
-    runner(at, z) = jit_inference_runner(at, z, plan, layout, clamped)
     params_r = Reactant.to_rarray(arr_tuple)                       # marshalled ONCE
-    thunk = Reactant.@compile runner(params_r, Reactant.to_rarray(zl))
+    steps = plan.inference.infer_steps
+    function looped(at, z)
+        fp = repack_params(at, layout)
+        fs = state_from_latents(z)
+        Reactant.@trace track_numbers=false for _ in 1:steps
+            fs = flat_inference_step(plan, fp, fs, clamped)
+        end
+        return ntuple(i -> fs[i].z_latent, length(fs))
+    end
+    runner(at, z) = jit_inference_runner(at, z, plan, layout, clamped)
+    thunk = loop ? Reactant.@compile(looped(params_r, Reactant.to_rarray(zl))) :
+                   Reactant.@compile(runner(params_r, Reactant.to_rarray(zl)))
     return CompiledInference(plan, layout, clamped, thunk, batch, params_r)
 end
 
