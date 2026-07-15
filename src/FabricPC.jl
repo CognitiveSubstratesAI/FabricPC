@@ -48,6 +48,12 @@ include("nodes/identity.jl")
 include("nodes/skip_connection.jl")
 include("nodes/linear_residual.jl")
 include("nodes/autodiff.jl")
+# C-01: windowed.jl (pad types + JAX-exact arithmetic + im2col/pool kernels) MUST precede the
+# nodes that use it. Both node files depend on the autodiff seam above (they implement only
+# compute_mu), so this block sits after it.
+include("nodes/windowed.jl")
+include("nodes/convolutional.jl")
+include("nodes/pooling.jl")
 include("nodes/transformer.jl")
 include("nodes/transformer_decomposed.jl")
 include("nodes/storkey_hopfield.jl")
@@ -112,6 +118,8 @@ export AbstractInitializer,
 export SlotSpec, SlotRef, Edge, slot
 # Nodes
 export AbstractNode, Linear, IdentityNode, SkipConnection, LinearResidual, get_slots
+# C-01: convolutional + pooling node family (1D/2D/3D, channels-last)
+export ConvNode, PoolNode, MaxPool, AvgPool
 # Phase-D autodiff seam (generic local-PC gradients; activate with `using Enzyme`)
 export compute_mu, energy_kernel
 # AD backend selection (F-04, docs/AUDIT_REGISTER.md section 1): ADBackend/NoBackend/

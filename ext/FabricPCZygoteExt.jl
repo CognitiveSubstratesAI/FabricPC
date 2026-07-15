@@ -11,7 +11,8 @@ module FabricPCZygoteExt
 
 using FabricPC
 using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel, ZygoteBackend,
-    _tb_causal_mask, _tb_rope_tables, _tb_varcomp, _soa_key, _soa_keys
+    _tb_causal_mask, _tb_rope_tables, _tb_varcomp, _soa_key, _soa_keys,
+    _window_plan, _im2col_plan, _pool_plan, _pool_counts, _edge_keys   # C-01 (see @nograd below)
 import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
 using Zygote
 
@@ -42,6 +43,18 @@ Zygote.@nograd _soa_keys
 Zygote.@nograd _tb_causal_mask
 Zygote.@nograd _tb_rope_tables
 Zygote.@nograd _tb_varcomp
+
+# C-01 windowed nodes. These build INT index plans / counts from shapes alone — no differentiable
+# value — but they do it with `setindex!`, which Zygote's tracer rejects on sight ("Mutating
+# arrays is not supported") even though the result is constant w.r.t. the differentiated inputs.
+# Measured: without these, ConvNode's backward dies inside `_window_plan`. `_edge_keys` is here
+# too (`collect(keys(...))` mutates via `grow_to!`). Enzyme needs none of this — it differentiates
+# mutation natively and the Int-only plan is inactive.
+Zygote.@nograd _window_plan
+Zygote.@nograd _im2col_plan
+Zygote.@nograd _pool_plan
+Zygote.@nograd _pool_counts
+Zygote.@nograd _edge_keys
 
 # Zygote returns `nothing` (whole or per-field) for inputs that don't affect the output; coerce to
 # zeros matching the reference NamedTuple so repack/optimizer code is uniform.
