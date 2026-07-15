@@ -43,6 +43,7 @@ using Zygote
     include("conformance/test_tier_a.jl")        # Tier A: primitives vs upstream JAX fixtures
     include("conformance/test_tier_b.jl")        # Tier B: node-local vs upstream JAX fixtures
     include("conformance/test_tier_c.jl")        # Tier C: loop-level vs upstream JAX fixtures
+    include("test_conv_graph.jl")              # C-01 layer 3: the WIRED graph path (decisions.md §32)
     include("conformance/test_tier_conv.jl")   # C-01: ConvNode/MaxPool/AvgPool vs upstream JAX
     include("conformance/test_tier_d_mnist.jl")   # Tier D: end-to-end (MNIST-MLP) vs upstream JAX fixtures
     # Tier D transformer-LM track (docs/AUDIT_REGISTER.md section 6): VERIFIED CLOSED at

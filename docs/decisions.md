@@ -1949,3 +1949,27 @@ Applies to this file too. A methodology record that grades itself more loosely t
 code is a testimonial — and testimonials are exactly what an outside reviewer discounts. When a
 receipt in `AUDIT_REGISTER.md` A-03 says a thing was verified, it must name the loop: which two
 sides were compared, by what, at what tolerance.
+
+---
+
+## 32. The three-layer gate: each layer is STRUCTURALLY blind to the class the others catch (2026-07-15)
+
+C-01 ended up gated by three test layers. That is not redundancy or belt-and-braces — each layer
+is blind to a failure class **by construction**, and the blindness is the *price of the isolation*
+that lets the layer attribute a failure at all. Recording the reason, because "we have three kinds
+of test" is a testimonial while "each catches what the others structurally cannot" is a design.
+
+| Layer | What it gates | Structurally BLIND to | Caught in practice |
+|---|---|---|---|
+| **1. Standalone kernel probe** (`windowed.jl` included bare — no seam, no graph, Zygote straight onto `_conv_im2col`/`_pool_max`/`_pool_avg`) | NUMERICS vs the upstream oracle: fold order, kernel flip, SAME-pad asymmetry, tie routing, the `count_include_pad` divisor | INTEGRATION — it bypasses the seam *deliberately*, to isolate the arithmetic | Everything numeric: conv at the ~1e-7 reassociation floor; pool bit-identical; tie routing by cell position |
+| **2. Conformance tier** (`test_tier_conv.jl` — isolated nodes through the seam: hand-built NodeParams/NodeState/NodeInfo, **never calls `graph()`**) | The NODE API + seam dispatch: `compute_mu`/`compute_pre_and_mu`, both grad paths, per-node semantics vs upstream | GRAPH WIRING — no `graph()`, no `initialize_params`, no optimizer | **`_pool_sum`'s `foldl`**: Zygote's pullback BoundsErrors on an EMPTY collection = the single-in-edge case = every pooling node. All kernels green (layer 1 never routes through `_pool_sum`); all four pool testsets errored |
+| **3. Wired-graph E2E** (a real 5-node CNN: `graph()` → `initialize_params` → rank-4 state → `run_inference` → SGD/AdamW/`train_step`) | The WIRED path: slot wiring, the real init call, rank-4 through the optimizers, does it actually learn | CORRECTNESS vs upstream — it has no oracle; it checks finite/shapes/learns, not fidelity | **B2** (11 optimizer sites widened to `Array{Float32}` on an *argument*; no conv graph had ever taken a step until this ran) and **C-08** (algebra → the measurement: real `initialize_params` gives kernel std 0.3332 vs Kaiming √(2/18)=0.3333; fan_in=3 would give 0.8165, a 2.45× error) |
+
+**The pattern:** every layer's coverage claim is a §30-corollary-2 verb with a hidden half.
+"Kernels gated" hides *through which path*. "Tier green" hides *whether it was ever wired*.
+"E2E learns" hides *whether the numbers match upstream*. No single layer's green is evidence for
+another's question — which is exactly why removing any one of them silently removes a failure
+class, and why "the suite is green" is never a sufficient answer to "is it right?".
+
+**Corollary for reviewers:** when a layer is added, state what it is blind to. A layer whose
+blindness is unstated will eventually be cited as covering something it cannot see.
