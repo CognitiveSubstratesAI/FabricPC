@@ -197,6 +197,43 @@ _info(name, shape, edges) = NodeInfo(
         @test maximum(abs.(mus[true] .- mus[false])) > 1.0f-3    # the divisor IS exercised
     end
 
+    @testset "pool/conv: PARAM-FREE weight-grads (the shape C-14's probe could not fail on)" begin
+        # The audit's find: the pool testsets called only forward / forward_and_latent_grads, so
+        # the param-free weight-grad lane had NO test in either backend — and C-14 was closed on
+        # a probe using ConvNode WITH bias, the one shape that cannot produce an empty NamedTuple.
+        # An empty NamedTuple is a GHOST type: Enzyme rejects Duplicated on it outright, so every
+        # PoolNode and every ConvNode(use_bias=false) crashed the Enzyme weight-grad lane, and
+        # core/learning.jl calls this for every in_degree>0 node ⇒ no graph with a pool could
+        # train on Enzyme. Zygote is the backend this suite runs (F-04 forbids co-loading), so
+        # these assert the CONTRACT holds here; the Enzyme lane is covered by
+        # test/dual_ad_backend_env (see the register's C-14).
+        e = "s->p:in"
+        x = FIX_C["pool_in_x"]
+        z = FIX_C["pool_in_z_latent"]
+        st = _st(z, (2, 2, 2))
+        empty_p() = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
+        for (tag, node) in (
+            ("maxpool", MaxPool((2, 2, 2), "p", (2, 2); stride=(2, 2), padding="VALID")),
+            ("avgpool", AvgPool((2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="VALID")),
+        )
+            _, gp = forward_and_weight_grads(node, empty_p(), Dict{String,Any}(e => x), st)
+            @test isempty(gp.weights.nt)      # param-free ⇒ empty gradient, not an error
+            @test isempty(gp.biases.nt)
+        end
+        # ConvNode(use_bias=false): weights present, biases EMPTY — the other ghost shape.
+        ec = "s->c:in"
+        W = FIX_C["overlap_in_W"]
+        xc, zc = FIX_C["overlap_in_x"], FIX_C["overlap_in_z_latent"]
+        nb = ConvNode((6, 5, 3), "c", (3, 2); stride=(1, 1), padding="SAME",
+                      activation=IdentityActivation(), energy=GaussianEnergy(), use_bias=false)
+        pnb = NodeParams(Dict(ec => W), Dict{String,Array{Float32}}())
+        _, gnb = forward_and_weight_grads(nb, pnb, Dict{String,Any}(ec => xc), _st(zc, (6, 5, 3)))
+        @test isempty(gnb.biases.nt)                       # the empty-ghost half
+        @test !isempty(gnb.weights.nt)                     # non-vacuous: weights DID differentiate
+        @test all(isfinite, gnb.weights[ec])
+        @test any(!iszero, gnb.weights[ec])
+    end
+
     @testset "pool: AvgPool global (B,spatial…,C) -> (B,C)" begin
         e = "s->p:in"
         xg, zg = FIX_C["avgpool_global_in_x"], FIX_C["avgpool_global_in_z_latent"]

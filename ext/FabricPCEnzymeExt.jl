@@ -48,6 +48,24 @@ _ek_w(node, wnt, bnt, inputs, z) =
     energy_kernel(node, NodeParams(SoA(wnt), SoA(bnt)), inputs, z)
 _ek_in(node, params, innt, z) = energy_kernel(node, params, SoA(innt), z)
 
+"""Activity marker for a param NamedTuple. An EMPTY NamedTuple is a GHOST type (zero-size), and
+Enzyme rejects `Duplicated` on one outright: *"Type of ghost or constant type
+Duplicated{@NamedTuple{}} is marked as differentiable."* Reproducible with no FabricPC involved:
+
+    Enzyme.autodiff(set_runtime_activity(Reverse), a->1.0f0, Active,
+                    Duplicated(NamedTuple(), NamedTuple()))   # same error
+
+Two shapes produce an empty NamedTuple, and BOTH are real: every `PoolNode` (parameter-free by
+construction) and `ConvNode(...; use_bias=false)` (empty biases). Since `core/learning.jl` calls
+`forward_and_weight_grads` for every `in_degree>0` node, an unguarded `Duplicated` means NO graph
+containing a pool can take a training step on the Enzyme backend.
+
+Found by the C-01 adversarial audit, which also caught why C-14 was closed too early: that
+verification only exercised ConvNode WITH bias — the one shape that cannot produce an empty
+NamedTuple. `map(zero, ::@NamedTuple{})` returns `@NamedTuple{}`, so the `SoA(...)` repack and
+`core/learning.jl`'s F-03 key-set check are unaffected."""
+_act(nt, dnt) = isempty(nt) ? Const(nt) : Duplicated(nt, dnt)
+
 function _ad_param_grads(
     ::EnzymeBackend, node::AbstractNode, params::NodeParams, inputs, z_latent
 )
@@ -55,9 +73,11 @@ function _ad_param_grads(
     bnt = params.biases.nt
     dwnt = map(zero, wnt)
     dbnt = map(zero, bnt)
+    # `_act`, not a bare Duplicated: an empty NamedTuple is a ghost type Enzyme refuses to mark
+    # differentiable (see above). A param-free node's gradient is correctly the empty NamedTuple.
     Enzyme.autodiff(
         set_runtime_activity(Reverse), _ek_w, Active,
-        Const(node), Duplicated(wnt, dwnt), Duplicated(bnt, dbnt), Const(inputs),
+        Const(node), _act(wnt, dwnt), _act(bnt, dbnt), Const(inputs),
         Const(z_latent)
     )
     return NodeParams(SoA(dwnt), SoA(dbnt))
