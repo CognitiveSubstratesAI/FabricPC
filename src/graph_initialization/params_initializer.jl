@@ -15,12 +15,18 @@ function initialize_params(structure::GraphStructure, rng::AbstractRNG)
         info = structure.infos[name]
         if info.in_degree == 0
             node_params[name] = NodeParams(
-                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+                Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}()
             )
             continue
         end
 
-        input_shapes = Dict{String, Tuple}()
+        # ORDERED by `in_edges`: `initialize_params` iterates these shapes to build one weight
+        # per edge, drawing sequentially from the shared `rng`, so the iteration order decides
+        # WHICH draw lands on WHICH edge. A hash `Dict` made that order arbitrary. Upstream also
+        # reports the first offending edge in insertion order (`nodes/base.py:692-707`).
+        # (Exact JAX RNG bit-parity is an explicit non-goal — see initializers.jl:4-6 — and the
+        # conformance fixtures inject upstream arrays rather than relying on our RNG stream.)
+        input_shapes = OrderedDict{String, Tuple}()
         for edge_key in info.in_edges
             src = structure.edges[edge_key].source
             input_shapes[edge_key] = structure.infos[src].shape

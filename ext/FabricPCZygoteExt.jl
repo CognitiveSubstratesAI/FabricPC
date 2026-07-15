@@ -57,8 +57,16 @@ function _ad_param_grads(
 )
     wnt = params.weights.nt
     bnt = params.biases.nt
+    # HOIST the SoA out of the closure so the differentiated region sees a NamedTuple-backed
+    # SoA, never a Dict — the invariant this file's header states and `_ad_latent_grads`
+    # already follows. `inputs` is a CONSTANT here (we differentiate w.r.t. w/b only), but a
+    # captured Dict still gets traced: Zygote routes `getindex(::AbstractDict, k)` through its
+    # mutable-gradient machinery (`grad_mut` → `Dict{Any,Any}`), which is dict-type-sensitive
+    # and blew up as `MethodError: getindex(::Dict{Any,Any})` once `_concrete_inputs` became an
+    # OrderedDict. An SoA capture has no such path.
+    insoa = SoA(inputs)
     gw, gb = Zygote.gradient(
-        (w, b) -> energy_kernel(node, NodeParams(SoA(w), SoA(b)), inputs, z_latent),
+        (w, b) -> energy_kernel(node, NodeParams(SoA(w), SoA(b)), insoa, z_latent),
         wnt, bnt
     )
     return NodeParams(SoA(_fill_zero(gw, wnt)), SoA(_fill_zero(gb, bnt)))

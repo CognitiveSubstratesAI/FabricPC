@@ -2,11 +2,13 @@
 # FUSED: v0 is autodiff-free, so our Linear computes explicit closed-form
 # Gaussian gradients directly (there is no separate LinearExplicitGrad class).
 #
-# v0 supports rank-1 shapes (features,) only → per-position last-axis matmul and
-# the flatten_input dense path collapse to the same plain 2D matmul on
-# (batch, features) arrays. flatten_input is therefore accepted but inert in v0;
-# higher-rank tensors (where the two paths diverge and column-major reshape bites)
-# are deferred.
+# THIS NODE takes rank-1 shapes (features,) → per-position last-axis matmul and the
+# flatten_input dense path collapse to the same plain 2D matmul on (batch, features)
+# arrays, so flatten_input is accepted but inert here. That is a property of Linear, NOT
+# of the framework: higher-rank nodes exist (rank-2 TransformerBlock, rank-3 ConvNode/
+# pooling) and the core types/state/energy are rank-generic — see core/types.jl. The
+# two paths do diverge (and column-major reshape bites) for a higher-rank Linear, which
+# is what remains deferred.
 
 """
     Linear(shape, name; activation = IdentityActivation(), energy = GaussianEnergy(),

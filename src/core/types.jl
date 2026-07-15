@@ -4,9 +4,14 @@
 # We update them functionally via the helpers in state_ops.jl (the analogue of
 # upstream's `_replace`). Arrays are batch-FIRST: shape (batch, features...).
 #
-# v0 supports rank-1 node shapes only (features,) ⇒ arrays are (batch, features)
-# matrices. Higher-rank / last-axis-matmul tensors (sequences, images) are
-# deferred — see docs/decisions.md on the column-major shape hazard.
+# Node shapes are RANK-GENERIC: a node's arrays are (batch, node.shape...). Rank-1
+# (features,) gives the (batch, features) dense case; rank-2 (seq, embed) backs the
+# TransformerBlock family (decisions.md §13); rank-3 (H, W, C) backs ConvNode/pooling
+# (C-01). `NodeState`'s fields are untyped, `NodeInfo.shape` is an unconstrained Tuple,
+# `state_initializer.jl` splats (batch_size, info.shape...), and every energy reduces over
+# all non-batch dims — so nothing here is rank-limited. (Column-major reshape remains a
+# real hazard for last-axis-matmul paths — see docs/decisions.md — but it is a per-node
+# implementation concern, not a limit of these types.)
 
 """Metadata for one input slot (resolved at graph-build time)."""
 struct SlotInfo

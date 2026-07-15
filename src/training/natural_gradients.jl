@@ -40,15 +40,15 @@ function precondition!(ng::NaturalGradientDiag, grads::GraphParams)
     out = Dict{String, NodeParams}()
     for (name, g_np) in grads.nodes
         f_np = ng.fisher.nodes[name]
-        nf_w = Dict{String, Matrix{Float32}}()
-        out_w = Dict{String, Matrix{Float32}}()
+        nf_w = Dict{String, Array{Float32}}()
+        out_w = Dict{String, Array{Float32}}()
         for (k, g) in g_np.weights
             f = ng.fisher_decay .* f_np.weights[k] .+ omd .* (g .^ 2)
             nf_w[k] = f
             out_w[k] = g ./ (f .+ ng.damping)
         end
-        nf_b = Dict{String, Matrix{Float32}}()
-        out_b = Dict{String, Matrix{Float32}}()
+        nf_b = Dict{String, Array{Float32}}()
+        out_b = Dict{String, Array{Float32}}()
         for (k, g) in g_np.biases
             f = ng.fisher_decay .* f_np.biases[k] .+ omd .* (g .^ 2)
             nf_b[k] = f
@@ -92,7 +92,7 @@ function precondition!(ng::NaturalGradientLayerwise, grads::GraphParams)
     omd = 1.0f0 - ng.fisher_decay
     out = Dict{String, NodeParams}()
     for (name, g_np) in grads.nodes
-        out_w = Dict{String, Matrix{Float32}}()
+        out_w = Dict{String, Array{Float32}}()
         for (k, g) in g_np.weights
             key = "$name/w/$k"
             f =
@@ -101,7 +101,7 @@ function precondition!(ng::NaturalGradientLayerwise, grads::GraphParams)
             ng.fisher[key] = f
             out_w[k] = g ./ (f + ng.damping)
         end
-        out_b = Dict{String, Matrix{Float32}}()
+        out_b = Dict{String, Array{Float32}}()
         for (k, g) in g_np.biases
             key = "$name/b/$k"
             f =

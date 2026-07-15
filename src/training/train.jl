@@ -62,10 +62,10 @@ sgd_update(params::GraphParams, grads::GraphParams, lr::Real) = GraphParams(
 
 function sgd_update(params::NodeParams, grads::NodeParams, lr::Real)
     η = Float32(lr)
-    weights = Dict{String, Matrix{Float32}}(
+    weights = Dict{String, Array{Float32}}(
         k => params.weights[k] .- η .* grads.weights[k] for k in keys(grads.weights)
     )
-    biases = Dict{String, Matrix{Float32}}(
+    biases = Dict{String, Array{Float32}}(
         k => params.biases[k] .- η .* grads.biases[k] for k in keys(grads.biases)
     )
     return NodeParams(weights, biases)

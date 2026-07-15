@@ -5,8 +5,8 @@
 # faithful to optax.adamw: Adam moments + DECOUPLED weight decay.
 
 _zeros_like(np::NodeParams) = NodeParams(
-    Dict{String, Matrix{Float32}}(k => zero(w) for (k, w) in np.weights),
-    Dict{String, Matrix{Float32}}(k => zero(b) for (k, b) in np.biases)
+    Dict{String, Array{Float32}}(k => zero(w) for (k, w) in np.weights),
+    Dict{String, Array{Float32}}(k => zero(b) for (k, b) in np.biases)
 )
 _zeros_like(p::GraphParams) =
     GraphParams(Dict{String, NodeParams}(k => _zeros_like(np) for (k, np) in p.nodes))
@@ -52,7 +52,7 @@ end
 # In-place moment update + decoupled-weight-decay param step for one dict of
 # tensors (weights or biases). Mutates the moment dicts `md`, `vd`; returns new params.
 function _adamw_dict!(pd, gd, md, vd, lr, b1, b2, eps, wd, bc1, bc2)
-    out = Dict{String, Matrix{Float32}}()
+    out = Dict{String, Array{Float32}}()
     for (k, w) in pd
         g = gd[k]
         mk = md[k]

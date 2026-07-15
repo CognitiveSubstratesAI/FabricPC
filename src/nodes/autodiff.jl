@@ -45,19 +45,38 @@ energy_kernel(node::AbstractNode, params::NodeParams, inputs, z_latent) =
     sum(energy(node.energy, z_latent, compute_mu(node, params, inputs)))
 
 """
+    compute_pre_and_mu(node, params, inputs) -> (pre_activation, z_mu)
+
+Seam hook for nodes whose prediction has a distinct PRE-activation. The generic default
+reports `pre_activation = z_mu`, which is what every seam node did historically (the explicit
+`pre_grad` path is unused on this lane, so gradients never read it) — so this default keeps
+every existing node byte-identical.
+
+Nodes that DO apply an activation inside `compute_mu` should override this to report the true
+pre-activation, because upstream's `forward` stores it (`nodes/convolutional.py:234`,
+`nodes/pooling.py:158` set `pre_activation` to the value BEFORE the activation) and the
+conformance fixtures compare that field. It matters concretely for a ReLU node: `pre` can be
+negative where `z_mu` cannot, so reporting `z_mu` as the pre is observably wrong.
+
+Only `NodeState.pre_activation` bookkeeping is affected — `energy_kernel` still differentiates
+`compute_mu`, so no gradient path changes.
+"""
+compute_pre_and_mu(node::AbstractNode, params::NodeParams, inputs) =
+    (z_mu = compute_mu(node, params, inputs); (z_mu, z_mu))
+
+"""
     forward(node::AbstractNode, params, inputs, state) -> (total_energy, NodeState)
 
-Generic forward for autodiff-backed nodes (no explicit override). Builds `z_mu`
-via `compute_mu`, fills `error`/`energy`, and packs the NodeState. Mirrors
-`Linear`'s `forward` bookkeeping but defers the prediction math to `compute_mu`.
-`pre_activation` is set to `z_mu` (the explicit `pre_grad` path is unused here).
+Generic forward for autodiff-backed nodes (no explicit override). Builds `z_mu` via
+`compute_pre_and_mu` (which defaults to `compute_mu`), fills `error`/`energy`, and packs the
+NodeState. Mirrors `Linear`'s `forward` bookkeeping but defers the prediction math to the seam.
 """
 function forward(
     node::AbstractNode, params::NodeParams, inputs::AbstractDict, state::NodeState
 )
-    z_mu = compute_mu(node, params, inputs)
+    pre, z_mu = compute_pre_and_mu(node, params, inputs)
     err = state.z_latent .- z_mu
-    ns = update_state(state; pre_activation=z_mu, z_mu=z_mu, error=err)
+    ns = update_state(state; pre_activation=pre, z_mu=z_mu, error=err)
     ns = energy_functional(node, ns)
     return sum(ns.energy), ns
 end
@@ -149,16 +168,26 @@ _ad_latent_grads(node, params, inputs, z_latent) =
     _ad_latent_grads(_AD_BACKEND[], node, params, inputs, z_latent)
 _ad_latent_grads(::NoBackend, args...) = error(_ENZYME_HINT)
 
-# gather_inputs builds Dict{String,Any}; concrete-ify so Enzyme stays type-stable.
+# gather_inputs builds an OrderedDict{String,Any}; concrete-ify so Enzyme stays type-stable.
 # Rank is inferred from the inputs (rank-2 (batch,features) for dense nodes, rank-3
-# (batch,seq,embed) for sequence/transformer nodes) and baked into the Dict's
-# concrete value type `Array{Float32,N}` — an abstract `Array{Float32}` value type
-# would re-trigger Enzyme's type-unstable path. Assumes one rank across input slots
-# (true for the current nodes; a mixed-rank node would concrete-ify per slot).
+# (batch,seq,embed) for sequence/transformer nodes) and baked into the value type
+# `Array{Float32,N}` — an abstract `Array{Float32}` value type would re-trigger Enzyme's
+# type-unstable path. Assumes one rank across input slots (true for the current nodes; a
+# mixed-rank node would concrete-ify per slot).
+#
+# ORDERED, not a hash Dict: a node's `forward` folds its in-edges in `in_edges` order (the
+# `gather_inputs` OrderedDict — see core/inference.jl), and float `+` is non-associative, so
+# the DIFFERENTIATED lanes must fold in that same order or they silently disagree with
+# `forward` on any node with 2+ in-edges. A plain `Dict` here iterates in HASH order and
+# `SoA(::AbstractDict)` (core/types.jl) freezes that order into its NamedTuple, so the hash
+# order would propagate into the tape. Dormant while every seam node is single-edge; live the
+# moment a multi-edge seam node exists (ConvNode/MaxPool/AvgPool are `is_multi_input`). Same
+# bug class as the gather_inputs hash-order fold fixed in 5663c3f. OrderedDict is equally
+# concrete, so type stability is unaffected.
 function _concrete_inputs(inputs)
     N = ndims(first(values(inputs)))
-    d = Dict{String, Array{Float32, N}}()
-    for (k, v) in inputs
+    d = OrderedDict{String, Array{Float32, N}}()
+    for (k, v) in inputs                       # preserves `inputs`' in_edges order
         d[k] = Float32.(v)
     end
     return d
