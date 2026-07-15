@@ -25,8 +25,9 @@ entirely ordinary Julia: `Tuple === Tuple{Vararg{Any}}`, and `Tuple{Int,Vararg{I
 completely normal varargs tuple type.
 
 **Versions:** reproduced on Reactant **v0.2.273**, Julia 1.12.6. The relevant code is
-**byte-identical** at the **v0.2.274** tag (newest release) and on **`main`** — verified by fetching
-`https://raw.githubusercontent.com/EnzymeAD/Reactant.jl/{main,v0.2.274}/src/Tracing.jl`.
+**byte-identical** at the **v0.2.274** tag (newest release) and on **`main`** — verified two ways:
+raw-fetching `.../EnzymeAD/Reactant.jl/{main,v0.2.274}/src/Tracing.jl`, and independently in a full
+local clone of `main` (HEAD `0a3bd5b55`, v0.2.274), where the branch is still unguarded.
 
 ### Minimal reproduction (no downstream package)
 
@@ -67,6 +68,14 @@ Reactant.traced_type_inner(P{Bool}, Base.IdDict(), Reactant.TracedTrack, Number,
 # before: UndefRefError
 # after : P{Reactant.TracedRNumber{Bool}}   <- correct
 ```
+
+### The class RECURRED after #767 was patched around (git blame)
+
+`git blame` on the unguarded line in `collect_tvars_in_type!` gives **`ae7df92a0b`, jumerckx,
+**2025-11-28** — i.e. this site was written **nine months AFTER #767 was closed (2025-02-19)**. The
+same latent assumption ("a `Vararg` always has `.T` and `.N`") was reintroduced in a new function,
+which is what tends to happen when a root cause is patched around rather than fixed. Guarding the
+two reads fixes the class; a third site can otherwise appear the same way.
 
 ### Relationship to #767 (precedent, not a duplicate) — its root cause is still live
 
