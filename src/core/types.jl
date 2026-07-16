@@ -123,13 +123,23 @@ Only the explicit-gradient path needs it (for `f'(pre)` in `pre_grad`), and it g
 from `_forward_with_preact`. Mirrors upstream `b6f64ad`, which cut per-node inference state from
 5 `(batch, features...)` tensors to 4 — a real saving in the in-place lane, which allocates one
 of these per node per step.
+
+PARAMETRIC (J-06). Fields were `::Any`, which boxed EVERY latent operand: `@code_warntype` showed
+`forward(::Linear)` inferring to `Tuple{Any, NodeState}` even for a concrete node, and
+`run_inference` on the MNIST-MLP allocating 6565 allocs / 208 MB per call (`Profile.Allocs`: 360
+`Memory{NodeState}`, 320 `NodeState`, 240 boxed `Tuple{...}`). One INDEPENDENT type parameter per
+field (not a shared `A`) so every construction site auto-infers a fully-concrete type with no edit,
+and the two test sites that build partial states with `nothing` still work (each field free to be
+`Nothing`). `::NodeState` dispatch annotations and `Dict{String,NodeState}` fields match the
+UnionAll unchanged. `JET.report_call` was 0 errors before this — the code was CORRECT; the
+instability was purely perf, so bit-identity against the tiers is the gate.
 """
-struct NodeState
-    z_latent::Any
-    z_mu::Any
-    error::Any
-    energy::Any
-    latent_grad::Any
+struct NodeState{Z, M, R, E, L}
+    z_latent::Z
+    z_mu::M
+    error::R
+    energy::E
+    latent_grad::L
 end
 
 """Dynamic state of the whole graph: per-node NodeState + batch size."""

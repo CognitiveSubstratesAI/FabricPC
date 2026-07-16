@@ -122,7 +122,7 @@ Bridge `GraphState` (a `Dict{String,NodeState}`) to a position-indexed `Vector{N
 ordered to match `plan.names`.
 """
 to_flat_state(plan::CompiledPlan, state::GraphState) =
-    NodeState[state.nodes[n] for n in plan.names]
+    [state.nodes[n] for n in plan.names]
 
 # ── Reactant bridge: flatten params to a plain array tuple (+ static layout),
 #    repack inside the traced region, rebuild states from z_latents. The
@@ -166,7 +166,7 @@ repack_params(arr_tuple, layout) = [
 
 """Build a `Vector{NodeState}` from per-node z_latents; other fields are zero
 placeholders (recomputed in inference step 1, so unused — matches the eager init)."""
-state_from_latents(zl) = NodeState[
+state_from_latents(zl) = [
     NodeState(
         zl[i], zero(zl[i]), zero(zl[i]),
         zeros(eltype(zl[i]), size(zl[i], 1)), zero(zl[i])
@@ -354,11 +354,11 @@ end
 # ── flat inference loop (reproduces run_inference, position-indexed) ─────────────
 
 function flat_inference_step(
-    plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool}
+    plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}
 )
     n = length(fstate)
     # Phase 1: zero latent grads.
-    fstate = NodeState[update_state(s; latent_grad=zero(s.latent_grad)) for s in fstate]
+    fstate = [update_state(s; latent_grad=zero(s.latent_grad)) for s in fstate]
     # Phase 2: forward + accumulate latent grads (insertion order).
     for i in 1:n
         ins = [fstate[s].z_latent for s in plan.in_src[i]]
@@ -406,7 +406,7 @@ Bundled here to measure the optimization on the DICT-FREE eager path (isolating 
 algorithmic win from the Dict/string-key overhead the core eager path carries — see
 docs/decisions.md §28's three-way decomposition)."""
 function flat_run_inference(
-    plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool}; optimize::Bool=false
+    plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}; optimize::Bool=false
 )
     optimize && return _flat_run_inference_opt(plan, fparams, fstate, clamped)
     for _ in 1:plan.inference.infer_steps
@@ -435,11 +435,11 @@ loop-invariant forwarded `NodeState` (`z_mu`). Bit-identical to
 recompute only the `z_latent`-dependent `error`/`energy`/`self_grad`; all back-edge grads into
 clamped sources and self-grads into clamped positions (the values Phase 3 discards) are skipped."""
 function _flat_inference_step_opt(
-    plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool},
-    hoist::AbstractVector{Bool}, hoisted::Vector{NodeState}
+    plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool},
+    hoist::AbstractVector{Bool}, hoisted::Vector{<:NodeState}
 )
     n = length(fstate)
-    fstate = NodeState[update_state(s; latent_grad=zero(s.latent_grad)) for s in fstate]
+    fstate = [update_state(s; latent_grad=zero(s.latent_grad)) for s in fstate]
     for i in 1:n
         if hoist[i]
             node = plan.nodes[i]
@@ -480,7 +480,7 @@ end
 
 """Optimized flat loop: compute hoistable positions' loop-invariant forward ONCE, then run
 `infer_steps` of `_flat_inference_step_opt`. See `flat_run_inference`'s `optimize` kwarg."""
-function _flat_run_inference_opt(plan, fparams, fstate::Vector{NodeState}, clamped::Vector{Bool})
+function _flat_run_inference_opt(plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool})
     hoist = _flat_hoistable(plan, clamped)
     # Vector{NodeState} (NOT Vector{Any}) — unfilled (non-hoistable) slots stay #undef and are
     # never indexed (only read where hoist[i]); keeping the eltype concrete avoids boxing.
