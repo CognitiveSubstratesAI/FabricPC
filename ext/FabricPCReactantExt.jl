@@ -11,8 +11,8 @@ using FabricPC
 using FabricPC:
     CompiledPlan, to_flat_params, flatten_param_arrays, jit_inference_runner,
     GraphParams, GraphStructure, GraphState, repack_params, state_from_latents,
-    flat_inference_step
-import FabricPC: compile_inference
+    flat_inference_step, flat_sgd_step, jit_train_step_runner, graph_params_from_flat
+import FabricPC: compile_inference, compile_train_step
 using Reactant
 
 """A compiled inference thunk + the static data needed to feed/read it.
@@ -130,6 +130,82 @@ function (ci::CompiledInference)(params::GraphParams, init_state::GraphState)
     zl = ntuple(i -> init_state.nodes[ci.plan.names[i]].z_latent, length(ci.plan.names))
     out = ci.thunk(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl))
     return [Array(out[i]) for i in eachindex(out)]
+end
+
+# ── Compiled full training step (J-02): E-step inference + local SGD M-step in one XLA graph ─────
+
+"""A compiled training-step thunk + the static data to feed/read it. Unlike `CompiledInference`,
+the params are NOT held resident: a training step CONSUMES the current weights and PRODUCES new
+ones, so they are marshalled per call (the caller may instead keep the output device-resident and
+feed it back — the efficient training loop; not done in this correctness-first callable). `lr` is
+baked into the thunk (recompile to change it)."""
+struct CompiledTrainStep
+    plan::CompiledPlan
+    layout::Any
+    clamped::Vector{Bool}
+    thunk::Any
+    batch::Int
+    lr::Float32
+end
+
+"""
+    compile_train_step(structure, params, clamps; batch, lr, loop=true) -> CompiledTrainStep
+
+JIT-compile one full PC training step — the inference E-step (`flat_run_inference`) AND the local
+SGD weight-update M-step (`flat_sgd_step`) — into a single Reactant/XLA graph. The returned callable
+maps `(params, init_state) -> GraphParams` (updated params after one step). Dense/v0 only (see
+`flat_train_step`): Linear/Identity/Skip/LinearResidual, no muPC scaling, no TransformerBlock/Conv
+weight backward. `lr` is compile-time constant.
+
+`loop=true` (default) emits the E-step as a `@trace track_numbers=false for` loop (J-09) — the M-step
+runs once after it. `loop=false` unrolls (via `jit_train_step_runner`). Both trace under the same
+`track_numbers=false` contract as `compile_inference`, and for the same reason: every loop-carried
+value is an array; `lr`/topology are compile-time constants. The M-step's weight grads are the
+closed-form local rule (no autodiff), so nothing here needs Enzyme — that is only the transformer
+lane (J-10 gate 2), out of this dense scope.
+
+Requires `using Reactant` (this `FabricPCReactantExt` extension)."""
+function compile_train_step(
+    structure::GraphStructure, params::GraphParams, clamps::AbstractDict;
+    batch::Int, lr::Real, loop::Bool=true
+)
+    plan = CompiledPlan(structure)
+    arr_tuple, layout = flatten_param_arrays(to_flat_params(plan, params))
+    clamped = Bool[n in keys(clamps) for n in plan.names]
+    zl = ntuple(i -> zeros(Float32, batch, plan.infos[i].shape...), length(plan.names))
+    η = Float32(lr)
+    steps = plan.inference.infer_steps
+
+    function looped_train(at, z)
+        fp = repack_params(at, layout)
+        fs = state_from_latents(z)
+        Reactant.@trace track_numbers=false for _ in 1:steps
+            fs = flat_inference_step(plan, fp, fs, clamped)
+        end
+        newfp = flat_sgd_step(plan, fp, fs, clamped, η)
+        return flatten_param_arrays(newfp)[1]
+    end
+    unrolled(at, z) = jit_train_step_runner(at, z, plan, layout, clamped, η)
+
+    thunk = loop ?
+        Reactant.@compile(looped_train(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl))) :
+        Reactant.@compile(unrolled(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl)))
+    return CompiledTrainStep(plan, layout, clamped, thunk, batch, η)
+end
+
+"""
+    (ct::CompiledTrainStep)(params, init_state) -> GraphParams
+
+Run one compiled training step: marshal the CURRENT params + per-batch init state, execute the XLA
+thunk (inference + SGD update), and rebuild `GraphParams` from the updated flat arrays. Params are
+re-marshalled every call because training changes them (contrast `CompiledInference`, which holds
+inference-constant weights resident)."""
+function (ct::CompiledTrainStep)(params::GraphParams, init_state::GraphState)
+    arr_tuple, _ = flatten_param_arrays(to_flat_params(ct.plan, params))
+    zl = ntuple(i -> init_state.nodes[ct.plan.names[i]].z_latent, length(ct.plan.names))
+    out = ct.thunk(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl))
+    new_fp = repack_params(ntuple(i -> Array(out[i]), length(out)), ct.layout)
+    return graph_params_from_flat(ct.plan, new_fp)
 end
 
 end # module FabricPCReactantExt

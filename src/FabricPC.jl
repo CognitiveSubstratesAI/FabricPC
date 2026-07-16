@@ -172,6 +172,7 @@ export CompiledPlan,
     repack_params,
     state_from_latents,
     jit_inference_runner,
-    compile_inference
+    compile_inference,
+    compile_train_step
 
 end # module FabricPC

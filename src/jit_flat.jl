@@ -495,3 +495,137 @@ function _flat_run_inference_opt(plan, fparams, fstate::Vector{<:NodeState}, cla
     end
     return fstate
 end
+
+# ── Dict-free CLOSED-FORM weight gradients (the M-step, position-indexed) ─────────
+# Positional twin of `forward_and_weight_grads` (src/nodes/*.jl) / `compute_local_weight_gradients`
+# (core/learning.jl). Returns `(dw, db)` where `dw` is aligned to `fp.w` (`nothing` for weightless
+# edges, so it drops straight into the same layout) and `db` is the bias grad or `nothing`. Every
+# method here is the SAME closed-form local rule its eager counterpart uses — no autodiff, all
+# matmuls — so the whole flat learning step traces under `Reactant.@compile`. SCOPE: dense/rank-2
+# and v0 (`scaling_config === nothing`) only, matching the flat lane (J-03); muPC weight-grad
+# scaling (`scale_weight_grads`) and the TransformerBlock/Conv weight backward are NOT covered —
+# those learn on the eager seam (`compute_local_weight_gradients`).
+_flat_weight_grads(node::AbstractNode, fp, ins, slots, state) = error(
+    "_flat_weight_grads: no flat weight-grad for $(typeof(node)). The flat learning lane covers " *
+    "Linear/IdentityNode/SkipConnection/LinearResidual (dense, v0). TransformerBlock/Conv learn " *
+    "on the eager seam — use `train_step`/`compute_local_weight_gradients`, not the compiled lane."
+)
+
+# Linear: dWₖ = insₖᵀ·dpre, db = Σ_batch dpre, dpre = (∂E/∂z_mu)·f'(pre). Mirrors linear.jl:188.
+function _flat_weight_grads(node::Linear, fp, ins, slots, state)
+    ns, pre = _flat_fwd_pre(node, fp, ins, slots, state)
+    dpre = pre_grad(node, ns, pre)
+    dw = Any[transpose(ins[k]) * dpre for k in eachindex(ins)]
+    db = fp.b === nothing ? nothing : sum(dpre; dims=1)
+    return dw, db
+end
+
+# LinearResidual: only the "in" slot carries a weight; the skip slot has none. Mirrors
+# linear_residual.jl:189 (`_is_in_edge(edge_key) || continue`).
+function _flat_weight_grads(node::LinearResidual, fp, ins, slots, state)
+    ns, pre = _flat_fwd_pre(node, fp, ins, slots, state)
+    dpre = pre_grad(node, ns, pre)
+    dw = Any[slots[k] == "in" ? transpose(ins[k]) * dpre : nothing for k in eachindex(ins)]
+    db = fp.b === nothing ? nothing : sum(dpre; dims=1)
+    return dw, db
+end
+
+# IdentityNode / SkipConnection are weightless — empty grads (identity.jl:119, skip_connection.jl:104).
+_flat_weight_grads(::IdentityNode, fp, ins, slots, state) =
+    (Any[nothing for _ in eachindex(ins)], nothing)
+_flat_weight_grads(::SkipConnection, fp, ins, slots, state) =
+    (Any[nothing for _ in eachindex(ins)], nothing)
+
+"""
+    flat_sgd_step(plan, fparams, fstate, clamped, lr) -> Vector{FlatNodeParams}
+
+Local SGD M-step on the SETTLED inference state `fstate`: for each dense node compute its
+closed-form local weight grad and apply `w -= lr·dW`, `b -= lr·db`. Position-indexed twin of
+`get_graph_param_gradient` + `sgd_update` (core/learning.jl + training/train.jl) — the same
+per-node local rule, no backprop through inference. Source nodes (`in_degree == 0`) and weightless
+edges pass through unchanged. All arrays ⇒ Reactant-traceable."""
+function flat_sgd_step(plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}, lr)
+    n = length(fparams)
+    out = Vector{FlatNodeParams}(undef, n)
+    η = Float32(lr)
+    for i in 1:n
+        fp = fparams[i]
+        if plan.infos[i].in_degree == 0
+            out[i] = fp                                  # source node: no params
+            continue
+        end
+        ins = [fstate[s].z_latent for s in plan.in_src[i]]
+        dw, db = _flat_weight_grads(plan.nodes[i], fp, ins, plan.in_slot[i], fstate[i])
+        new_w = Any[
+            (fp.w[k] === nothing || dw[k] === nothing) ? fp.w[k] : fp.w[k] .- η .* dw[k]
+            for k in eachindex(fp.w)
+        ]
+        new_b = (fp.b === nothing || db === nothing) ? fp.b : fp.b .- η .* db
+        out[i] = FlatNodeParams(new_w, new_b)
+    end
+    return out
+end
+
+"""
+    flat_train_step(plan, fparams, fstate_init, clamped, lr) -> Vector{FlatNodeParams}
+
+One full PC training step, Dict-free: settle the latents (`flat_run_inference`, the E-step) then
+apply the local SGD weight update (`flat_sgd_step`, the M-step). Position-indexed twin of eager
+`train_step` (training/train.jl). Eager reference for the compiled `compile_train_step`; also the
+whole thing that gets traced inside `@compile`."""
+function flat_train_step(plan, fparams, fstate_init::Vector{<:NodeState}, clamped::Vector{Bool}, lr)
+    fstate = flat_run_inference(plan, fparams, fstate_init, clamped)
+    return flat_sgd_step(plan, fparams, fstate, clamped, lr)
+end
+
+"""
+    graph_params_from_flat(plan, fparams) -> GraphParams
+
+Inverse of `to_flat_params`: rebuild `GraphParams` (Dict-of-Dicts) from position-indexed
+`FlatNodeParams`, reattaching each node's edge-keyed weights (`fp.w[k]` → `weights[in_key[k]]`, a
+`nothing` entry meaning a weightless edge) and its bias (`fp.b` → `biases["b"]`). Eager (runs on
+the compiled train step's Array output, OUTSIDE the traced region). Dense/v0 only — the same rank-2
+scope as `to_flat_params` (a TransformerBlock's stashed-tuple `w` is not handled)."""
+function graph_params_from_flat(plan::CompiledPlan, fparams::Vector{<:FlatNodeParams})
+    nodes = Dict{String, NodeParams}()
+    for (i, name) in enumerate(plan.names)
+        fp = fparams[i]
+        w = Dict{String, Array{Float32}}()
+        for (k, key) in enumerate(plan.in_key[i])
+            fp.w[k] === nothing || (w[key] = fp.w[k])
+        end
+        b = Dict{String, Array{Float32}}()
+        fp.b === nothing || (b["b"] = fp.b)
+        nodes[name] = NodeParams(w, b)
+    end
+    return GraphParams(nodes)
+end
+
+"""
+    jit_train_step_runner(arr_tuple, zl, plan, layout, clamped, lr) -> Tuple of arrays
+
+Reactant-traceable entry point for `compile_train_step`: repack params, run `flat_train_step`
+(E-step + local SGD M-step), and flatten the UPDATED params back to an array tuple in the SAME
+layout as the input (weightless edges stay `nothing`, so the layout is invariant). The caller
+rebuilds `GraphParams` from the returned arrays."""
+function jit_train_step_runner(
+    arr_tuple, zl, plan::CompiledPlan, layout, clamped::Vector{Bool}, lr
+)
+    fparams = repack_params(arr_tuple, layout)
+    new_fparams = flat_train_step(plan, fparams, state_from_latents(zl), clamped, lr)
+    return flatten_param_arrays(new_fparams)[1]
+end
+
+"""
+    compile_train_step(structure, params, clamps; batch, lr, loop) -> callable
+
+JIT-compile the full PC training step (inference E-step + local SGD weight update M-step) via
+Reactant/XLA. The returned object maps `(params, init_state) -> GraphParams` (the updated params
+after one step). Dense/v0 only (see `flat_train_step`); the learning rate is baked into the
+compiled thunk (recompile to change it). Requires `using Reactant` (the `FabricPCReactantExt`
+extension)."""
+function compile_train_step end
+compile_train_step(args...; kwargs...) =
+    error(
+        "compile_train_step requires Reactant — run `using Reactant` to load FabricPCReactantExt"
+    )

@@ -97,3 +97,75 @@ end
     # _flat_input_grads — verified by hand (not asserted here; @test_throws on a MethodError
     # from a private multi-arg dispatch is brittle) that this actually happens.
 end
+
+# ── flat TRAIN step (E-step inference + local SGD M-step) == eager train_step (J-02) ──────────────
+# The eager reference for `compile_train_step`: the whole thing traced by Reactant is this Dict-free
+# function. Bit-identity here (SAME init state, SAME closed-form local rule) is what makes the
+# compiled lane's small residual (~1e-7) attributable purely to XLA float reassociation, not to a
+# divergent M-step. Compiled correctness is gated separately in benchmark/compiled_train_step.jl
+# (needs Reactant).
+using FabricPC: flat_train_step, graph_params_from_flat, compute_local_weight_gradients, sgd_update,
+    LinearResidual
+
+function _match_train(structure, params, clamps, batch, lr)
+    init = initialize_graph_state(
+        structure, batch, MersenneTwister(0); clamps=clamps, params=params
+    )
+    # eager Dict ground truth (train_step's body with the SHARED init state)
+    final = run_inference(params, init, clamps, structure)
+    grads = compute_local_weight_gradients(params, final, structure)
+    eager = sgd_update(params, grads, lr)
+    # eager FLAT train step, rebuilt to GraphParams
+    plan = CompiledPlan(structure)
+    fp = flat_train_step(
+        plan, to_flat_params(plan, params), to_flat_state(plan, init),
+        Bool[n in keys(clamps) for n in plan.names], lr
+    )
+    flat = graph_params_from_flat(plan, fp)
+    ok = true
+    for name in keys(eager.nodes)
+        for k in keys(eager.nodes[name].weights)
+            ok &= isapprox(flat.nodes[name].weights[k], eager.nodes[name].weights[k]; rtol=0, atol=0)
+        end
+        for k in keys(eager.nodes[name].biases)
+            ok &= isapprox(flat.nodes[name].biases[k], eager.nodes[name].biases[k]; rtol=0, atol=0)
+        end
+    end
+    return ok
+end
+
+@testset "flat train_step == eager train_step (MLP, bit-identical)" begin
+    rng = MersenneTwister(1)
+    batch = 8
+    x = randn(rng, Float32, batch, 4)
+    y = randn(rng, Float32, batch, 3)
+    xn = Linear((4,), "x")
+    hn = Linear((6,), "h"; activation=TanhActivation())
+    yn = Linear((3,), "y")
+    st = graph([xn, hn, yn], [Edge(xn, hn), Edge(hn, yn)], TaskMap(; x=xn, y=yn),
+        InferenceSGD(; eta_infer=0.1, infer_steps=20))
+    params = initialize_params(st, MersenneTwister(2))
+    @test _match_train(st, params, Dict{String, Any}("x" => x, "y" => y), batch, 0.01f0)
+end
+
+@testset "flat train_step == eager train_step (residual net, bit-identical)" begin
+    # Same topology as the "flat run_inference == eager (residual net)" testset above —
+    # exercises LinearResidual's in/"skip" weight-grad split and the IdentityNode weightless case.
+    rng = MersenneTwister(3)
+    batch, d, nc = 8, 6, 3
+    x = randn(rng, Float32, batch, d)
+    y = randn(rng, Float32, batch, nc)
+    input = IdentityNode((d,), "input")
+    stem = Linear((d,), "stem")
+    r1 = LinearResidual((d,), "r1"; activation=TanhActivation())
+    r2 = LinearResidual((d,), "r2"; activation=TanhActivation())
+    out = Linear((nc,), "y")
+    edges = [
+        Edge(input, stem), Edge(stem, r1), Edge(stem, slot(r1, "skip")),
+        Edge(r1, r2), Edge(r1, slot(r2, "skip")), Edge(r2, out)
+    ]
+    st = graph([input, stem, r1, r2, out], edges, TaskMap(; x=input, y=out),
+        InferenceSGD(; eta_infer=0.1, infer_steps=15))
+    params = initialize_params(st, MersenneTwister(4))
+    @test _match_train(st, params, Dict{String, Any}("x" => x, "y" => y), batch, 0.01f0)
+end
