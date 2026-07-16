@@ -320,6 +320,27 @@ function _hoistable_nodes(clamps::AbstractDict, structure::GraphStructure)
 end
 
 """
+    _static_sources(clamps, structure) -> Set{String}
+
+Clamped terminal sources (`in_degree == 0` AND clamped) — e.g. the MNIST `"x"` input. Their state
+is FULLY loop-invariant: `z_latent` is clamped (Phase 3 never updates it), so `z_mu = z_latent`,
+`error`/`energy`/`latent_grad` are all constant across every step. `_hoistable_nodes` excludes them
+(`in_degree > 0 || continue`), so the stock loop re-ran `forward_and_latent_grads` for them every
+step — and its `in_degree==0` branch reallocates `copy(z_latent) + zero(error)` for the whole
+`(B, features)` clamped input each step (J-07: ~48 MB/call for the 256×784 MNIST input, the single
+largest byte allocator). Computing them ONCE and skipping is bit-identical (their state never
+changes) and removes that reallocation.
+"""
+function _static_sources(clamps::AbstractDict, structure::GraphStructure)
+    static = Set{String}()
+    for name in structure.node_names
+        info = structure.infos[name]
+        info.in_degree == 0 && haskey(clamps, name) && push!(static, name)
+    end
+    return static
+end
+
+"""
 Phase-2 forward+accumulate with HOIST+PRUNE. `hoisted` maps each hoistable node to its
 loop-invariant forwarded `NodeState` (source of `z_mu`); `hoist` is that
 node set. Bit-identical to `forward_value_and_grad` on all consumed fields (see the block
@@ -335,11 +356,18 @@ function _forward_value_and_grad_opt(
     clamps::AbstractDict,
     structure::GraphStructure,
     hoist::AbstractSet,
-    hoisted::AbstractDict
+    hoisted::AbstractDict,
+    static::AbstractSet=Set{String}()
 )
     for name in structure.node_names
         node = structure.nodes[name]
         info = structure.infos[name]
+
+        # STATIC (clamped terminal source): its full state was computed once before the loop and is
+        # loop-invariant — skip re-running its in_degree==0 forward (J-07: the ~48 MB/step
+        # reallocation of `copy(z_latent) + zero(error)` for the clamped input). `zero_grads`
+        # already re-zeroed its (never-read) latent_grad; z_mu/error/energy are unchanged.
+        name in static && continue
 
         if name in hoist
             # HOIST: reuse cached pre/z_mu; recompute the z_latent-dependent parts only.
@@ -405,6 +433,7 @@ function _run_inference_loop_opt(
     structure::GraphStructure
 )
     hoist = _hoistable_nodes(clamps, structure)
+    static = _static_sources(clamps, structure)
     state = initial_state
     # Hoisted forward computed ONCE from the clamp-set initial state. Each hoistable node's
     # inputs are all clamped ⇒ constant for the whole loop ⇒ this pre/z_mu is exactly what the
@@ -418,9 +447,19 @@ function _run_inference_loop_opt(
         ns_fwd = forward(node, params.nodes[name], scaled_inputs, state.nodes[name])
         hoisted[name] = ns_fwd
     end
+    # Static (clamped-terminal-source) forward computed ONCE — bit-identical to what every step's
+    # stock `forward_and_latent_grads` in_degree==0 branch would produce, then skipped in the loop.
+    for name in static
+        node = structure.nodes[name]
+        ns_fwd, _, _ = forward_and_latent_grads(
+            node, params.nodes[name], Dict{String, Any}(), state.nodes[name],
+            structure.infos[name], true
+        )
+        state = put_node(state, name, ns_fwd)
+    end
     for _ in 1:inf.infer_steps
         state = zero_grads(state, structure)
-        state = _forward_value_and_grad_opt(params, state, clamps, structure, hoist, hoisted)
+        state = _forward_value_and_grad_opt(params, state, clamps, structure, hoist, hoisted, static)
         state = update_latents(state, clamps, structure)
     end
     return state
