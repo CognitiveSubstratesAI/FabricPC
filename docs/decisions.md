@@ -628,6 +628,29 @@ free from the Enzyme seam.
    perf compiler for this eager forward — Reactant is Julia's native XLA path, the
    right answer rather than mimicking JAX ops.
 
+   **⚠️ SUPERSEDED for the BATCH dimension (2026-07-16, by measurement) — batched_mul IS
+   the accepted idiom now, in BOTH the eager `_tb_mha` AND the compiled `_tb_block_flat`.**
+   The premise above — "native loops are fast and Reactant compiles them" — is FALSE for the
+   per-batch attention loop, verified two ways: (a) `Base.map(1:B)` is Reactant-overlaid
+   (`Overlay.jl:249`; a UnitRange is an AbstractArray) and lowers to a traced while-loop that
+   cannot produce a concrete `Float32` array (J-10 gate 2: `MethodError: Float32(::TracedRNumber)`);
+   (b) the `Base`-only alternative that DOES trace — `ntuple(Val(B))` static unroll — makes XLA
+   compile time SCALE WITH B (the graph carries B copies of the attention): MEASURED 5.1s / 12.1s /
+   30.1s at B=2/16/48, so B=256 (a normal training batch) would be minutes. `fae0e67` fixed the
+   EAGER `_tb_mha` (map→`batched_mul`) but left `_tb_block_flat` on the `Val(B)` unroll; the
+   2026-07-16 pass unified them onto `batched_mul`, dropping compiled-kernel compile time to ≈4s
+   FLAT in B (numerics unchanged: full suite 2381/2381, tier_d transformer byte-identical, J-02b
+   compiled training still 5.96e-8 vs the eager Zygote oracle). `batched_mul` is Reactant/XLA-native
+   (lowers to `DotGeneral`) and composes under Reactant+Enzyme — the STILL-CORRECT half of the
+   original point ("Reactant is the right answer"), just realized with NNlib's batched op rather
+   than a Base loop. The `#1` column-major point stands unchanged. **Accepted cost:** `batched_mul`
+   breaks EAGER Enzyme ("Illegal calling convention fixup" on its BLAS convention), so the
+   transformer trains only on the Zygote eager backend or the Enzyme-under-Reactant COMPILED lane —
+   neither of which is eager-Enzyme, so the trade is already inside the F-04 backend split (`fae0e67`
+   accepted this). Head loops stay `ntuple(Val(H))` (H is 2–8; unrolling is correct there).
+   Rule going forward: **runtime-sized dims (batch, and ultimately seq) use `batched_mul`, not a
+   `Val`-unroll; only small compile-time-fixed dims (heads) unroll.**
+
 **Rank-3 support.** Latents are `(batch, seq, embed)`. The framework was already
 rank-agnostic (energy sums over all non-batch dims; state init uses `shape...`).
 Only the seam's input/latent dicts hardcoded rank-2: generalized `_concrete_inputs`

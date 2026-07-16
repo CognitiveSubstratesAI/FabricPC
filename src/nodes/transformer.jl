@@ -326,6 +326,15 @@ function _tb_block_flat(
     cosA, sinA = _tb_rope_tables(Dh, S)
     scale = sqrt(Float32(Dh))
     cmask = CAUSAL ? _tb_causal_mask(S) : nothing
+    # BATCHED attention via `NNlib.batched_mul` (batch is a RUNTIME dim), matching the eager
+    # `_tb_mha`. The old `ntuple(Val(B))` batch-unroll made XLA compile time scale with B (measured:
+    # 5.1s/12.1s/30.1s at B=2/16/48 — the graph carried B copies of the attention), pathological at
+    # training batch sizes; the eager path's own note (`_tb_mha`) says the batch loop "must not be
+    # unrolled at B=256 — it must not exist." `batched_mul` composes under Reactant+Enzyme (gate 2)
+    # AND keeps compile time ≈ constant in B. `::Val{B}` stays in the signature but the body no
+    # longer references B, so XLA emits ONE batched graph regardless of batch size. Head split stays
+    # the partial-column range (`Q[:,:,cols]`) — its addToDiffe issue was EAGER Enzyme only; the flat
+    # kernel differentiates under Reactant, where it is fine (J-02b, verified).
     heads = ntuple(Val(H)) do h
         cols = ((h - 1) * Dh + 1):(h * Dh)
         Qh = Q[:, :, cols]
@@ -335,17 +344,16 @@ function _tb_block_flat(
             Qh = _tb_apply_rope(Qh, cosA, sinA)
             Kh = _tb_apply_rope(Kh, cosA, sinA)
         end
-        outb = ntuple(Val(B)) do b
-            qb = Qh[b, :, :]
-            kb = Kh[b, :, :]
-            vb = Vh[b, :, :]
-            sc = (qb * transpose(kb)) ./ scale
-            CAUSAL && (sc = sc .+ cmask)
-            m = maximum(sc; dims=2)
-            ex = exp.(sc .- m)
-            (ex ./ sum(ex; dims=2)) * vb
-        end
-        stack(outb; dims=1)
+        qp = permutedims(Qh, (2, 3, 1))                      # (B,S,Dh) -> (S,Dh,B), batch LAST
+        kp = permutedims(Kh, (2, 3, 1))
+        vp = permutedims(Vh, (2, 3, 1))
+        scores = NNlib.batched_mul(qp, NNlib.batched_transpose(kp)) ./ scale   # (S,S,B)
+        CAUSAL && (scores = scores .+ reshape(cmask, S, S, 1))
+        m = maximum(scores; dims=2)
+        ex = exp.(scores .- m)
+        attn = ex ./ sum(ex; dims=2)
+        out = NNlib.batched_mul(attn, vp)                    # (S,Dh,B)
+        permutedims(out, (3, 1, 2))                          # -> (B,S,Dh)
     end
     attn = _tb_dense(cat(heads...; dims=3), W_o, b_o) .* _tb_varcomp(S, CAUSAL)
     xres1 = inv2 .* (x .+ attn)
