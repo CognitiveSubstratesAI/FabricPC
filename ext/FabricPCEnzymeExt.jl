@@ -16,8 +16,10 @@
 module FabricPCEnzymeExt
 
 using FabricPC
-using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel, EnzymeBackend
-import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!
+using FabricPC: AbstractNode, NodeParams, SoA, energy_kernel, EnzymeBackend,
+    TransformerBlock, FlatNodeParams, NodeState, _tb_block_flat, forward, energy
+import FabricPC: _ad_param_grads, _ad_latent_grads, _register_ad_backend!,
+    _flat_input_grads, _flat_weight_grads
 using Enzyme
 
 # __init__(), NOT bare top-level: a module-level statement that mutates a DIFFERENT,
@@ -96,6 +98,55 @@ function _ad_latent_grads(
     N = ndims(first(values(inputs)))
     dinputs = Dict{String, Array{Float32, N}}(String(k) => dinnt[k] for k in keys(dinnt))
     return dinputs, dz
+end
+
+# ── Flat-lane TransformerBlock gradients (J-02b): positional Enzyme grads for the compiled lane ───
+# The dense flat nodes (Linear/Identity/Skip/LinearResidual) have closed-form `_flat_input_grads`/
+# `_flat_weight_grads` (src/jit_flat.jl); TransformerBlock has none — its local PC gradients need
+# autodiff. These positional twins of the eager Enzyme seam differentiate the SAME node energy the
+# flat forward produces (`0.5·prec·Σ(z_latent − z_mu)²`, z_mu = the activated `_tb_block_flat`), so
+# the whole flat inference/train step composes under `Reactant.@compile` (verified: Enzyme.autodiff
+# COMPOSES inside `@trace track_numbers=false for`, max|Δ|=4.77e-7 vs eager). This is still LOCAL PC:
+# each call differentiates ONE block's local energy, never the network or the inference loop.
+
+# Scalar local energy of a TransformerBlock as a function of its input `x` and weight tuple `args`
+# (`fp.w[1]` = flat_block_args), matching `flat_forward(::TransformerBlock)`: activation ∘ block,
+# then the node's own `energy` summed to a scalar for Enzyme's `Active` return. `z_latent` const.
+function _tb_energy_scalar(x, z_latent, node::TransformerBlock, args)
+    z_mu = forward(
+        node.activation,
+        _tb_block_flat(x, args..., Val(node.num_heads), Val(size(x, 1)),
+            Val(node.use_rope), Val(node.causal)),
+    )
+    return sum(energy(node.energy, z_latent, z_mu))
+end
+
+# ∂E/∂x — the input grad that flows back to the transformer's source (E-step). x Duplicated, all
+# else Const (so no self-grad contamination — self_grad = grad_latent is added separately upstream).
+function _flat_input_grads(node::TransformerBlock, fp::FlatNodeParams, ins, slots, ns::NodeState, _pre)
+    x = only(ins)
+    args = fp.w[1]
+    dx = Enzyme.make_zero(x)
+    Enzyme.autodiff(
+        set_runtime_activity(Reverse), _tb_energy_scalar, Active,
+        Duplicated(x, dx), Const(ns.z_latent), Const(node), Const(args),
+    )
+    return Any[dx]                                  # aligned to the single "in" edge
+end
+
+# ∂E/∂weights for the whole flat_block_args tuple (M-step). x Const, the weight tuple Duplicated.
+# Returns the grad in the SAME stashed-tuple shape `fp.w[1]` holds, so `flat_sgd_step`'s
+# TransformerBlock branch can apply it element-wise. muPC `a`-scaling (transformer.jl
+# forward_and_weight_grads) is v0-off (scaling_config===nothing) and out of the flat lane's scope.
+function _flat_weight_grads(node::TransformerBlock, fp::FlatNodeParams, ins, slots, state::NodeState)
+    x = only(ins)
+    args = fp.w[1]
+    dargs = map(Enzyme.make_zero, args)
+    Enzyme.autodiff(
+        set_runtime_activity(Reverse), _tb_energy_scalar, Active,
+        Const(x), Const(state.z_latent), Const(node), Duplicated(args, dargs),
+    )
+    return Any[dargs], nothing                      # (dw aligned to fp.w — the stash — , no separate bias)
 end
 
 end # module FabricPCEnzymeExt

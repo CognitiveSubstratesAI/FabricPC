@@ -557,7 +557,13 @@ function flat_sgd_step(plan, fparams, fstate::Vector{<:NodeState}, clamped::Vect
         ins = [fstate[s].z_latent for s in plan.in_src[i]]
         dw, db = _flat_weight_grads(plan.nodes[i], fp, ins, plan.in_slot[i], fstate[i])
         new_w = Any[
-            (fp.w[k] === nothing || dw[k] === nothing) ? fp.w[k] : fp.w[k] .- η .* dw[k]
+            if fp.w[k] === nothing || dw[k] === nothing
+                fp.w[k]
+            elseif fp.w[k] isa Tuple            # TransformerBlock stashed weight tuple (fp.w[1])
+                map((wi, di) -> wi .- η .* di, fp.w[k], dw[k])
+            else
+                fp.w[k] .- η .* dw[k]
+            end
             for k in eachindex(fp.w)
         ]
         new_b = (fp.b === nothing || db === nothing) ? fp.b : fp.b .- η .* db
@@ -589,7 +595,14 @@ scope as `to_flat_params` (a TransformerBlock's stashed-tuple `w` is not handled
 function graph_params_from_flat(plan::CompiledPlan, fparams::Vector{<:FlatNodeParams})
     nodes = Dict{String, NodeParams}()
     for (i, name) in enumerate(plan.names)
+        node = plan.nodes[i]
         fp = fparams[i]
+        if node isa TransformerBlock
+            # TransformerBlock stashes its whole weight set as the tuple `fp.w[1]` (flat_block_args);
+            # unstash it back to named weights/biases (J-02b).
+            nodes[name] = unflat_block_params(node, fp.w[1])
+            continue
+        end
         w = Dict{String, Array{Float32}}()
         for (k, key) in enumerate(plan.in_key[i])
             fp.w[k] === nothing || (w[key] = fp.w[k])

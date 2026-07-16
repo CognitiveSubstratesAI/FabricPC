@@ -376,3 +376,27 @@ function flat_block_args(node::TransformerBlock, params::NodeParams)
         )
     )
 end
+
+"""
+    unflat_block_params(node::TransformerBlock, args) -> NodeParams
+
+Inverse of [`flat_block_args`](@ref): repack the positional array tuple (weights + `(1,1,·)`
+biases/γβ) back into a named `NodeParams`, undoing the `(1,1,n)` reshape on biases and LayerNorm
+γ/β (their stored shape is `(1, embed)`). Used to rebuild `GraphParams` from a compiled transformer
+train step's UPDATED flat weights (J-02b — the M-step returns grads in the stashed-tuple shape, SGD
+updates element-wise, then this unstashes)."""
+function unflat_block_params(node::TransformerBlock, args)
+    u(a) = reshape(a, 1, length(a))                 # (1,1,n) → (1,n): the stored bias/γβ shape
+    Wq, Wk, Wv, Wo, bq, bk, bv, bo, Wff1, bff1, Wff2, bff2, l1g, l1b, l2g, l2b = args
+    weights = Dict{String, Array{Float32}}(
+        "W_q" => Wq, "W_k" => Wk, "W_v" => Wv, "W_o" => Wo,
+        "W_ff1" => Wff1, "W_ff2" => Wff2,
+        "ln1_gamma" => u(l1g), "ln2_gamma" => u(l2g),
+    )
+    biases = Dict{String, Array{Float32}}(
+        "b_q" => u(bq), "b_k" => u(bk), "b_v" => u(bv), "b_o" => u(bo),
+        "b_ff1" => u(bff1), "b_ff2" => u(bff2),
+        "ln1_beta" => u(l1b), "ln2_beta" => u(l2b),
+    )
+    return NodeParams(weights, biases)
+end

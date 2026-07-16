@@ -200,11 +200,16 @@ Run one compiled training step: marshal the CURRENT params + per-batch init stat
 thunk (inference + SGD update), and rebuild `GraphParams` from the updated flat arrays. Params are
 re-marshalled every call because training changes them (contrast `CompiledInference`, which holds
 inference-constant weights resident)."""
+# A flattened output element is normally one device array, but a TransformerBlock's whole weight set
+# is stashed as ONE nested Tuple (flat_block_args), so materialize recursively: `Array` each leaf,
+# `map` into each nested tuple.
+_materialize(x) = x isa Tuple ? map(_materialize, x) : Array(x)
+
 function (ct::CompiledTrainStep)(params::GraphParams, init_state::GraphState)
     arr_tuple, _ = flatten_param_arrays(to_flat_params(ct.plan, params))
     zl = ntuple(i -> init_state.nodes[ct.plan.names[i]].z_latent, length(ct.plan.names))
     out = ct.thunk(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl))
-    new_fp = repack_params(ntuple(i -> Array(out[i]), length(out)), ct.layout)
+    new_fp = repack_params(ntuple(i -> _materialize(out[i]), length(out)), ct.layout)
     return graph_params_from_flat(ct.plan, new_fp)
 end
 
