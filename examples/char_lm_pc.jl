@@ -188,7 +188,7 @@ function main()
 
     params, _, _ = train_autoregressive(
         params, structure, train_loader, opt, epochs, MersenneTwister(2);
-        epoch_callback=(ep, p, s) -> nothing
+        epoch_callback=(ep, p, s, cfg, r; energy, ce_loss) -> nothing
     )
 
     # quick generation demo, seeded from a snippet of the train text
