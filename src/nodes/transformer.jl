@@ -188,6 +188,22 @@ function _tb_mha(num_heads::Int, use_rope::Bool, causal::Bool, p, x)
     Qr = reshape(Q, B, S, Dh, H)
     Kr = reshape(K, B, S, Dh, H)
     Vr = reshape(V, B, S, Dh, H)
+    # BATCHED attention (NNlib.batched_mul), NOT a per-sample Julia loop. The loop this replaces
+    # (`map(1:B) do b; qb*transpose(kb) ...`) did B separate (S,Dh)x(Dh,S) GEMMs. Two reasons it had
+    # to go, and the second is why it was found:
+    #   1. PERF: one batched GEMM beats B small ones (B is 64-256 in practice).
+    #   2. TRACING: `Base.map(f, ::AbstractArray)` is Reactant-overlaid (Overlay.jl:249) and a
+    #      UnitRange IS an AbstractArray; because the closure captures traced arrays the overlay
+    #      fires, lowering the batch loop to `elem_apply_via_while_loop` with a
+    #      `TracedRNumber{Int64}` index — after which the body cannot produce a concrete Float32
+    #      array (J-10 gate 2: `MethodError: Float32(::TracedRNumber{Float32})`). ntuple fixes the
+    #      HEAD loop (H is 2-8, unrolling is right); the BATCH loop must not be unrolled at B=256 —
+    #      it must not exist.
+    # LAYOUT: batched_mul wants batch LAST (i,j,b). This node is batch-FIRST (B,S,E) throughout, and
+    # `_tb_apply_rope` expects (B,S,Dh) — so permute per head around the GEMMs and permute back,
+    # leaving rope and the node's public convention untouched. The `[:, :, :, h]` FULL-dimension
+    # slice is preserved exactly (see the note above): it is what Enzyme can scatter into, and a
+    # partial-column range here is what triggered the addToDiffe abort.
     heads = ntuple(H) do h
         Qh = Qr[:, :, :, h]
         Kh = Kr[:, :, :, h]
@@ -196,17 +212,16 @@ function _tb_mha(num_heads::Int, use_rope::Bool, causal::Bool, p, x)
             Qh = _tb_apply_rope(Qh, cosA, sinA)
             Kh = _tb_apply_rope(Kh, cosA, sinA)
         end
-        outb = map(1:B) do b
-            qb = Qh[b, :, :]
-            kb = Kh[b, :, :]
-            vb = Vh[b, :, :]
-            scores = (qb * transpose(kb)) ./ scale
-            scores = causal ? scores .+ cmask : scores
-            m = maximum(scores; dims=2)
-            ex = exp.(scores .- m)
-            (ex ./ sum(ex; dims=2)) * vb
-        end
-        stack(outb; dims=1)
+        qp = permutedims(Qh, (2, 3, 1))                       # (B,S,Dh) -> (S,Dh,B)
+        kp = permutedims(Kh, (2, 3, 1))
+        vp = permutedims(Vh, (2, 3, 1))
+        scores = NNlib.batched_mul(qp, NNlib.batched_transpose(kp)) ./ scale   # (S,S,B)
+        scores = causal ? scores .+ reshape(cmask, S, S, 1) : scores
+        m = maximum(scores; dims=2)                            # (S,1,B) — same reduction as before
+        ex = exp.(scores .- m)
+        attn = ex ./ sum(ex; dims=2)
+        out = NNlib.batched_mul(attn, vp)                      # (S,Dh,B)
+        permutedims(out, (3, 1, 2))                            # -> (B,S,Dh), as the callsite expects
     end
     concat = cat(heads...; dims=3)
     return _tb_dense(concat, p.weights["W_o"], reshape(p.biases["b_o"], 1, 1, E))
