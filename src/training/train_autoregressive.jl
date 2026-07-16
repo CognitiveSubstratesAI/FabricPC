@@ -129,30 +129,45 @@ BayesianTuner is currently structurally blocked on this gap, not just stylistica
 """
 function train_autoregressive(params::GraphParams, structure::GraphStructure, batches,
     opt, num_epochs::Integer, rng::AbstractRNG;
-    verbose::Bool=true, epoch_callback=nothing)
+    verbose::Bool=true, epoch_callback=nothing, iter_callback=nothing)
     iter_energies = Vector{Vector{Float32}}()
     epoch_results = Vector{Any}()
+    # `config` is upstream's training-config dict; our port passes the config as explicit args
+    # (opt/num_epochs), so we hand the callback a NamedTuple of them — the same information, in the
+    # shape a tuner/pruner callback expects at position 4 (train_autoregressive.py:353-361).
+    config = (; opt, num_epochs)
     for epoch in 1:num_epochs
         batch_e = Float32[];
         tot_e = 0.0f0;
         tot_ce = 0.0f0;
         n = 0
-        for batch in batches
+        for (batch_idx, batch) in enumerate(batches)
             params, energy, ce, _ = train_step_autoregressive(
                 params, opt, batch, structure, rng
             )
             tot_e += energy;
             tot_ce += ce;
             n += 1
-            push!(batch_e, Float32(energy))
+            # iter_callback(epoch, batch_idx, energy): per-batch hook; its return value replaces the
+            # recorded per-batch energy, exactly as upstream (train_autoregressive.py:341-344). A
+            # tuner uses this to stream progress / early-prune. Indices are 1-based (Julia), vs
+            # upstream's 0-based — the package's standard port convention.
+            push!(batch_e, iter_callback === nothing ? Float32(energy) :
+                           iter_callback(epoch, batch_idx, energy))
         end
         push!(iter_energies, batch_e)
+        avg_energy = n > 0 ? tot_e / n : 0.0f0
+        avg_ce = n > 0 ? tot_ce / n : 0.0f0
+        # epoch_callback(epoch, params, structure, config, rng; energy, ce_loss): full upstream
+        # signature. The epoch metrics are passed as keywords so a pruner (e.g. BayesianTuner) can
+        # report per-epoch progress without recomputing them (train_autoregressive.py:350-361).
         push!(epoch_results,
-            epoch_callback === nothing ? nothing : epoch_callback(epoch, params, structure))
+            epoch_callback === nothing ? nothing :
+            epoch_callback(epoch, params, structure, config, rng;
+                           energy=avg_energy, ce_loss=avg_ce))
         if verbose && n > 0
-            avg_ce = tot_ce / n
             @info "train_autoregressive" epoch="$epoch/$num_epochs" energy=round(
-                tot_e / n; digits=4
+                avg_energy; digits=4
             ) ce=round(avg_ce; digits=4) perplexity=round(exp(avg_ce); digits=2)
         end
     end

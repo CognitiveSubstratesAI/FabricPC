@@ -73,8 +73,11 @@ end
     @test length(eres) == 3
     # epoch_callback fires once per epoch with the epoch index
     _, _, eres2 = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
-        verbose=false, epoch_callback=(ep, p, s) -> ep)
+        verbose=false, epoch_callback=(ep, p, s, cfg, r; energy, ce_loss) -> ep)
     @test eres2 == [1, 2]
+      _, iters3, _ = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
+          verbose=false, iter_callback=(ep, bi, e) -> -1.0f0)
+      @test iters3 == [[-1.0f0], [-1.0f0]]
 end
 
 @testset "generation sampling core _sample_next (train_autoregressive.py:299 sampling)" begin
