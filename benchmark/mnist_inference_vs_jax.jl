@@ -144,6 +144,21 @@ function main()
     zl_host = ntuple(i -> init.nodes[ci.plan.names[i]].z_latent, length(ci.plan.names))
     zl_r = Reactant.to_rarray(zl_host)
     t_jit_resident = bench(() -> (o = ci.thunk(ci.params_r, zl_r); [Array(x) for x in o]), 30)
+    # sync=true: Reactant's DOCUMENTED completion barrier (CompileOptions.jl: "blocking till the
+    # computation is complete. This is recommended when benchmarking"). This is the true analog of
+    # JAX's block_until_ready — it waits WITHOUT the device->host copy. We previously hand-rolled
+    # the barrier as `Array(...)` and then documented the resulting copy as an unavoidable
+    # asymmetry vs JAX; it was not unavoidable, it was us not reading the docs (audit 2026-07-16).
+    # GATED on upstream #2647 (OPEN, "Buffer synchronisation is sometimes removed"): the emitted
+    # wait can be DCE'd, which would silently restore the async artifact with no Array() left to
+    # expose it. So we ASSERT the barrier is real below rather than trusting the flag.
+    ci_sync = compile_inference(structure, params, clamps; batch=B, sync=true)
+    t_sync = bench(() -> ci_sync.thunk(ci_sync.params_r, zl_r), 30)
+    t_async_bare = bench(() -> ci.thunk(ci.params_r, zl_r), 30)
+    if t_sync < 4 * t_async_bare
+        @warn "#2647: sync=true's wait looks DCE'd — sync ($(t_sync*1e3) ms) is not meaningfully                slower than the bare async dispatch ($(t_async_bare*1e3) ms). Do NOT trust julia_jit_sync_ms."
+    end
+
 
     println("=== RESULT ===")
     @printf("compile_time_s              = %.4f\n", t_compile)
@@ -157,6 +172,16 @@ function main()
         "julia_jit_resident_ms       = %.4f   (params AND state device-resident — JAX's setup)\n",
         t_jit_resident * 1e3
     )
+    @printf(
+        "julia_jit_sync_ms           = %.4f   (sync=true barrier, NO host copy — the true JAX analog)\n",
+        t_sync * 1e3
+    )
+    @printf(
+        "  -> device->host copy cost          = %.4f ms  (resident - sync; the 'asymmetry' we used to concede)\n",
+        (t_jit_resident - t_sync) * 1e3
+    )
+    @printf("  -> #2647 barrier check: sync/async_bare = %.0fx (want >>1; ~1 means the wait was DCE'd)\n",
+            t_sync / t_async_bare)
     @printf(
         "  -> per-call param marshalling cost = %.4f ms  (remarshal - headline)\n",
         (t_jit_remarshal - t_jit) * 1e3

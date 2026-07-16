@@ -67,7 +67,7 @@ than erroring. Re-check this flag if the loop's carried state stops being arrays
 """
 function compile_inference(
     structure::GraphStructure, params::GraphParams, clamps::AbstractDict; batch::Int,
-    loop::Bool=false
+    loop::Bool=false, sync::Bool=false
 )
     plan = CompiledPlan(structure)
     arr_tuple, layout = flatten_param_arrays(to_flat_params(plan, params))
@@ -86,8 +86,23 @@ function compile_inference(
         return ntuple(i -> fs[i].z_latent, length(fs))
     end
     runner(at, z) = jit_inference_runner(at, z, plan, layout, clamped)
-    thunk = loop ? Reactant.@compile(looped(params_r, Reactant.to_rarray(zl))) :
-                   Reactant.@compile(runner(params_r, Reactant.to_rarray(zl)))
+    # `sync=true` is Reactant's documented completion barrier — CompileOptions.jl: "Reactant
+    # computations are asynchronous by default. If `true`, the computation will be executed
+    # synchronously, blocking till the computation is complete. This is recommended when
+    # benchmarking." Default FALSE here on purpose: the production path `ci(init_state)` returns
+    # plain Julia arrays by contract, and `Array(...)` already syncs, so a barrier buys nothing
+    # there. It exists for the BENCHMARK, which must time compute without paying a device->host
+    # copy JAX never pays.
+    # ⚠️ VERIFY, do not trust: upstream #2647 (OPEN) "Buffer synchronisation is sometimes removed"
+    # — the emitted wait can be dead-code-eliminated, which would silently restore the async
+    # artifact (decisions.md §11's bogus ~1000x) with no `Array(...)` left to expose it.
+    thunk = if loop
+        sync ? Reactant.@compile(sync = true, looped(params_r, Reactant.to_rarray(zl))) :
+               Reactant.@compile(looped(params_r, Reactant.to_rarray(zl)))
+    else
+        sync ? Reactant.@compile(sync = true, runner(params_r, Reactant.to_rarray(zl))) :
+               Reactant.@compile(runner(params_r, Reactant.to_rarray(zl)))
+    end
     return CompiledInference(plan, layout, clamped, thunk, batch, params_r)
 end
 
