@@ -860,7 +860,36 @@ anti-thesis baseline). decisions.md #18.
 
 ## 19. Autodiff backend = Zygote (Enzyme segfaults on attention); params as SoA
 
-Date: 2026-06-17
+Date: 2026-06-17 · **🔴 PREMISE FALSIFIED 2026-07-16 — RE-TEST, DO NOT CITE THIS AS SETTLED.**
+
+> **The load-bearing claim below — "Enzyme aborts on the full multi-head-attention block" — is NO
+> LONGER TRUE at Enzyme v0.13.185 (we ran v0.13.152 when this was written). Measured 2026-07-16 in
+> `test/dual_ad_backend_env` (Enzyme-only load, F-04 respected), on the FULL `TransformerBlock` via
+> `_ad_param_grads(EnzymeBackend(), ...)`:**
+>
+> * **No abort.** 8 weight-gradient entries, all finite. No `addToDiffe`, no
+>   `unhandled accumulate with partial sizes`.
+> * **Gradients CORRECT**, not merely finite: central finite differences on `energy_kernel` give a
+>   worst relative error of **0.00696** (at `W_q[51]`) — FD noise at Float32.
+>
+> **What this does and does not mean.** It kills the PREMISE, not automatically the CONCLUSION.
+> Zygote may still be the right production backend on other grounds (maturity, compile time, the
+> `withgradient` one-pass path, our whole conformance suite runs on it). But every decision that
+> DESCENDS from "Enzyme cannot do attention" is now unsupported and must be re-derived rather than
+> inherited: this section, the F-04 dual-backend guard, and the transformer's Zygote-only lane.
+>
+> **How this was missed, which is the transferable part:** an ARCHITECTURAL decision rested on a
+> CAPABILITY CLAIM about a fast-moving dependency, and capability claims EXPIRE. Enzyme moved 33
+> patch versions under us and nobody re-ran the test — the claim was cited for a month as settled
+> fact. A decision built on "library X cannot do Y" needs a re-test trigger, not just a rationale.
+> **Do not cite §19's premise without re-running the probe.**
+>
+> Note on attribution: an audit reader proposed that upstream #3206 ("Filter tuple error", fixed +
+> CI-gated in 0.13.185) was our bug. The adversary REFUTED that — #3206 needs a float field, which
+> `TransformerBlock`/`MhaResidualNode` do not have — and predicted the re-probe would still fail.
+> It passed anyway. So: the abort is gone, the CAUSE is unattributed, and we should not claim one.
+> Plausible but UNVERIFIED: the `Enzyme_jll` 0.0.270 → 0.0.282 bump that came with 0.13.185.
+
 
 The transformer/attention nodes have no hand-written local gradient — they rely on the
 Phase-D autodiff seam (differentiate `compute_mu` for the node-LOCAL PC gradient, NOT
