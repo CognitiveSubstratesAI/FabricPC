@@ -153,6 +153,8 @@ export graph,
     TaskMap,
     initialize_params,
     FeedforwardStateInit,
+    GlobalStateInit,
+    NodeDistributionStateInit,
     initialize_graph_state
 # Training
 export get_graph_param_gradient, train_step, sgd_update, predict, AdamW, step!, train_step!
