@@ -188,7 +188,7 @@ function _tb_mha(num_heads::Int, use_rope::Bool, causal::Bool, p, x)
     Qr = reshape(Q, B, S, Dh, H)
     Kr = reshape(K, B, S, Dh, H)
     Vr = reshape(V, B, S, Dh, H)
-    heads = map(1:H) do h
+    heads = ntuple(H) do h
         Qh = Qr[:, :, :, h]
         Kh = Kr[:, :, :, h]
         Vh = Vr[:, :, :, h]
