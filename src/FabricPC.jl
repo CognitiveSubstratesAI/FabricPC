@@ -69,10 +69,13 @@ include("training/train.jl")
 include("training/adam.jl")
 include("training/natural_gradients.jl")
 include("training/train_autoregressive.jl")
+include("tuning/divergence_guard.jl")
 export create_causal_mask,
     compute_loss,
     train_step_autoregressive,
     train_autoregressive,
+    divergence_guard,
+    TrialPruned,
     generate_autoregressive,
     evaluate_autoregressive
 include("models/transformer_lm.jl")
