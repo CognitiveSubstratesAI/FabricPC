@@ -46,3 +46,6 @@ credentials.json
 # J-04 benchmark artefacts: ~1 MB of raw Float32 .bin dumped by mnist_inference_vs_jax.py
 # (regenerate with `python benchmark/mnist_inference_vs_jax.py benchmark/mnist_inference_vs_jax_data`)
 benchmark/mnist_inference_vs_jax_data/
+
+# Warm Reactant boot log — a runtime artifact, not source.
+.warm_reactant_boot.log

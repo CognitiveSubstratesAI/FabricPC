@@ -1,0 +1,11 @@
+using Pkg
+Pkg.activate(@__DIR__)
+println("[setup] activated: ", Base.active_project())
+t0 = time()
+Pkg.add("Zygote")
+println("[setup] Zygote added in ", round(time()-t0; digits=1), "s")
+t1 = time()
+Pkg.instantiate()
+println("[setup] instantiate done in ", round(time()-t1; digits=1), "s")
+Pkg.status()
+println("[setup] DONE")
