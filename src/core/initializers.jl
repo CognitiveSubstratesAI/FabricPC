@@ -110,7 +110,7 @@ instead of `72`, initialising ~4.9x too wide under Kaiming (ConvNode's default).
 """
 function _fans(shape::Tuple)
     length(shape) >= 2 || return (Int(shape[1]), Int(shape[1]))
-    return (Int(prod(shape[1:end-1])), Int(prod(shape[1:end-2]) * shape[end]))
+    return (Int(prod(shape[1:(end - 1)])), Int(prod(shape[1:(end - 2)]) * shape[end]))
 end
 
 function initialize(rng::AbstractRNG, shape::Tuple, init::XavierInitializer)

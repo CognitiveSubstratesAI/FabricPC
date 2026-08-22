@@ -16,17 +16,17 @@ using FabricPC: forward, derivative, energy, grad_latent, grad_mu,
 function _energy_grad_fd(e, z, mu; ε=1.0f-3)
     nz = similar(z)
     for i in eachindex(z)
-        zp = copy(z);
+        zp = copy(z)
         zp[i] += ε
-        zm = copy(z);
+        zm = copy(z)
         zm[i] -= ε
         nz[i] = (sum(energy(e, zp, mu)) - sum(energy(e, zm, mu))) / (2ε)
     end
     nm = similar(mu)
     for i in eachindex(mu)
-        mp = copy(mu);
+        mp = copy(mu)
         mp[i] += ε
-        mm = copy(mu);
+        mm = copy(mu)
         mm[i] -= ε
         nm[i] = (sum(energy(e, z, mp)) - sum(energy(e, z, mm))) / (2ε)
     end

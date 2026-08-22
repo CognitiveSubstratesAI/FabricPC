@@ -40,12 +40,16 @@ function divergence_guard(; rel_tol::Real=0.1, verbose::Bool=false)
         push!(seen, Float32(energy))
         baseline = minimum(seen)
         if energy > baseline * (1 + rel_tol)
-            throw(TrialPruned(
-                "Energy diverged at epoch $epoch: rose to " *
-                "$(round(energy; digits=4)) from a low of $(round(baseline; digits=4))"
-            ))
+            throw(
+                TrialPruned(
+                    "Energy diverged at epoch $epoch: rose to " *
+                    "$(round(energy; digits=4)) from a low of $(round(baseline; digits=4))"
+                )
+            )
         end
-        verbose && @info "trial epoch" epoch energy=round(energy; digits=4) baseline=round(baseline; digits=4)
+        verbose && @info "trial epoch" epoch energy=round(energy; digits=4) baseline=round(
+            baseline; digits=4
+        )
         return energy
     end
 end

@@ -91,7 +91,8 @@ function check_tier_dt_state(prefix::AbstractString, state::GraphState)
         # SHAPE, not just values — energy is per-sample `(batch,)` on both stacks; upstream
         # b6f64ad moved only WHERE the batch->scalar sum happens, never the field's shape.
         # An allclose alone would let a scalar broadcast against the fixture; this fails first.
-        @test size(ns.energy) == size(FIX_DT["$(prefix)_$(name)_energy"]) == (state.batch_size,)
+        @test size(ns.energy) == size(FIX_DT["$(prefix)_$(name)_energy"]) ==
+            (state.batch_size,)
         # A long-standing carve-out lived here: "output" (VocabProjectionNode) was excluded from
         # the pre_activation assertion because upstream's override never assigned that field,
         # while our generic seam always set pre_activation = z_mu — so the fixture key held the
@@ -121,8 +122,11 @@ function check_tier_dt_state(prefix::AbstractString, state::GraphState)
     # converged_input_z_latent` exactly).
     ni = state.nodes["input"]
     @test allclose_dt(ni.z_latent, FIX_DT["$(prefix)_input_z_latent"] .+ 1.0f0)
-    expected_input_zmu = prefix == "init" ? zeros(Float32, size(ni.z_mu)) :
+    expected_input_zmu = if prefix == "init"
+        zeros(Float32, size(ni.z_mu))
+    else
         (FIX_DT["$(prefix)_input_z_latent"] .+ 1.0f0)
+    end
     @test allclose_dt(ni.z_mu, expected_input_zmu)
     # error/energy/latent_grad carry NO token-id encoding at all -- the
     # terminal special case forces every one of them to exactly zero on both sides at every
@@ -155,7 +159,9 @@ function check_tier_dt_params(prefix::AbstractString, gp::GraphParams)
     # values either way, no reordering across singleton leading dims), matching
     # test_tier_b.jl's own established convention for this exact node family.
     for k in ("ln1_gamma", "ln2_gamma")
-        @test allclose_dt(vec(tb.weights[k]), vec(FIX_DT["$(prefix)_transformer_0_w__$(k)"]))
+        @test allclose_dt(
+            vec(tb.weights[k]), vec(FIX_DT["$(prefix)_transformer_0_w__$(k)"])
+        )
     end
     for k in ("b_q", "b_k", "b_v", "b_o", "b_ff1", "b_ff2", "ln1_beta", "ln2_beta")
         @test allclose_dt(vec(tb.biases[k]), vec(FIX_DT["$(prefix)_transformer_0_b__$(k)"]))
@@ -269,7 +275,9 @@ end
     # "causal_mask" task exists on the Julia side to thread through, unlike upstream's CLAMP
     # PLUMBING note in the generator's docstring).
     batch = Dict{String, Any}("x" => Xb, "y" => Yb)
-    grads, energy, grad_final_state = get_graph_param_gradient(params, batch, structure, rng)
+    grads, energy, grad_final_state = get_graph_param_gradient(
+        params, batch, structure, rng
+    )
 
     @testset "get_graph_param_gradient (vs upstream, own re-init from batch)" begin
         check_tier_dt_params("grad", grads)

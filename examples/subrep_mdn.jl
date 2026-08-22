@@ -46,9 +46,9 @@ function make_data(n::Int)
     X = zeros(Float32, 2n, 2)
     Y = zeros(Float32, 2n, 2)
     for i in 1:n
-        X[i, :] .= _CTX1;
+        X[i, :] .= _CTX1
         Y[i, :] .= _CONE1
-        X[n + i, :] .= _CTX2;
+        X[n + i, :] .= _CTX2
         Y[n + i, :] .= _CONE2
     end
     X, Y
@@ -130,12 +130,12 @@ function run_coupled_demo(;
 )
     cone1 = cone_to_admit(_OPT1)            # gate-derived target [1, 0]
     cone2 = cone_to_admit(_OPT2)            # gate-derived target [0, 1]
-    X = zeros(Float32, 2n, 2);
+    X = zeros(Float32, 2n, 2)
     Y = zeros(Float32, 2n, 2)
     for i in 1:n
-        X[i, :] .= _CTX1;
+        X[i, :] .= _CTX1
         Y[i, :] .= cone1
-        X[n + i, :] .= _CTX2;
+        X[n + i, :] .= _CTX2
         Y[n + i, :] .= cone2
     end
     structure = mdn_graph()

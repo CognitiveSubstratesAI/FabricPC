@@ -42,7 +42,8 @@ function check_tier_c_state(prefix::AbstractString, state::GraphState)
         # scalar-collapsed energy broadcast against the fixture and could pass whenever the
         # per-sample values happen to coincide; this fails on the shape first, which is the half
         # "matches upstream" hides. Same guard, same reason, in the D tiers.
-        @test size(ns.energy) == size(FIX_C["$(prefix)_$(name)_energy"]) == (state.batch_size,)
+        @test size(ns.energy) == size(FIX_C["$(prefix)_$(name)_energy"]) ==
+            (state.batch_size,)
     end
 end
 
@@ -54,7 +55,8 @@ Assert the dumped `h`/`y` weights + biases for fixture prefix `prefix` (e.g. "gr
 (source node, `use_bias=false`) so there is nothing to compare for it.
 """
 function check_tier_c_params(
-    prefix::AbstractString, gp::GraphParams, edge_xh::AbstractString, edge_hy::AbstractString
+    prefix::AbstractString, gp::GraphParams, edge_xh::AbstractString,
+    edge_hy::AbstractString
 )
     @test allclose_c(gp.nodes["h"].weights[edge_xh], FIX_C["$(prefix)_h_w__$(edge_xh)"])
     @test allclose_c(gp.nodes["h"].biases["b"], FIX_C["$(prefix)_h_b__b"])
@@ -134,7 +136,9 @@ end
     end
 
     batch = Dict{String, Any}("x" => Xb, "y" => Yb)
-    grads, energy, grad_final_state = get_graph_param_gradient(params, batch, structure, rng)
+    grads, energy, grad_final_state = get_graph_param_gradient(
+        params, batch, structure, rng
+    )
 
     @testset "get_graph_param_gradient (vs upstream, own re-init from batch)" begin
         check_tier_c_params("grad", grads, edge_xh, edge_hy)

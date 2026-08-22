@@ -62,7 +62,9 @@ function warm_serve(state_dir::AbstractString, banner::AbstractString)
                         Base.invokelatest(Main.Revise.revise; throw=true)
                     catch e
                         open(outf, "w") do io
-                            println(io, "!!! REVISE FAILED — session is STALE. Snippet NOT run.")
+                            println(
+                                io, "!!! REVISE FAILED — session is STALE. Snippet NOT run."
+                            )
                             println(io, "!!! Fix the source error, or restart the session.")
                             showerror(io, e, catch_backtrace())
                             println(io)

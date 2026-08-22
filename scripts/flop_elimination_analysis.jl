@@ -22,7 +22,7 @@ using FabricPC
 using FabricPC: CompiledPlan
 using Random
 
-rows(out_shape, B) = B * prod(out_shape[1:end-1])
+rows(out_shape, B) = B * prod(out_shape[1:(end - 1)])
 
 # forward GEMM FLOPs for one node given its output shape and its in-edge source shapes
 function fwd_flops(node, out_shape, src_shapes, B)
@@ -36,7 +36,8 @@ function fwd_flops(node, out_shape, src_shapes, B)
         return 0                                                        # gather
     elseif node isa FabricPC.TransformerBlock
         S, E = out_shape
-        H = node.num_heads; F = node.ff_dim
+        H = node.num_heads
+        F = node.ff_dim
         qkv = 3 * 2 * B * S * E * E
         scores = 2 * B * S * S * E
         av = 2 * B * S * S * E
@@ -75,7 +76,7 @@ function analyze(structure, clamps, B; label="")
 
     total = 0.0
     hoistable = 0.0    # forward of nodes whose ALL in-sources are clamped
-    prunable  = 0.0    # input-grad of edges whose SOURCE node (gradient target) is clamped
+    prunable = 0.0    # input-grad of edges whose SOURCE node (gradient target) is clamped
 
     for i in eachindex(names)
         info = plan.infos[i]
@@ -115,11 +116,11 @@ function analyze(structure, clamps, B; label="")
     opt = total * T - hoistable * (T - 1) - prunable * T
     ceiling = (total * T) / opt
     println(rpad(label, 26),
-        "  total/step=", round(total/1e6, digits=2), "M",
-        "  hoistable=", round(hoistable/1e6, digits=2), "M",
-        "  prunable=", round(prunable/1e6, digits=2), "M",
-        "  clamped-incident=", round(100*frac, digits=2), "%",
-        "  T=", T, "  FLOP-ceiling=", round(ceiling, digits=2), "x")
+        "  total/step=", round(total/1e6; digits=2), "M",
+        "  hoistable=", round(hoistable/1e6; digits=2), "M",
+        "  prunable=", round(prunable/1e6; digits=2), "M",
+        "  clamped-incident=", round(100*frac; digits=2), "%",
+        "  T=", T, "  FLOP-ceiling=", round(ceiling; digits=2), "x")
     return (; total, hoistable, prunable, frac, T, ceiling, opt, jax=total*T)
 end
 
@@ -133,10 +134,18 @@ function run_flop_analysis()
     h = Linear((128,), "h"; activation=TanhActivation())
     y = Linear((10,), "y"; energy=GaussianEnergy())
     mnist = graph([x, h, y], [Edge(x, h), Edge(h, y)], TaskMap(; x=x, y=y),
-                  InferenceSGD(eta_infer=0.1, infer_steps=20, latent_decay=0.0))
+        InferenceSGD(; eta_infer=0.1, infer_steps=20, latent_decay=0.0))
     r = analyze(mnist, Dict("x"=>1, "y"=>1), B; label="MNIST-MLP (784->128->10)")
-    println("  JAX-side total (total*20) = ", round(r.jax/1e6, digits=1), "M  [ground truth 2081M]")
-    println("  Julia-side optimized      = ", round(r.opt/1e6, digits=1), "M  [ground truth 77.6M]")
+    println(
+        "  JAX-side total (total*20) = ",
+        round(r.jax/1e6; digits=1),
+        "M  [ground truth 2081M]"
+    )
+    println(
+        "  Julia-side optimized      = ",
+        round(r.opt/1e6; digits=1),
+        "M  [ground truth 77.6M]"
+    )
 
     # ---- Deep chains (uniform width) ----
     println()
@@ -150,11 +159,11 @@ function run_flop_analysis()
         end
         push!(nodes, Linear((W,), "out"; energy=GaussianEnergy()))
         edges = Edge[]
-        for i in 1:(length(nodes)-1)
-            push!(edges, Edge(nodes[i], nodes[i+1]))
+        for i in 1:(length(nodes) - 1)
+            push!(edges, Edge(nodes[i], nodes[i + 1]))
         end
         structure = graph(nodes, edges, TaskMap(; x=nodes[1], y=nodes[end]),
-                          InferenceSGD(eta_infer=0.1, infer_steps=T, latent_decay=0.0))
+            InferenceSGD(; eta_infer=0.1, infer_steps=T, latent_decay=0.0))
         return structure
     end
     for L in (2, 4, 8, 16, 32)
@@ -165,11 +174,15 @@ function run_flop_analysis()
     # ---- Transformer-LM (the flagship model) ----
     println()
     println("="^140)
-    println("TRANSFORMER-LM (clamped input feeds EmbeddingNode=gather; clamped output from unclamped src)")
+    println(
+        "TRANSFORMER-LM (clamped input feeds EmbeddingNode=gather; clamped output from unclamped src)"
+    )
     println("="^140)
-    for (S, V, E, Hh, nb) in [(8, 10, 8, 2, 1), (128, 256, 64, 4, 2), (256, 1000, 256, 8, 6)]
-        st = transformer_lm(; seq_len=S, vocab_size=V, embed_dim=E, num_heads=Hh, num_blocks=nb,
-                            eta_infer=0.01)
+    for (S, V, E, Hh, nb) in
+        [(8, 10, 8, 2, 1), (128, 256, 64, 4, 2), (256, 1000, 256, 8, 6)]
+        st = transformer_lm(; seq_len=S, vocab_size=V, embed_dim=E, num_heads=Hh,
+            num_blocks=nb,
+            eta_infer=0.01)
         lbl = "tf S=$(S) E=$(E) H=$(Hh) blk=$(nb)"
         analyze(st, Dict("input"=>1, "output"=>1), 32; label=lbl)
     end

@@ -152,7 +152,9 @@ function run_pc_arm(trial_seed::Integer, train_loader, test_loader)
         num_epochs=EPOCHS, rng=MersenneTwister(trial_seed + 1), verbose=false
     )
     train_time = time() - t0
-    metrics = evaluate_pcn(trained, structure, test_loader; rng=MersenneTwister(trial_seed + 2))
+    metrics = evaluate_pcn(
+        trained, structure, test_loader; rng=MersenneTwister(trial_seed + 2)
+    )
     return metrics, train_time
 end
 
@@ -253,7 +255,8 @@ function main()
     println("=" ^ 70)
     println("A/B Experiment: PC vs Backprop  (MNIST-MLP, 784->128(tanh)->10)")
     println("=" ^ 70)
-    @printf("Trials: %d   Epochs/trial: %d   Design: paired (same seed/batch-order per trial)\n",
+    @printf(
+        "Trials: %d   Epochs/trial: %d   Design: paired (same seed/batch-order per trial)\n",
         N_TRIALS, EPOCHS)
     @printf("PC arm:       lr=%.4f  eta_infer=%.3f  infer_steps=%d  (plain SGD)\n",
         PC_LR, PC_ETA_INFER, PC_INFER_STEPS)
@@ -275,11 +278,20 @@ function main()
         tt = OneSampleTTest(pc_acc, bp_acc)               # paired t-test on the differences
         diff = pc_acc .- bp_acc
         d = mean(diff) / std(diff)                        # Cohen's d (paired), SD of differences
-        magnitude = abs(d) >= 0.8 ? "large" : abs(d) >= 0.5 ? "medium" :
-                    abs(d) >= 0.2 ? "small" : "negligible"
+        magnitude = if abs(d) >= 0.8
+            "large"
+        elseif abs(d) >= 0.5
+            "medium"
+        elseif abs(d) >= 0.2
+            "small"
+        else
+            "negligible"
+        end
 
         println()
-        println("--- Paired t-test (HypothesisTests.jl OneSampleTTest on the differences) ---")
+        println(
+            "--- Paired t-test (HypothesisTests.jl OneSampleTTest on the differences) ---"
+        )
         @printf("Mean difference (PC - Backprop): %+.2f%%\n", mean(diff) * 100)
         @printf("t-statistic: %.4f\n", tt.t)
         @printf("p-value: %.4f, N = %d\n", pvalue(tt), N_TRIALS)

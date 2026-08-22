@@ -116,20 +116,22 @@ function _tb_energy_scalar(x, z_latent, node::TransformerBlock, args)
     z_mu = forward(
         node.activation,
         _tb_block_flat(x, args..., Val(node.num_heads), Val(size(x, 1)),
-            Val(node.use_rope), Val(node.causal)),
+            Val(node.use_rope), Val(node.causal))
     )
     return sum(energy(node.energy, z_latent, z_mu))
 end
 
 # ∂E/∂x — the input grad that flows back to the transformer's source (E-step). x Duplicated, all
 # else Const (so no self-grad contamination — self_grad = grad_latent is added separately upstream).
-function _flat_input_grads(node::TransformerBlock, fp::FlatNodeParams, ins, slots, ns::NodeState, _pre)
+function _flat_input_grads(
+    node::TransformerBlock, fp::FlatNodeParams, ins, slots, ns::NodeState, _pre
+)
     x = only(ins)
     args = fp.w[1]
     dx = Enzyme.make_zero(x)
     Enzyme.autodiff(
         set_runtime_activity(Reverse), _tb_energy_scalar, Active,
-        Duplicated(x, dx), Const(ns.z_latent), Const(node), Const(args),
+        Duplicated(x, dx), Const(ns.z_latent), Const(node), Const(args)
     )
     return Any[dx]                                  # aligned to the single "in" edge
 end
@@ -138,13 +140,15 @@ end
 # Returns the grad in the SAME stashed-tuple shape `fp.w[1]` holds, so `flat_sgd_step`'s
 # TransformerBlock branch can apply it element-wise. muPC `a`-scaling (transformer.jl
 # forward_and_weight_grads) is v0-off (scaling_config===nothing) and out of the flat lane's scope.
-function _flat_weight_grads(node::TransformerBlock, fp::FlatNodeParams, ins, slots, state::NodeState)
+function _flat_weight_grads(
+    node::TransformerBlock, fp::FlatNodeParams, ins, slots, state::NodeState
+)
     x = only(ins)
     args = fp.w[1]
     dargs = map(Enzyme.make_zero, args)
     Enzyme.autodiff(
         set_runtime_activity(Reverse), _tb_energy_scalar, Active,
-        Const(x), Const(state.z_latent), Const(node), Duplicated(args, dargs),
+        Const(x), Const(state.z_latent), Const(node), Duplicated(args, dargs)
     )
     return Any[dargs], nothing                      # (dw aligned to fp.w — the stash — , no separate bias)
 end

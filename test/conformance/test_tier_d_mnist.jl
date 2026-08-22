@@ -49,7 +49,8 @@ function check_tier_d_state(prefix::AbstractString, state::GraphState)
         # SHAPE, not just values — energy is per-sample `(batch,)` on both stacks; upstream
         # b6f64ad moved only WHERE the batch->scalar sum happens, never the field's shape.
         # An allclose alone would let a scalar broadcast against the fixture; this fails first.
-        @test size(ns.energy) == size(FIX_D["$(prefix)_$(name)_energy"]) == (state.batch_size,)
+        @test size(ns.energy) == size(FIX_D["$(prefix)_$(name)_energy"]) ==
+            (state.batch_size,)
         @test allclose_d(ns.latent_grad, FIX_D["$(prefix)_$(name)_latent_grad"])
     end
 end
@@ -62,7 +63,8 @@ Assert the dumped `h`/`y` weights + biases for fixture prefix `prefix` (e.g. "pa
 (source node, `use_bias=false`) so there is nothing to compare for it.
 """
 function check_tier_d_params(
-    prefix::AbstractString, gp::GraphParams, edge_xh::AbstractString, edge_hy::AbstractString
+    prefix::AbstractString, gp::GraphParams, edge_xh::AbstractString,
+    edge_hy::AbstractString
 )
     @test allclose_d(gp.nodes["h"].weights[edge_xh], FIX_D["$(prefix)_h_w__$(edge_xh)"])
     @test allclose_d(gp.nodes["h"].biases["b"], FIX_D["$(prefix)_h_b__b"])

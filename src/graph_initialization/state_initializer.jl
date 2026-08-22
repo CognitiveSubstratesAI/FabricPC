@@ -78,7 +78,7 @@ end
 # (a global initializer, or the node's own `latent_init`), zero the rest, overlay clamps. Port of
 # the shared body of GlobalStateInit / NodeDistributionStateInit.initialize_state.
 function _independent_state(structure::GraphStructure, batch_size::Int, rng::AbstractRNG,
-                            clamps::AbstractDict, pick)
+    clamps::AbstractDict, pick)
     node_state_dict = Dict{String, NodeState}()
     for name in structure.node_names
         info = structure.infos[name]
@@ -100,7 +100,7 @@ end
 GlobalStateInit() = GlobalStateInit(NormalInitializer(; mean=0.0, std=0.05))
 
 initialize_state(g::GlobalStateInit, structure::GraphStructure, batch_size::Int,
-                 rng::AbstractRNG, clamps::AbstractDict, ::Union{GraphParams,Nothing}=nothing) =
+    rng::AbstractRNG, clamps::AbstractDict, ::Union{GraphParams, Nothing}=nothing) =
     _independent_state(structure, batch_size, rng, clamps, _ -> g.initializer)
 
 """Per-node-distribution state initializer: each node's own `latent_init`, independent, no forward
@@ -109,7 +109,7 @@ without the propagation.)"""
 struct NodeDistributionStateInit end
 
 initialize_state(::NodeDistributionStateInit, structure::GraphStructure, batch_size::Int,
-                 rng::AbstractRNG, clamps::AbstractDict, ::Union{GraphParams,Nothing}=nothing) =
+    rng::AbstractRNG, clamps::AbstractDict, ::Union{GraphParams, Nothing}=nothing) =
     _independent_state(structure, batch_size, rng, clamps, node -> node.latent_init)
 
 """

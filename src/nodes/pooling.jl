@@ -29,10 +29,10 @@ cannot change the channel count. Global mode has no spatial output, so it is ski
 shape is checked at construction instead)."""
 function initialize_params(
     node::PoolNode, ::AbstractRNG, node_shape::Tuple, input_shapes::AbstractDict,
-    ::Union{AbstractInitializer,Nothing}
+    ::Union{AbstractInitializer, Nothing}
 )
     _pool_validate(node, node_shape, input_shapes)
-    return NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
+    return NodeParams(Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}())
 end
 
 """Sum the in-edges as a STRICT LEFT FOLD in `in_edges` order.
@@ -72,11 +72,11 @@ defaults to `window_shape` (non-overlapping), `activation=IdentityActivation()`,
 Sets `reject_pad_ge_window=true` (`pooling.py:214`): max pooling fills with `-Inf`, so a window
 fully covered by explicit padding would output `-Inf`, and the validator rejects that config.
 """
-struct MaxPool{R,P<:PadSpec} <: PoolNode
+struct MaxPool{R, P <: PadSpec} <: PoolNode
     shape::Tuple
     name::String
-    window_shape::NTuple{R,Int}
-    stride::NTuple{R,Int}
+    window_shape::NTuple{R, Int}
+    stride::NTuple{R, Int}
     padding::P
     activation::AbstractActivation
     energy::AbstractEnergy
@@ -97,21 +97,25 @@ function MaxPool(
     # MaxPool/AvgPool accepted it and failed later (or silently), for no reason other than that
     # nobody wrote the check. `_window_plan`/`_pads` are the same rank-1/2/3 machinery either way.
     _pool_rank_guard(R, shp, name, "MaxPool")
-    ws = NTuple{R,Int}(window_shape)
-    st = stride === nothing ? ws : NTuple{R,Int}(stride)     # upstream: defaults to the window
+    ws = NTuple{R, Int}(window_shape)
+    st = stride === nothing ? ws : NTuple{R, Int}(stride)     # upstream: defaults to the window
     p = padspec(padding, R)
-    return MaxPool{R,typeof(p)}(shp, String(name), ws, st, p, activation, energy, latent_init)
+    return MaxPool{R, typeof(p)}(
+        shp, String(name), ws, st, p, activation, energy, latent_init
+    )
 end
 
 """Spatial-rank guard shared by MaxPool/AvgPool, mirroring ConvNode's. Windowed pooling is
 1D/2D/3D like conv; a shape outside that has no `_window_plan` and must fail CLOSED at
 construction rather than deeper in."""
 _pool_rank_guard(R::Int, shp::Tuple, name, op::String) =
-    R in (1, 2, 3) || throw(ArgumentError(
-        "$op $name: shape must be (spatial…, C) with spatial rank 1, 2 or 3; " *
-        "got shape=$shp (spatial rank $R). For global pooling use " *
-        "`AvgPool(shape, name; global_pool=true)` with a rank-1 (C,) shape."
-    ))
+    R in (1, 2, 3) || throw(
+        ArgumentError(
+            "$op $name: shape must be (spatial…, C) with spatial rank 1, 2 or 3; " *
+            "got shape=$shp (spatial rank $R). For global pooling use " *
+            "`AvgPool(shape, name; global_pool=true)` with a rank-1 (C,) shape."
+        )
+    )
 
 _pool_validate(n::MaxPool, node_shape::Tuple, input_shapes::AbstractDict) =
     validate_windowed_output(
@@ -138,11 +142,11 @@ by the FULL window volume (padded cells count as zeros); `false` divides by the 
 default VALID padding, which is exactly what makes a wrong divisor invisible. See
 `_pool_avg`'s docstring; measured non-vacuous (the modes differ by 0.807 on the oracle's fixture).
 """
-struct AvgPool{R,P<:PadSpec} <: PoolNode
+struct AvgPool{R, P <: PadSpec} <: PoolNode
     shape::Tuple
     name::String
-    window_shape::NTuple{R,Int}
-    stride::NTuple{R,Int}
+    window_shape::NTuple{R, Int}
+    stride::NTuple{R, Int}
     padding::P
     global_pool::Bool
     count_include_pad::Bool
@@ -163,9 +167,11 @@ function AvgPool(
     if global_pool
         # Global collapses every spatial dim ⇒ the declared shape must be rank-1 (C,). Not a
         # windowed check, so it stays at construction (upstream `pooling.py:278-290`).
-        length(shp) == 1 || throw(ArgumentError(
-            "AvgPool global_pool=true requires a rank-1 shape (C,), got shape=$shp."
-        ))
+        length(shp) == 1 || throw(
+            ArgumentError(
+                "AvgPool global_pool=true requires a rank-1 shape (C,), got shape=$shp."
+            )
+        )
         # Global mode IGNORES window/stride/padding (`pooling.py:288-290`: upstream sets
         # window_shape/stride to () and never reads padding — it means over every spatial axis).
         # So accept-and-ignore, do NOT validate: `padspec(padding, 0)` used to REJECT any explicit
@@ -173,34 +179,40 @@ function AvgPool(
         # Matching upstream means being equally permissive where it is permissive — §29 cuts both
         # ways. Found by the C-01 adversarial audit (upstream-diff lens).
         p = ValidPad()
-        return AvgPool{0,typeof(p)}(shp, String(name), (), (), p, true, count_include_pad,
-                                    activation, energy, latent_init)
+        return AvgPool{0, typeof(p)}(shp, String(name), (), (), p, true, count_include_pad,
+            activation, energy, latent_init)
     end
     window_shape === nothing && throw(ArgumentError(
         "AvgPool: window_shape is required when global_pool=false."
     ))
     R = length(shp) - 1
     _pool_rank_guard(R, shp, name, "AvgPool")     # same guard ConvNode has (audit finding #11)
-    ws = NTuple{R,Int}(window_shape)
-    st = stride === nothing ? ws : NTuple{R,Int}(stride)
+    ws = NTuple{R, Int}(window_shape)
+    st = stride === nothing ? ws : NTuple{R, Int}(stride)
     p = padspec(padding, R)
-    return AvgPool{R,typeof(p)}(shp, String(name), ws, st, p, false, count_include_pad,
-                                activation, energy, latent_init)
+    return AvgPool{R, typeof(p)}(shp, String(name), ws, st, p, false, count_include_pad,
+        activation, energy, latent_init)
 end
 
 _pool_validate(n::AvgPool, node_shape::Tuple, input_shapes::AbstractDict) =
-    n.global_pool ? nothing : validate_windowed_output(
-        node_shape, input_shapes, n.window_shape, n.stride, n.padding;
-        op_name="AvgPool", channels_preserved=true
-    )
+    if n.global_pool
+        nothing
+    else
+        validate_windowed_output(
+            node_shape, input_shapes, n.window_shape, n.stride, n.padding;
+            op_name="AvgPool", channels_preserved=true
+        )
+    end
 
 _pool_reduce(n::AvgPool, x) =
-    n.global_pool ? _pool_avg_global(x) :
-    _pool_avg(x, n.stride, n.padding, n.window_shape, n.count_include_pad)
+    if n.global_pool
+        _pool_avg_global(x)
+    else
+        _pool_avg(x, n.stride, n.padding, n.window_shape, n.count_include_pad)
+    end
 
 # ---------------------------------------------------------------------------------------------
 # The seam: only the prediction. Both gradient paths are generic.
 
 compute_mu(node::PoolNode, params::NodeParams, inputs) =
     forward(node.activation, _pool_reduce(node, _pool_sum(inputs)))
-

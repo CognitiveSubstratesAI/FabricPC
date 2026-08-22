@@ -399,12 +399,12 @@ function unflat_block_params(node::TransformerBlock, args)
     weights = Dict{String, Array{Float32}}(
         "W_q" => Wq, "W_k" => Wk, "W_v" => Wv, "W_o" => Wo,
         "W_ff1" => Wff1, "W_ff2" => Wff2,
-        "ln1_gamma" => u(l1g), "ln2_gamma" => u(l2g),
+        "ln1_gamma" => u(l1g), "ln2_gamma" => u(l2g)
     )
     biases = Dict{String, Array{Float32}}(
         "b_q" => u(bq), "b_k" => u(bk), "b_v" => u(bv), "b_o" => u(bo),
         "b_ff1" => u(bff1), "b_ff2" => u(bff2),
-        "ln1_beta" => u(l1b), "ln2_beta" => u(l2b),
+        "ln1_beta" => u(l1b), "ln2_beta" => u(l2b)
     )
     return NodeParams(weights, biases)
 end

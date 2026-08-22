@@ -137,23 +137,29 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
     # shape a tuner/pruner callback expects at position 4 (train_autoregressive.py:353-361).
     config = (; opt, num_epochs)
     for epoch in 1:num_epochs
-        batch_e = Float32[];
-        tot_e = 0.0f0;
-        tot_ce = 0.0f0;
+        batch_e = Float32[]
+        tot_e = 0.0f0
+        tot_ce = 0.0f0
         n = 0
         for (batch_idx, batch) in enumerate(batches)
             params, energy, ce, _ = train_step_autoregressive(
                 params, opt, batch, structure, rng
             )
-            tot_e += energy;
-            tot_ce += ce;
+            tot_e += energy
+            tot_ce += ce
             n += 1
             # iter_callback(epoch, batch_idx, energy): per-batch hook; its return value replaces the
             # recorded per-batch energy, exactly as upstream (train_autoregressive.py:341-344). A
             # tuner uses this to stream progress / early-prune. Indices are 1-based (Julia), vs
             # upstream's 0-based — the package's standard port convention.
-            push!(batch_e, iter_callback === nothing ? Float32(energy) :
-                           iter_callback(epoch, batch_idx, energy))
+            push!(
+                batch_e,
+                if iter_callback === nothing
+                    Float32(energy)
+                else
+                    iter_callback(epoch, batch_idx, energy)
+                end
+            )
         end
         push!(iter_energies, batch_e)
         avg_energy = n > 0 ? tot_e / n : 0.0f0
@@ -162,9 +168,12 @@ function train_autoregressive(params::GraphParams, structure::GraphStructure, ba
         # signature. The epoch metrics are passed as keywords so a pruner (e.g. BayesianTuner) can
         # report per-epoch progress without recomputing them (train_autoregressive.py:350-361).
         push!(epoch_results,
-            epoch_callback === nothing ? nothing :
-            epoch_callback(epoch, params, structure, config, rng;
-                           energy=avg_energy, ce_loss=avg_ce))
+            if epoch_callback === nothing
+                nothing
+            else
+                epoch_callback(epoch, params, structure, config, rng;
+                    energy=avg_energy, ce_loss=avg_ce)
+            end)
         if verbose && n > 0
             @info "train_autoregressive" epoch="$epoch/$num_epochs" energy=round(
                 avg_energy; digits=4
@@ -339,7 +348,7 @@ function _sample_next(probs::AbstractMatrix, rng::AbstractRNG;
             end
         end
         # Gumbel-max categorical: argmax(logits + Gumbel) (= jax.random.categorical)
-        best = 0;
+        best = 0
         bestval = -Inf32
         @inbounds for v in 1:V
             (row[v] == -Inf32 || isnan(row[v])) && continue          # skip masked AND NaN logits

@@ -62,7 +62,9 @@ pre_grad(node::AbstractNode, state::NodeState, pre) =
     _pre_grad(node.activation, node.energy, node, state, pre)
 
 # Generic element-wise case: dE/dpre = (∂E/∂z_mu) · f'(pre).
-_pre_grad(act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::NodeState, pre) =
+_pre_grad(
+    act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::NodeState, pre
+) =
     mu_grad(node, state) .* derivative(act, pre)
 
 # Exact Softmax + CrossEntropy coupling: the off-diagonal softmax Jacobian and
@@ -70,7 +72,9 @@ _pre_grad(act::AbstractActivation, ::AbstractEnergy, node::AbstractNode, state::
 # z_latent). This is exact (no autodiff, no diagonal approximation) and is what
 # makes a softmax+CE classifier train properly on hard multi-class tasks — the
 # diagonal `s·(1-s)` approximation used elsewhere is too crude there.
-_pre_grad(::SoftmaxActivation, ::CrossEntropyEnergy, node::AbstractNode, state::NodeState, _pre) =
+_pre_grad(
+    ::SoftmaxActivation, ::CrossEntropyEnergy, node::AbstractNode, state::NodeState, _pre
+) =
     state.z_mu .- state.z_latent
 
 """

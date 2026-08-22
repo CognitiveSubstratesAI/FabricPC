@@ -52,13 +52,13 @@ end
     batch = Dict("x" => x, "y" => y)
 
     # train_step_autoregressive returns (params, energy, ce, state); both fall over training
-    energies = Float32[];
+    energies = Float32[]
     ces = Float32[]
     for _ in 1:150
         params, e, ce, _ = train_step_autoregressive(
             params, 0.05, batch, structure, param_rng
         )
-        push!(energies, e);
+        push!(energies, e)
         push!(ces, ce)
     end
     @test all(isfinite, energies) && all(isfinite, ces)
@@ -75,9 +75,9 @@ end
     _, _, eres2 = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
         verbose=false, epoch_callback=(ep, p, s, cfg, r; energy, ce_loss) -> ep)
     @test eres2 == [1, 2]
-      _, iters3, _ = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
-          verbose=false, iter_callback=(ep, bi, e) -> -1.0f0)
-      @test iters3 == [[-1.0f0], [-1.0f0]]
+    _, iters3, _ = train_autoregressive(params, structure, [batch], 0.05, 2, param_rng;
+        verbose=false, iter_callback=(ep, bi, e) -> -1.0f0)
+    @test iters3 == [[-1.0f0], [-1.0f0]]
 end
 
 @testset "generation sampling core _sample_next (train_autoregressive.py:299 sampling)" begin
@@ -88,7 +88,7 @@ end
     @test all(==(2), [_sample_next(probs, rng; top_p=0.7)[1] for _ in 1:30])       # nucleus keeps {2}
     @test Set(_sample_next(probs, rng; top_p=0.85)[1] for _ in 1:80) ⊆ Set([2, 3]) # nucleus {2,3}
     # distribution fidelity over many draws
-    pr = Float32[0.2 0.3 0.5];
+    pr = Float32[0.2 0.3 0.5]
     cnt = zeros(Int, 3)
     for _ in 1:4000
         cnt[_sample_next(pr, rng)[1]] += 1

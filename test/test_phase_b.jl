@@ -111,7 +111,7 @@ end
     num_self = similar(self_grad)
     for i in eachindex(z)
         num_self[i] = fd() do δ
-            zz = copy(z);
+            zz = copy(z)
             zz[i] += δ
             local_energy(node, params, inputs, zz)
         end
@@ -122,7 +122,7 @@ end
     num_in = similar(input_grads[ek])
     for i in eachindex(x)
         num_in[i] = fd() do δ
-            xx = copy(x);
+            xx = copy(x)
             xx[i] += δ
             local_energy(node, params, Dict(ek => xx), z)
         end
@@ -133,7 +133,7 @@ end
     num_W = similar(W)
     for i in eachindex(W)
         num_W[i] = fd() do δ
-            Wp = copy(W);
+            Wp = copy(W)
             Wp[i] += δ
             local_energy(node, NodeParams(Dict(ek => Wp), Dict("b" => b)), inputs, z)
         end
@@ -144,7 +144,7 @@ end
     num_b = similar(b)
     for i in eachindex(b)
         num_b[i] = fd() do δ
-            bp = copy(b);
+            bp = copy(b)
             bp[i] += δ
             local_energy(node, NodeParams(Dict(ek => W), Dict("b" => bp)), inputs, z)
         end

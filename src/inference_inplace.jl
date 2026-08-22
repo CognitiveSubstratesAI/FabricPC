@@ -48,7 +48,7 @@ struct InplaceInference
     clamped::Vector{Bool}
     hoist::Vector{Bool}                       # nodes whose forward is loop-invariant (all sources clamped)
     weights::Vector{Vector{Matrix{Float32}}}  # per node: concrete edge weights (aligned to in_src)
-    biases::Vector{Union{Matrix{Float32},Nothing}}
+    biases::Vector{Union{Matrix{Float32}, Nothing}}
     bufs::Vector{NodeBuf}
     z::Vector{Matrix{Float32}}                # per-node z_latent (mutated in place)
     src::Vector{Vector{Matrix{Float32}}}      # per node: STABLE refs to source z buffers (in_src = in_edges order)
@@ -133,7 +133,7 @@ function prealloc_inference(
     fparams = to_flat_params(plan, params)
 
     weights = Vector{Vector{Matrix{Float32}}}(undef, n)
-    biases = Vector{Union{Matrix{Float32},Nothing}}(undef, n)
+    biases = Vector{Union{Matrix{Float32}, Nothing}}(undef, n)
     bufs = Vector{NodeBuf}(undef, n)
     z = Vector{Matrix{Float32}}(undef, n)
     # Per-node GaussianEnergy precision (the scope guard above guarantees GaussianEnergy).
@@ -144,12 +144,14 @@ function prealloc_inference(
         # to_flat_params placeholders are `nothing`) — filter them out (never indexed) so we don't
         # call Matrix{Float32}(nothing). Weights stay in in_src (== in_edges) order, which now
         # matches the reference forward's fold order (gather_inputs uses an OrderedDict).
-        weights[i] = Matrix{Float32}[Matrix{Float32}(w) for w in fparams[i].w if w isa AbstractMatrix]
+        weights[i] = Matrix{Float32}[
+            Matrix{Float32}(w) for w in fparams[i].w if w isa AbstractMatrix
+        ]
         b = fparams[i].b
         biases[i] = (b !== nothing && length(b) > 0) ? Matrix{Float32}(b) : nothing
         bufs[i] = NodeBuf(
             Matrix{Float32}(undef, batch, feat), Matrix{Float32}(undef, batch, feat),
-            Matrix{Float32}(undef, batch, feat), Matrix{Float32}(undef, batch, feat),
+            Matrix{Float32}(undef, batch, feat), Matrix{Float32}(undef, batch, feat)
         )
         z[i] = Matrix{Float32}(undef, batch, feat)
     end
@@ -173,7 +175,7 @@ function prealloc_inference(
     inf = plan.inference
     return InplaceInference(
         plan, clamped, hoist, weights, biases, bufs, z, src, prec,
-        inf.eta_infer, 1.0f0 - inf.eta_infer * inf.latent_decay, inf.infer_steps,
+        inf.eta_infer, 1.0f0 - inf.eta_infer * inf.latent_decay, inf.infer_steps
     )
 end
 
@@ -214,7 +216,8 @@ Run the in-place PC relaxation reusing `ii`'s buffers (0 allocations except the 
 `init_state` supplies the initial z_latents (clamped nodes stay fixed; unclamped relax). Returns
 converged per-node z_latents in `ii.plan.names` order — bit-identical to `run_inference`."""
 function run_inference!(ii::InplaceInference, init_state::GraphState)
-    plan = ii.plan; n = length(plan.names)
+    plan = ii.plan
+    n = length(plan.names)
     for i in 1:n
         # ::Matrix{Float32} asserts through init_state's type-unstable NodeState.z_latent::Any,
         # so this boundary copy stays statically dispatched + allocation-free.
@@ -242,7 +245,8 @@ function run_inference!(ii::InplaceInference, init_state::GraphState)
         for i in 1:n                                            # Phase 2: forward + accumulate
             info = plan.infos[i]
             info.in_degree == 0 && continue                     # terminal source: no fwd, no grads
-            node = plan.nodes[i]; buf = ii.bufs[i]
+            node = plan.nodes[i]
+            buf = ii.bufs[i]
             if !ii.hoist[i]
                 _forward!(node, buf, ii.weights[i], ii.biases[i], ii.src[i])
             end
@@ -266,7 +270,9 @@ _forward!(node::SkipConnection, buf, ws, b, zsrc) = _fwd!(node, buf, ws, b, zsrc
 _hoist_fwd!(node, buf, ws, b, zsrc) = _forward!(node, buf, ws, b, zsrc)
 
 # dpre = grad_mu*deriv = precision*(z_mu - z) .* f'(pre); input_grad to src_k = dpre * W_k'
-function _accum_input_grads!(node::Linear, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32)
+function _accum_input_grads!(
+    node::Linear, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32
+)
     if node.activation isa TanhActivation
         buf.dpre .= prec .* (buf.z_mu .- ii.z[i]) .* (1.0f0 .- buf.z_mu .^ 2)   # f'(tanh)=1-z_mu^2
     else
@@ -281,7 +287,9 @@ function _accum_input_grads!(node::Linear, buf::NodeBuf, ii::InplaceInference, i
     return nothing
 end
 # Identity/Skip: input_grad = scale·grad_mu (Identity) or grad_mu (Skip); grad_mu=precision*(z_mu-z)
-function _accum_input_grads!(node::IdentityNode, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32)
+function _accum_input_grads!(
+    node::IdentityNode, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32
+)
     buf.dpre .= (prec * node.scale) .* (buf.z_mu .- ii.z[i])
     @inbounds for s in ii.plan.in_src[i]
         ii.clamped[s] && continue
@@ -289,7 +297,9 @@ function _accum_input_grads!(node::IdentityNode, buf::NodeBuf, ii::InplaceInfere
     end
     return nothing
 end
-function _accum_input_grads!(::SkipConnection, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32)
+function _accum_input_grads!(
+    ::SkipConnection, buf::NodeBuf, ii::InplaceInference, i::Int, prec::Float32
+)
     buf.dpre .= prec .* (buf.z_mu .- ii.z[i])
     @inbounds for s in ii.plan.in_src[i]
         ii.clamped[s] && continue

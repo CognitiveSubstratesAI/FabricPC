@@ -34,7 +34,8 @@ _st(z, shape) = NodeState(
     zeros(Float32, size(z, 1)), zeros(Float32, size(z))
 )
 _info(name, shape, edges) = NodeInfo(
-    name, shape, "conv", Dict{String,SlotInfo}(), length(edges), 1, collect(edges), String[], nothing
+    name, shape, "conv", Dict{String, SlotInfo}(), length(edges), 1, collect(edges),
+    String[], nothing
 )
 
 @testset "Tier conv conformance (C-01: ConvNode/MaxPool/AvgPool vs upstream JAX)" begin
@@ -46,9 +47,9 @@ _info(name, shape, edges) = NodeInfo(
         x, W = FIX_C["overlap_in_x"], FIX_C["overlap_in_W"]
         b, z = FIX_C["overlap_in_b"], FIX_C["overlap_in_z_latent"]
         node = ConvNode((6, 5, 3), "conv", (3, 2); stride=(1, 1), padding="SAME",
-                        activation=IdentityActivation(), energy=GaussianEnergy())
+            activation=IdentityActivation(), energy=GaussianEnergy())
         params = NodeParams(Dict(e => W), Dict("b" => b))
-        inputs = Dict{String,Any}(e => x)
+        inputs = Dict{String, Any}(e => x)
         st, info = _st(z, (6, 5, 3)), _info("conv", (6, 5, 3), [e])
 
         ns = forward(node, params, inputs, st)
@@ -72,13 +73,15 @@ _info(name, shape, edges) = NodeInfo(
         edges = split(String(UInt8.(FIX_C["multi_edge_order_ascii"])), "|")
         @test edges == ["zzz->c:in", "aaa->c:in", "mmm->c:in"]     # the order the oracle used
         Ws = Dict(e => FIX_C["multi_in_W_$(i-1)"] for (i, e) in enumerate(edges))
-        xs = Dict{String,Any}(e => FIX_C["multi_in_x_$(i-1)"] for (i, e) in enumerate(edges))
+        xs = Dict{String, Any}(
+            e => FIX_C["multi_in_x_$(i-1)"] for (i, e) in enumerate(edges)
+        )
         z = FIX_C["multi_in_z_latent"]
         node = ConvNode((5, 4, 3), "c", (3, 2); stride=(1, 1), padding="SAME",
-                        activation=IdentityActivation(), energy=GaussianEnergy())
+            activation=IdentityActivation(), energy=GaussianEnergy())
         params = NodeParams(Ws, Dict("b" => FIX_C["multi_in_b"]))
         # inputs must ITERATE in in_edges order — that is what gather_inputs produces.
-        inputs = OrderedDict{String,Any}(e => xs[e] for e in edges)
+        inputs = OrderedDict{String, Any}(e => xs[e] for e in edges)
         st, info = _st(z, (5, 4, 3)), _info("c", (5, 4, 3), edges)
 
         ns = forward(node, params, inputs, st)
@@ -106,12 +109,12 @@ _info(name, shape, edges) = NodeInfo(
         # passing on an all-positive fixture where ReLU would be an identity no-op.
         e = "s->c:in"
         x, W, b, z = FIX_C["relu_valid_in_x"], FIX_C["relu_valid_in_W"],
-                     FIX_C["relu_valid_in_b"], FIX_C["relu_valid_in_z_latent"]
+        FIX_C["relu_valid_in_b"], FIX_C["relu_valid_in_z_latent"]
         shape = size(z)[2:end]
         node = ConvNode(shape, "c", (3, 2); stride=(2, 1), padding="VALID",
-                        activation=ReLUActivation(), energy=GaussianEnergy())
+            activation=ReLUActivation(), energy=GaussianEnergy())
         params = NodeParams(Dict(e => W), Dict("b" => b))
-        inputs = Dict{String,Any}(e => x)
+        inputs = Dict{String, Any}(e => x)
         st, info = _st(z, shape), _info("c", shape, [e])
 
         ns = forward(node, params, inputs, st)
@@ -127,13 +130,21 @@ _info(name, shape, edges) = NodeInfo(
     @testset "conv: rank dispatch — 1D (NLC) and 3D (NDHWC)" begin
         for (tag, ks, st_, pad, shp) in (
             ("conv1d", (3,), (2,), "SAME", size(FIX_C["conv1d_in_z_latent"])[2:end]),
-            ("conv3d", (2, 3, 1), (1, 1, 1), "SAME", size(FIX_C["conv3d_in_z_latent"])[2:end]),
+            (
+                "conv3d",
+                (2, 3, 1),
+                (1, 1, 1),
+                "SAME",
+                size(FIX_C["conv3d_in_z_latent"])[2:end]
+            )
         )
             e = tag == "conv1d" ? "s->c1:in" : "s->c3:in"
             node = ConvNode(shp, "c", ks; stride=st_, padding=pad,
-                            activation=IdentityActivation(), energy=GaussianEnergy())
-            params = NodeParams(Dict(e => FIX_C["$(tag)_in_W"]), Dict("b" => FIX_C["$(tag)_in_b"]))
-            inputs = Dict{String,Any}(e => FIX_C["$(tag)_in_x"])
+                activation=IdentityActivation(), energy=GaussianEnergy())
+            params = NodeParams(
+                Dict(e => FIX_C["$(tag)_in_W"]), Dict("b" => FIX_C["$(tag)_in_b"])
+            )
+            inputs = Dict{String, Any}(e => FIX_C["$(tag)_in_x"])
             z = FIX_C["$(tag)_in_z_latent"]
             state, info = _st(z, shp), _info("c", shp, [e])
             ns = forward(node, params, inputs, state)
@@ -152,10 +163,17 @@ _info(name, shape, edges) = NodeInfo(
         st, info = _st(z, (2, 2, 2)), _info("p", (2, 2, 2), [e])
         for (tag, node) in (
             ("maxpool", MaxPool((2, 2, 2), "p", (2, 2); stride=(2, 2), padding="VALID")),
-            ("avgpool", AvgPool((2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="VALID")),
+            (
+                "avgpool",
+                AvgPool(
+                    (2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="VALID"
+                )
+            )
         )
-            params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
-            inputs = Dict{String,Any}(e => x)
+            params = NodeParams(
+                Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}()
+            )
+            inputs = Dict{String, Any}(e => x)
             ns = forward(node, params, inputs, st)
             @test allclose_c(ns.z_mu, FIX_C["$(tag)_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
             _, ig, sg = forward_and_latent_grads(node, params, inputs, st, info, true)
@@ -171,8 +189,8 @@ _info(name, shape, edges) = NodeInfo(
         e = "s->p:in"
         xp, zp = FIX_C["maxpool_ptie_in_x"], FIX_C["maxpool_ptie_in_z_latent"]
         node = MaxPool((2, 2, 2), "p", (2, 2); stride=(2, 2), padding="VALID")
-        params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
-        inputs = Dict{String,Any}(e => xp)
+        params = NodeParams(Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}())
+        inputs = Dict{String, Any}(e => xp)
         st, info = _st(zp, (2, 2, 2)), _info("p", (2, 2, 2), [e])
         ns = forward(node, params, inputs, st)
         @test allclose_c(ns.z_mu, FIX_C["maxpool_ptie_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
@@ -188,16 +206,29 @@ _info(name, shape, edges) = NodeInfo(
         e = "s->p:in"
         xo, zo = FIX_C["avgpool_cip_in_x"], FIX_C["avgpool_cip_in_z_latent"]
         st, info = _st(zo, (2, 2, 2)), _info("p", (2, 2, 2), [e])
-        mus = Dict{Bool,Any}()
+        mus = Dict{Bool, Any}()
         for flag in (true, false)
-            node = AvgPool((2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="SAME",
-                           count_include_pad=flag)
-            params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
-            inputs = Dict{String,Any}(e => xo)
+            node = AvgPool((2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2),
+                padding="SAME",
+                count_include_pad=flag)
+            params = NodeParams(
+                Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}()
+            )
+            inputs = Dict{String, Any}(e => xo)
             ns = forward(node, params, inputs, st)
-            @test allclose_c(ns.z_mu, FIX_C["avgpool_cip_$(Int(flag))_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
+            @test allclose_c(
+                ns.z_mu,
+                FIX_C["avgpool_cip_$(Int(flag))_fwd_z_mu"];
+                rtol=1.0f-6,
+                atol=1.0f-6
+            )
             _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
-            @test allclose_c(ig[e], FIX_C["avgpool_cip_$(Int(flag))_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)
+            @test allclose_c(
+                ig[e],
+                FIX_C["avgpool_cip_$(Int(flag))_gradz_gx_0"];
+                rtol=1.0f-6,
+                atol=1.0f-6
+            )
             mus[flag] = ns.z_mu
         end
         @test maximum(abs.(mus[true] .- mus[false])) > 1.0f-3    # the divisor IS exercised
@@ -217,12 +248,18 @@ _info(name, shape, edges) = NodeInfo(
         x = FIX_C["pool_in_x"]
         z = FIX_C["pool_in_z_latent"]
         st = _st(z, (2, 2, 2))
-        empty_p() = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
+        empty_p() =
+            NodeParams(Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}())
         for (tag, node) in (
             ("maxpool", MaxPool((2, 2, 2), "p", (2, 2); stride=(2, 2), padding="VALID")),
-            ("avgpool", AvgPool((2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="VALID")),
+            (
+                "avgpool",
+                AvgPool(
+                    (2, 2, 2), "p"; window_shape=(2, 2), stride=(2, 2), padding="VALID"
+                )
+            )
         )
-            _, gp = forward_and_weight_grads(node, empty_p(), Dict{String,Any}(e => x), st)
+            _, gp = forward_and_weight_grads(node, empty_p(), Dict{String, Any}(e => x), st)
             @test isempty(gp.weights.nt)      # param-free ⇒ empty gradient, not an error
             @test isempty(gp.biases.nt)
         end
@@ -231,9 +268,11 @@ _info(name, shape, edges) = NodeInfo(
         W = FIX_C["overlap_in_W"]
         xc, zc = FIX_C["overlap_in_x"], FIX_C["overlap_in_z_latent"]
         nb = ConvNode((6, 5, 3), "c", (3, 2); stride=(1, 1), padding="SAME",
-                      activation=IdentityActivation(), energy=GaussianEnergy(), use_bias=false)
-        pnb = NodeParams(Dict(ec => W), Dict{String,Array{Float32}}())
-        _, gnb = forward_and_weight_grads(nb, pnb, Dict{String,Any}(ec => xc), _st(zc, (6, 5, 3)))
+            activation=IdentityActivation(), energy=GaussianEnergy(), use_bias=false)
+        pnb = NodeParams(Dict(ec => W), Dict{String, Array{Float32}}())
+        _, gnb = forward_and_weight_grads(
+            nb, pnb, Dict{String, Any}(ec => xc), _st(zc, (6, 5, 3))
+        )
         @test isempty(gnb.biases.nt)                       # the empty-ghost half
         @test !isempty(gnb.weights.nt)                     # non-vacuous: weights DID differentiate
         @test all(isfinite, gnb.weights[ec])
@@ -244,13 +283,17 @@ _info(name, shape, edges) = NodeInfo(
         e = "s->p:in"
         xg, zg = FIX_C["avgpool_global_in_x"], FIX_C["avgpool_global_in_z_latent"]
         node = AvgPool((2,), "p"; global_pool=true)
-        params = NodeParams(Dict{String,Array{Float32}}(), Dict{String,Array{Float32}}())
-        inputs = Dict{String,Any}(e => xg)
+        params = NodeParams(Dict{String, Array{Float32}}(), Dict{String, Array{Float32}}())
+        inputs = Dict{String, Any}(e => xg)
         st, info = _st(zg, (2,)), _info("p", (2,), [e])
         ns = forward(node, params, inputs, st)
-        @test allclose_c(ns.z_mu, FIX_C["avgpool_global_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6)
+        @test allclose_c(
+            ns.z_mu, FIX_C["avgpool_global_fwd_z_mu"]; rtol=1.0f-6, atol=1.0f-6
+        )
         _, ig, _ = forward_and_latent_grads(node, params, inputs, st, info, true)
-        @test allclose_c(ig[e], FIX_C["avgpool_global_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6)
+        @test allclose_c(
+            ig[e], FIX_C["avgpool_global_gradz_gx_0"]; rtol=1.0f-6, atol=1.0f-6
+        )
         @test size(ns.z_mu) == size(zg)     # rank-1 (C,) output, spatial collapsed
     end
 
@@ -259,8 +302,9 @@ _info(name, shape, edges) = NodeInfo(
         # `n < k` must RAISE (Python `//` floors to o<=0 and raises; Julia `÷` would truncate to
         # o=1 and silently validate a garbage shape — the fail-open that sank one design).
         @test_throws Exception ConvNode((1, 1, 2), "bad", (5, 5); padding="VALID") |>
-            n -> FabricPC.initialize_params(n, Random.MersenneTwister(1), (1, 1, 2),
-                                            Dict("s->bad:in" => (3, 3, 2)), NormalInitializer())
+            n ->
+            FabricPC.initialize_params(n, Random.MersenneTwister(1), (1, 1, 2),
+                Dict("s->bad:in" => (3, 3, 2)), NormalInitializer())
         # SAME pad arithmetic, against Python-computed truth. Extra goes HIGH.
         for (n, k, s, want) in ((4, 3, 2, (0, 1)), (5, 3, 2, (1, 1)), (4, 2, 1, (0, 1)))
             @test FabricPC._pads((n,), (k,), (s,), FabricPC.SamePad())[1] == want
@@ -285,11 +329,17 @@ _info(name, shape, edges) = NodeInfo(
         o = Linear((3,), "o"; energy=GaussianEnergy())
         g = AvgPool((3,), "gp"; global_pool=true)
         st = graph([x, cv, g, o], [Edge(x, cv), Edge(cv, g), Edge(g, o)],
-                   TaskMap(x=x, y=o), InferenceSGD(eta_infer=0.1, infer_steps=2))
+            TaskMap(x=x, y=o), InferenceSGD(eta_infer=0.1, infer_steps=2))
         p = initialize_params(st, rng)
-        cl = Dict{String,Any}("x" => randn(rng, Float32, 2, 5, 5, 2), "o" => randn(rng, Float32, 2, 3))
-        err = try; FabricPC.prealloc_inference(st, p, cl; batch=2); nothing
-              catch e; sprint(showerror, e) end
+        cl = Dict{String, Any}(
+            "x" => randn(rng, Float32, 2, 5, 5, 2), "o" => randn(rng, Float32, 2, 3)
+        )
+        err = try
+            FabricPC.prealloc_inference(st, p, cl; batch=2)
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
         @test err !== nothing
         @test occursin("prealloc_inference", err)         # OUR message, not a MethodError
         @test occursin("outside the in-place lane", err)
@@ -302,8 +352,12 @@ _info(name, shape, edges) = NodeInfo(
         cv = ConvNode((5, 5, 3), "cv", (3, 2); padding="SAME")
         st = graph([x, cv], [Edge(x, cv)], TaskMap(x=x, y=cv), InferenceSGD(infer_steps=2))
         p = initialize_params(st, rng)
-        err = try; to_flat_params(CompiledPlan(st), p); nothing
-              catch e; sprint(showerror, e) end
+        err = try
+            to_flat_params(CompiledPlan(st), p)
+            nothing
+        catch e
+            sprint(showerror, e)
+        end
         @test err !== nothing
         @test occursin("outside the FLAT lane's scope", err)   # names the node AND the lane
         @test occursin("run_inference", err)                   # and points at the right lane

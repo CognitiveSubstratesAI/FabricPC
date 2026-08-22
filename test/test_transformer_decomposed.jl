@@ -140,7 +140,7 @@ const TD = FabricPC
         logits = TD._tb_dense(
             x, vpp.weights["W_out"], reshape(vpp.biases["b_out"], 1, 1, :)
         )
-        sm = exp.(logits .- maximum(logits; dims=3));
+        sm = exp.(logits .- maximum(logits; dims=3))
         sm = sm ./ sum(sm; dims=3)
         @test z ≈ sm                                           # = softmax(raw dense projection)
     end

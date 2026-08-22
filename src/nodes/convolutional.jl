@@ -30,11 +30,11 @@ normalised ONCE here into a [`PadSpec`](@ref) — a type, not a string. Two inde
 Enzyme rejects `uppercase(::String)` inside a differentiated kernel, and a normalised-once type
 cannot be misspelled at a call site (decisions.md §29).
 """
-struct ConvNode{R,P<:PadSpec} <: AbstractNode
+struct ConvNode{R, P <: PadSpec} <: AbstractNode
     shape::Tuple
     name::String
-    kernel_size::NTuple{R,Int}
-    stride::NTuple{R,Int}
+    kernel_size::NTuple{R, Int}
+    stride::NTuple{R, Int}
     padding::P
     activation::AbstractActivation
     energy::AbstractEnergy
@@ -59,14 +59,16 @@ function ConvNode(
 )
     shp = Tuple(shape)
     R = length(shp) - 1
-    R in (1, 2, 3) || throw(ArgumentError(
-        "ConvNode $name: shape must be (spatial…, C_out) with spatial rank 1, 2 or 3; " *
-        "got shape=$shp (spatial rank $R)."
-    ))
-    ks = NTuple{R,Int}(kernel_size)
-    st = stride === nothing ? ntuple(_ -> 1, R) : NTuple{R,Int}(stride)   # upstream: all-ones
+    R in (1, 2, 3) || throw(
+        ArgumentError(
+            "ConvNode $name: shape must be (spatial…, C_out) with spatial rank 1, 2 or 3; " *
+            "got shape=$shp (spatial rank $R)."
+        )
+    )
+    ks = NTuple{R, Int}(kernel_size)
+    st = stride === nothing ? ntuple(_ -> 1, R) : NTuple{R, Int}(stride)   # upstream: all-ones
     p = padspec(padding, R)
-    return ConvNode{R,typeof(p)}(
+    return ConvNode{R, typeof(p)}(
         shp, String(name), ks, st, p, activation, energy, use_bias,
         weight_init, bias_init, latent_init
     )
@@ -77,7 +79,8 @@ get_slots(::ConvNode) = Dict("in" => SlotSpec("in", true))
 """fan_in = C_in × ∏(kernel_size) — overrides the NodeBase default (C_in only).
 Port of `convolutional.py:137-141`. This is what makes Kaiming (ConvNode's DEFAULT weight_init)
 size a conv kernel correctly; see [`_fans`](@ref) / register C-08."""
-get_weight_fan_in(n::ConvNode, source_shape::Tuple) = source_shape[end] * prod(n.kernel_size)
+get_weight_fan_in(n::ConvNode, source_shape::Tuple) =
+    source_shape[end] * prod(n.kernel_size)
 
 """
     initialize_params(node::ConvNode, rng, node_shape, input_shapes, weight_init) -> NodeParams
@@ -101,7 +104,7 @@ function initialize_params(
         op_name="ConvNode", channels_preserved=false
     )
     out_channels = node_shape[end]
-    weights = Dict{String,Array{Float32}}()
+    weights = Dict{String, Array{Float32}}()
     for (edge_key, in_shape) in input_shapes
         occursin(":in", edge_key) || throw(
             ArgumentError("ConvNode requires the 'in' slot; got edge key $edge_key")
@@ -109,11 +112,15 @@ function initialize_params(
         in_channels = in_shape[end]
         # (kernel…, C_in, C_out) — upstream's HWIO/LIO/DHWIO layout, used verbatim. The
         # shape-aware Kaiming/Xavier derive fan_in = ∏(kernel)*C_in from it themselves (`_fans`).
-        weights[edge_key] = initialize(rng, (node.kernel_size..., in_channels, out_channels), weight_init)
+        weights[edge_key] = initialize(
+            rng, (node.kernel_size..., in_channels, out_channels), weight_init
+        )
     end
-    biases = Dict{String,Array{Float32}}()
+    biases = Dict{String, Array{Float32}}()
     if node.use_bias
-        biases["b"] = initialize(rng, (ntuple(_ -> 1, R + 1)..., out_channels), node.bias_init)
+        biases["b"] = initialize(
+            rng, (ntuple(_ -> 1, R + 1)..., out_channels), node.bias_init
+        )
     end
     return NodeParams(weights, biases)
 end
@@ -142,4 +149,3 @@ end
 # The seam: implement ONLY the prediction; forward/both gradient paths are generic.
 compute_mu(node::ConvNode, params::NodeParams, inputs) =
     forward(node.activation, _conv_pre(node, params, inputs))
-

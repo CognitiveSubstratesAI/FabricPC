@@ -70,7 +70,7 @@ function check_shared_params0_batch()
         end
     end
     println("params0/batch byte-identity vs tier_d_transformer_stable_sgd.npz: ",
-            nmismatch == 0 ? "OK (all match)" : "$(nmismatch) MISMATCHES")
+        nmismatch == 0 ? "OK (all match)" : "$(nmismatch) MISMATCHES")
     return nmismatch
 end
 
@@ -80,38 +80,101 @@ end
 function collect_state_pairs!(pairs, prefix::AbstractString, state, FIX)
     for name in TIER_DT_FULL_NODES
         ns = state.nodes[name]
-        push!(pairs, ("$(prefix)_$(name)_z_latent", ns.z_latent, FIX["$(prefix)_$(name)_z_latent"]))
+        push!(
+            pairs,
+            ("$(prefix)_$(name)_z_latent", ns.z_latent, FIX["$(prefix)_$(name)_z_latent"])
+        )
         push!(pairs, ("$(prefix)_$(name)_z_mu", ns.z_mu, FIX["$(prefix)_$(name)_z_mu"]))
         push!(pairs, ("$(prefix)_$(name)_error", ns.error, FIX["$(prefix)_$(name)_error"]))
-        push!(pairs, ("$(prefix)_$(name)_energy", ns.energy, FIX["$(prefix)_$(name)_energy"]))
-        push!(pairs, ("$(prefix)_$(name)_latent_grad", ns.latent_grad, FIX["$(prefix)_$(name)_latent_grad"]))
+        push!(
+            pairs, ("$(prefix)_$(name)_energy", ns.energy, FIX["$(prefix)_$(name)_energy"])
+        )
+        push!(
+            pairs,
+            (
+                "$(prefix)_$(name)_latent_grad",
+                ns.latent_grad,
+                FIX["$(prefix)_$(name)_latent_grad"]
+            )
+        )
     end
     ni = state.nodes["input"]
-    push!(pairs, ("$(prefix)_input_z_latent", ni.z_latent, FIX["$(prefix)_input_z_latent"] .+ 1.0f0))
-    expected_input_zmu = prefix == "init" ? zeros(Float32, size(ni.z_mu)) :
+    push!(
+        pairs,
+        ("$(prefix)_input_z_latent", ni.z_latent, FIX["$(prefix)_input_z_latent"] .+ 1.0f0)
+    )
+    expected_input_zmu = if prefix == "init"
+        zeros(Float32, size(ni.z_mu))
+    else
         (FIX["$(prefix)_input_z_latent"] .+ 1.0f0)
+    end
     push!(pairs, ("$(prefix)_input_z_mu", ni.z_mu, expected_input_zmu))
     push!(pairs, ("$(prefix)_input_error", ni.error, FIX["$(prefix)_input_error"]))
     push!(pairs, ("$(prefix)_input_energy", ni.energy, FIX["$(prefix)_input_energy"]))
-    push!(pairs, ("$(prefix)_input_latent_grad", ni.latent_grad, FIX["$(prefix)_input_latent_grad"]))
+    push!(
+        pairs,
+        ("$(prefix)_input_latent_grad", ni.latent_grad, FIX["$(prefix)_input_latent_grad"])
+    )
     return pairs
 end
 
 function collect_params_pairs!(pairs, prefix::AbstractString, gp, FIX)
-    push!(pairs, ("$(prefix)_embed_w__embeddings", gp.nodes["embed"].weights["embeddings"], FIX["$(prefix)_embed_w__embeddings"]))
+    push!(
+        pairs,
+        (
+            "$(prefix)_embed_w__embeddings",
+            gp.nodes["embed"].weights["embeddings"],
+            FIX["$(prefix)_embed_w__embeddings"]
+        )
+    )
     tb = gp.nodes["transformer_0"]
     for k in ("W_q", "W_k", "W_v", "W_o", "W_ff1", "W_ff2")
-        push!(pairs, ("$(prefix)_transformer_0_w__$(k)", tb.weights[k], FIX["$(prefix)_transformer_0_w__$(k)"]))
+        push!(
+            pairs,
+            (
+                "$(prefix)_transformer_0_w__$(k)",
+                tb.weights[k],
+                FIX["$(prefix)_transformer_0_w__$(k)"]
+            )
+        )
     end
     for k in ("ln1_gamma", "ln2_gamma")
-        push!(pairs, ("$(prefix)_transformer_0_w__$(k)", vec(tb.weights[k]), vec(FIX["$(prefix)_transformer_0_w__$(k)"])))
+        push!(
+            pairs,
+            (
+                "$(prefix)_transformer_0_w__$(k)",
+                vec(tb.weights[k]),
+                vec(FIX["$(prefix)_transformer_0_w__$(k)"])
+            )
+        )
     end
     for k in ("b_q", "b_k", "b_v", "b_o", "b_ff1", "b_ff2", "ln1_beta", "ln2_beta")
-        push!(pairs, ("$(prefix)_transformer_0_b__$(k)", vec(tb.biases[k]), vec(FIX["$(prefix)_transformer_0_b__$(k)"])))
+        push!(
+            pairs,
+            (
+                "$(prefix)_transformer_0_b__$(k)",
+                vec(tb.biases[k]),
+                vec(FIX["$(prefix)_transformer_0_b__$(k)"])
+            )
+        )
     end
     out = gp.nodes["output"]
-    push!(pairs, ("$(prefix)_output_w__W_out", out.weights["W_out"], FIX["$(prefix)_output_w__W_out"]))
-    push!(pairs, ("$(prefix)_output_b__b_out", vec(out.biases["b_out"]), vec(FIX["$(prefix)_output_b__b_out"])))
+    push!(
+        pairs,
+        (
+            "$(prefix)_output_w__W_out",
+            out.weights["W_out"],
+            FIX["$(prefix)_output_w__W_out"]
+        )
+    )
+    push!(
+        pairs,
+        (
+            "$(prefix)_output_b__b_out",
+            vec(out.biases["b_out"]),
+            vec(FIX["$(prefix)_output_b__b_out"])
+        )
+    )
     return pairs
 end
 
@@ -128,28 +191,41 @@ end
 function build_params(FIX)
     GraphParams(
         Dict(
-            "input" => NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()),
+            "input" => NodeParams(
+                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+            ),
             "embed" => NodeParams(
-                Dict("embeddings" => FIX["params0_embed_w__embeddings"]), Dict{String, Matrix{Float32}}()
+                Dict("embeddings" => FIX["params0_embed_w__embeddings"]),
+                Dict{String, Matrix{Float32}}()
             ),
             "transformer_0" => NodeParams(
                 Dict(
-                    "W_q" => FIX["params0_transformer_0_w__W_q"], "W_k" => FIX["params0_transformer_0_w__W_k"],
-                    "W_v" => FIX["params0_transformer_0_w__W_v"], "W_o" => FIX["params0_transformer_0_w__W_o"],
-                    "W_ff1" => FIX["params0_transformer_0_w__W_ff1"], "W_ff2" => FIX["params0_transformer_0_w__W_ff2"],
+                    "W_q" => FIX["params0_transformer_0_w__W_q"],
+                    "W_k" => FIX["params0_transformer_0_w__W_k"],
+                    "W_v" => FIX["params0_transformer_0_w__W_v"],
+                    "W_o" => FIX["params0_transformer_0_w__W_o"],
+                    "W_ff1" => FIX["params0_transformer_0_w__W_ff1"],
+                    "W_ff2" => FIX["params0_transformer_0_w__W_ff2"],
                     "ln1_gamma" => row_dt(FIX["params0_transformer_0_w__ln1_gamma"]),
                     "ln2_gamma" => row_dt(FIX["params0_transformer_0_w__ln2_gamma"])
                 ),
                 Dict(
-                    "b_q" => row_dt(FIX["params0_transformer_0_b__b_q"]), "b_k" => row_dt(FIX["params0_transformer_0_b__b_k"]),
-                    "b_v" => row_dt(FIX["params0_transformer_0_b__b_v"]), "b_o" => row_dt(FIX["params0_transformer_0_b__b_o"]),
-                    "b_ff1" => row_dt(FIX["params0_transformer_0_b__b_ff1"]), "b_ff2" => row_dt(FIX["params0_transformer_0_b__b_ff2"]),
-                    "ln1_beta" => row_dt(FIX["params0_transformer_0_b__ln1_beta"]), "ln2_beta" => row_dt(FIX["params0_transformer_0_b__ln2_beta"])
+                    "b_q" => row_dt(FIX["params0_transformer_0_b__b_q"]),
+                    "b_k" => row_dt(FIX["params0_transformer_0_b__b_k"]),
+                    "b_v" => row_dt(FIX["params0_transformer_0_b__b_v"]),
+                    "b_o" => row_dt(FIX["params0_transformer_0_b__b_o"]),
+                    "b_ff1" => row_dt(FIX["params0_transformer_0_b__b_ff1"]),
+                    "b_ff2" => row_dt(FIX["params0_transformer_0_b__b_ff2"]),
+                    "ln1_beta" => row_dt(FIX["params0_transformer_0_b__ln1_beta"]),
+                    "ln2_beta" => row_dt(FIX["params0_transformer_0_b__ln2_beta"])
                 )
             ),
-            "skip_0" => NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()),
+            "skip_0" => NodeParams(
+                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+            ),
             "output" => NodeParams(
-                Dict("W_out" => FIX["params0_output_w__W_out"]), Dict("b_out" => row_dt(FIX["params0_output_b__b_out"]))
+                Dict("W_out" => FIX["params0_output_w__W_out"]),
+                Dict("b_out" => row_dt(FIX["params0_output_b__b_out"]))
             )
         )
     )
@@ -172,7 +248,9 @@ function run_pipeline(structure, FIX)
     init_state = initialize_graph_state(structure, B, rng; clamps=clamps, params=params)
     collect_state_pairs!(pairs, "init", init_state, FIX)
 
-    norm_log = Dict(name => Vector{Vector{Float32}}() for name in ("embed", "transformer_0", "skip_0"))
+    norm_log = Dict(
+        name => Vector{Vector{Float32}}() for name in ("embed", "transformer_0", "skip_0")
+    )
     relax_state = init_state
     for step in 1:INFER_STEPS
         relax_state = FabricPC.inference_step(params, relax_state, clamps, structure)
@@ -181,7 +259,10 @@ function run_pipeline(structure, FIX)
             g = relax_state.nodes[name].latent_grad
             # per-sample L2 norm over all non-batch dims (dims 2:end; Julia arrays are
             # (batch, ...) here matching the fixture's row-major batch-first convention)
-            nrm = Float32[sqrt(sum(abs2, view(g, i, ntuple(_ -> Colon(), ndims(g) - 1)...))) for i in 1:size(g, 1)]
+            nrm = Float32[
+                sqrt(sum(abs2, view(g, i, ntuple(_ -> Colon(), ndims(g) - 1)...))) for
+                i in 1:size(g, 1)
+            ]
             push!(norm_log[name], nrm)
         end
     end
@@ -190,15 +271,23 @@ function run_pipeline(structure, FIX)
     collect_state_pairs!(pairs, "converged", converged, FIX)
 
     batch = Dict{String, Any}("x" => Xb, "y" => Yb)
-    grads, energy, grad_final_state = get_graph_param_gradient(params, batch, structure, rng)
+    grads, energy, grad_final_state = get_graph_param_gradient(
+        params, batch, structure, rng
+    )
     collect_params_pairs!(pairs, "grad", grads, FIX)
-    push!(pairs, ("scalars_energy_pretrain", [Float32(energy)], FIX["scalars_energy_pretrain"]))
+    push!(
+        pairs,
+        ("scalars_energy_pretrain", [Float32(energy)], FIX["scalars_energy_pretrain"])
+    )
     collect_state_pairs!(pairs, "grad_final", grad_final_state, FIX)
 
     LR = 0.05
     new_params, energy2, final_state2 = train_step(params, batch, structure, LR, rng)
     collect_params_pairs!(pairs, "trained", new_params, FIX)
-    push!(pairs, ("scalars_energy_trainstep", [Float32(energy2)], FIX["scalars_energy_trainstep"]))
+    push!(
+        pairs,
+        ("scalars_energy_trainstep", [Float32(energy2)], FIX["scalars_energy_trainstep"])
+    )
     collect_state_pairs!(pairs, "trained_final", final_state2, FIX)
 
     return pairs, norm_log
@@ -221,8 +310,10 @@ function report(label, pairs)
             worst_label = name
         end
     end
-    println("  WORST required tolerance across all $(length(pairs)) comparisons: $(worst)  (at $(worst_label))")
-    sorted = sort(pairs; by = p -> -required_tol(p[2], p[3]))
+    println(
+        "  WORST required tolerance across all $(length(pairs)) comparisons: $(worst)  (at $(worst_label))"
+    )
+    sorted = sort(pairs; by=p -> -required_tol(p[2], p[3]))
     println("  top 5 worst comparisons:")
     for (name, a, b) in sorted[1:min(5, end)]
         println("    $(name): required_tol=$(required_tol(a, b))")
@@ -238,15 +329,17 @@ function report_clip_boundary(norm_log)
     println("CLIP-BOUNDARY AGREEMENT CHECK -- skip_0 node, max_norm=$(MAX_NORM_NCB)")
     println("="^100)
     nrms = norm_log["skip_0"]  # Vector of 12 (per-step) Float32[3] (per-sample)
-    near_boundary = Tuple{Int,Int,Float32,Float32,Bool}[]  # (step, sample, norm, ratio, clips)
+    near_boundary = Tuple{Int, Int, Float32, Float32, Bool}[]  # (step, sample, norm, ratio, clips)
     for step in 1:INFER_STEPS
         for s in 1:B
             n = nrms[step][s]
             ratio = n / MAX_NORM_NCB
             clips = ratio > 1.0f0
             flag = abs(ratio - 1.0f0) <= 0.20f0 ? "  <-- NEAR BOUNDARY" : ""
-            println("  step=$(lpad(step,2)) sample=$(s) julia_raw_norm=$(round(n,digits=5)) " *
-                    "ratio=$(round(ratio,digits=4)) $(clips ? "CLIP" : "no-clip")$(flag)")
+            println(
+                "  step=$(lpad(step,2)) sample=$(s) julia_raw_norm=$(round(n,digits=5)) " *
+                "ratio=$(round(ratio,digits=4)) $(clips ? "CLIP" : "no-clip")$(flag)"
+            )
             if abs(ratio - 1.0f0) <= 0.20f0
                 push!(near_boundary, (step, s, n, ratio, clips))
             end
@@ -261,29 +354,42 @@ println("Building structures...")
 # stable.jl's own structure_nc construction exactly -- transformer_lm() hardcodes plain
 # InferenceSGD, no keyword to swap algorithms -- just with max_norm=2.5 instead of 1.0).
 input_nc = IdentityNode((S,), "input")
-embed_nc = EmbeddingNode((S, E), "embed"; vocab_size=V, weight_init=NormalInitializer(; std=1.0))
-block_nc = TransformerBlock((S, E), "transformer_0"; num_heads=H, ff_dim=nothing, use_rope=true, causal=true)
+embed_nc = EmbeddingNode(
+    (S, E), "embed"; vocab_size=V, weight_init=NormalInitializer(; std=1.0)
+)
+block_nc = TransformerBlock(
+    (S, E), "transformer_0"; num_heads=H, ff_dim=nothing, use_rope=true, causal=true
+)
 skip_nc = SkipConnection((S, E), "skip_0")
-output_nc = VocabProjectionNode((S, V), "output"; weight_init=NormalInitializer(; std=sqrt(1.0 / E)))
+output_nc = VocabProjectionNode(
+    (S, V), "output"; weight_init=NormalInitializer(; std=sqrt(1.0 / E))
+)
 nodes_ncb = FabricPC.AbstractNode[input_nc, embed_nc, block_nc, skip_nc, output_nc]
 edges_ncb = Edge[
     Edge(input_nc, slot(embed_nc, "in")),
     Edge(embed_nc, slot(block_nc, "in")),
     Edge(embed_nc, slot(skip_nc, "in")),
     Edge(block_nc, slot(skip_nc, "in")),
-    Edge(skip_nc, slot(output_nc, "in")),
+    Edge(skip_nc, slot(output_nc, "in"))
 ]
 inference_ncb = InferenceSGDNormClip(;
-    eta_infer=ETA_INFER, infer_steps=INFER_STEPS, latent_decay=0.0f0, max_norm=MAX_NORM_NCB, eps=NC_EPS
+    eta_infer=ETA_INFER, infer_steps=INFER_STEPS, latent_decay=0.0f0, max_norm=MAX_NORM_NCB,
+    eps=NC_EPS
 )
-structure_ncb = graph(nodes_ncb, edges_ncb, TaskMap(; x=input_nc, y=output_nc), inference_ncb)
+structure_ncb = graph(
+    nodes_ncb, edges_ncb, TaskMap(; x=input_nc, y=output_nc), inference_ncb
+)
 
 println("\nChecking params0/batch byte-identity against sibling stable fixtures...")
 check_shared_params0_batch()
 
-println("\nRunning InferenceSGDNormClip (eta=0.01, max_norm=2.5, eps=1e-8) pipeline vs tier_d_transformer_stable_normclip_boundary.npz ...")
+println(
+    "\nRunning InferenceSGDNormClip (eta=0.01, max_norm=2.5, eps=1e-8) pipeline vs tier_d_transformer_stable_normclip_boundary.npz ..."
+)
 pairs_ncb, norm_log = run_pipeline(structure_ncb, FIX_NCB)
-worst_ncb = report("InferenceSGDNormClip, eta_infer=0.01, max_norm=2.5, 12 steps", pairs_ncb)
+worst_ncb = report(
+    "InferenceSGDNormClip, eta_infer=0.01, max_norm=2.5, 12 steps", pairs_ncb
+)
 
 near_boundary = report_clip_boundary(norm_log)
 
@@ -291,10 +397,16 @@ println("\n" * "="^100)
 println("SUMMARY")
 println("="^100)
 npass = count(p -> allclose_dt(p[2], p[3]), pairs_ncb)
-println("NormClip-boundary variant: $(npass)/$(length(pairs_ncb)) pass at 1e-4;  worst required tol = $(worst_ncb)")
-println("Near-boundary (|ratio-1|<=20%) skip_0 (step,sample) points found: $(length(near_boundary))")
+println(
+    "NormClip-boundary variant: $(npass)/$(length(pairs_ncb)) pass at 1e-4;  worst required tol = $(worst_ncb)"
+)
+println(
+    "Near-boundary (|ratio-1|<=20%) skip_0 (step,sample) points found: $(length(near_boundary))"
+)
 for (step, s, n, ratio, clips) in near_boundary
-    println("  step=$(step) sample=$(s) julia_norm=$(n) ratio=$(ratio) julia_decision=$(clips ? "CLIP" : "no-clip")")
+    println(
+        "  step=$(step) sample=$(s) julia_norm=$(n) ratio=$(ratio) julia_decision=$(clips ? "CLIP" : "no-clip")"
+    )
 end
 
 # ---------------------------------------------------------------------------------------
@@ -315,7 +427,9 @@ end
             # own norm_log, applied here to the FIXTURE's (upstream) latent_grad array instead --
             # an independent recomputation, not a re-read of Julia's own already-checked value.
             g_fix = FIX_NCB["relax$(lpad(step, 2, '0'))_skip_0_latent_grad"]
-            fixture_norm = sqrt(sum(abs2, view(g_fix, s, ntuple(_ -> Colon(), ndims(g_fix) - 1)...)))
+            fixture_norm = sqrt(
+                sum(abs2, view(g_fix, s, ntuple(_ -> Colon(), ndims(g_fix) - 1)...))
+            )
             fixture_clips = (fixture_norm / MAX_NORM_NCB) > 1.0f0
             @test clips == fixture_clips
         end

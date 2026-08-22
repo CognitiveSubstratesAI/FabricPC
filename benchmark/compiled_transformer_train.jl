@@ -31,7 +31,7 @@
 
 using FabricPC, Random, Printf
 using FabricPC: IdentityNode, TransformerBlock, Edge, TaskMap, InferenceSGD, graph,
-                initialize_params, initialize_graph_state, compile_train_step
+    initialize_params, initialize_graph_state, compile_train_step
 using Reactant, Enzyme   # triggers FabricPCReactantExt + FabricPCEnzymeExt
 
 max_w_delta(a, b, names) = maximum(
@@ -49,7 +49,9 @@ function main()
     st = graph([xn, hn, yn], [Edge(xn, hn), Edge(hn, yn)], TaskMap(; x=xn, y=yn),
         InferenceSGD(; eta_infer=0.05, infer_steps=3))
     p = initialize_params(st, MersenneTwister(1))
-    clamps = Dict{String, Any}("x" => randn(rng, Float32, B, S, E), "y" => randn(rng, Float32, B, S, E))
+    clamps = Dict{String, Any}(
+        "x" => randn(rng, Float32, B, S, E), "y" => randn(rng, Float32, B, S, E)
+    )
     init = initialize_graph_state(st, B, rng; clamps=clamps, params=p)
 
     println("== J-02b: compiled full PC train_step on a TransformerBlock graph ==")
@@ -60,16 +62,20 @@ function main()
     p1 = ct(p, init)
 
     h = p1.nodes["h"]
-    allfinite = all(all(isfinite, v) for v in values(h.weights)) &&
-                all(all(isfinite, v) for v in values(h.biases))
+    allfinite =
+        all(all(isfinite, v) for v in values(h.weights)) &&
+        all(all(isfinite, v) for v in values(h.biases))
     moved = maximum(abs.(h.weights["W_q"] .- p.nodes["h"].weights["W_q"]))
-    @printf("params finite: %s   update magnitude max|dW_q| = %.4g  (GATE: > 0, real update -- no DCE)\n",
+    @printf(
+        "params finite: %s   update magnitude max|dW_q| = %.4g  (GATE: > 0, real update -- no DCE)\n",
         allfinite, moved)
 
     # loop=false must agree with loop=true (both Enzyme-under-Reactant)
     ct2 = compile_train_step(st, p, clamps; batch=B, lr=lr, loop=false)
     d = max_w_delta(ct2(p, init), p1, ["h"])
-    @printf("loop=false vs loop=true: max|dW| = %.3e  (GATE: ~1e-7, internal consistency)\n", d)
+    @printf(
+        "loop=false vs loop=true: max|dW| = %.3e  (GATE: ~1e-7, internal consistency)\n", d
+    )
 
     ok = allfinite && moved > 1e-4 && d < 1e-5
     println(ok ? "PASS" : "FAIL")

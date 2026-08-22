@@ -22,24 +22,26 @@ function _opt_fixture(DX, DH, DY, B; seed=0xC0DE, inference)
     x = Linear((DX,), "x"; use_bias=false)
     h = Linear((DH,), "h"; activation=TanhActivation())
     y = Linear((DY,), "y"; energy=GaussianEnergy())
-    structure = graph([x, h, y], [Edge(x, h), Edge(h, y)], TaskMap(x=x, y=y), inference)
+    structure = graph([x, h, y], [Edge(x, h), Edge(h, y)], TaskMap(; x=x, y=y), inference)
     edge_xh, edge_hy = "x->h:in", "h->y:in"
     params = GraphParams(
         Dict(
-            "x" => NodeParams(Dict{String,Matrix{Float32}}(), Dict{String,Matrix{Float32}}()),
+            "x" => NodeParams(
+                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+            ),
             "h" => NodeParams(
                 Dict(edge_xh => 0.1f0 .* randn(rng, Float32, DX, DH)),
-                Dict("b" => 0.1f0 .* randn(rng, Float32, 1, DH)),
+                Dict("b" => 0.1f0 .* randn(rng, Float32, 1, DH))
             ),
             "y" => NodeParams(
                 Dict(edge_hy => 0.1f0 .* randn(rng, Float32, DH, DY)),
-                Dict("b" => 0.1f0 .* randn(rng, Float32, 1, DY)),
-            ),
-        ),
+                Dict("b" => 0.1f0 .* randn(rng, Float32, 1, DY))
+            )
+        )
     )
     Xb = randn(rng, Float32, B, DX)
     Yb = randn(rng, Float32, B, DY)
-    clamps = Dict{String,Any}("x" => Xb, "y" => Yb)
+    clamps = Dict{String, Any}("x" => Xb, "y" => Yb)
     init = initialize_graph_state(structure, B, rng; clamps=clamps, params=params)
     return params, init, clamps, structure
 end

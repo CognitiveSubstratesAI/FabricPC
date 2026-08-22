@@ -97,11 +97,17 @@ function compile_inference(
     # — the emitted wait can be dead-code-eliminated, which would silently restore the async
     # artifact (decisions.md §11's bogus ~1000x) with no `Array(...)` left to expose it.
     thunk = if loop
-        sync ? Reactant.@compile(sync = true, looped(params_r, Reactant.to_rarray(zl))) :
-               Reactant.@compile(looped(params_r, Reactant.to_rarray(zl)))
+        if sync
+            Reactant.@compile(sync = true, looped(params_r, Reactant.to_rarray(zl)))
+        else
+            Reactant.@compile(looped(params_r, Reactant.to_rarray(zl)))
+        end
     else
-        sync ? Reactant.@compile(sync = true, runner(params_r, Reactant.to_rarray(zl))) :
-               Reactant.@compile(runner(params_r, Reactant.to_rarray(zl)))
+        if sync
+            Reactant.@compile(sync = true, runner(params_r, Reactant.to_rarray(zl)))
+        else
+            Reactant.@compile(runner(params_r, Reactant.to_rarray(zl)))
+        end
     end
     return CompiledInference(plan, layout, clamped, thunk, batch, params_r)
 end
@@ -187,9 +193,11 @@ function compile_train_step(
     end
     unrolled(at, z) = jit_train_step_runner(at, z, plan, layout, clamped, η)
 
-    thunk = loop ?
-        Reactant.@compile(looped_train(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl))) :
+    thunk = if loop
+        Reactant.@compile(looped_train(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl)))
+    else
         Reactant.@compile(unrolled(Reactant.to_rarray(arr_tuple), Reactant.to_rarray(zl)))
+    end
     return CompiledTrainStep(plan, layout, clamped, thunk, batch, η)
 end
 

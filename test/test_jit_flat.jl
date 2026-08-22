@@ -104,7 +104,8 @@ end
 # compiled lane's small residual (~1e-7) attributable purely to XLA float reassociation, not to a
 # divergent M-step. Compiled correctness is gated separately in benchmark/compiled_train_step.jl
 # (needs Reactant).
-using FabricPC: flat_train_step, graph_params_from_flat, compute_local_weight_gradients, sgd_update,
+using FabricPC: flat_train_step, graph_params_from_flat, compute_local_weight_gradients,
+    sgd_update,
     LinearResidual
 
 function _match_train(structure, params, clamps, batch, lr)
@@ -125,10 +126,14 @@ function _match_train(structure, params, clamps, batch, lr)
     ok = true
     for name in keys(eager.nodes)
         for k in keys(eager.nodes[name].weights)
-            ok &= isapprox(flat.nodes[name].weights[k], eager.nodes[name].weights[k]; rtol=0, atol=0)
+            ok &= isapprox(
+                flat.nodes[name].weights[k], eager.nodes[name].weights[k]; rtol=0, atol=0
+            )
         end
         for k in keys(eager.nodes[name].biases)
-            ok &= isapprox(flat.nodes[name].biases[k], eager.nodes[name].biases[k]; rtol=0, atol=0)
+            ok &= isapprox(
+                flat.nodes[name].biases[k], eager.nodes[name].biases[k]; rtol=0, atol=0
+            )
         end
     end
     return ok

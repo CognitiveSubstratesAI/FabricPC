@@ -459,7 +459,9 @@ function _run_inference_loop_opt(
     end
     for _ in 1:inf.infer_steps
         state = zero_grads(state, structure)
-        state = _forward_value_and_grad_opt(params, state, clamps, structure, hoist, hoisted, static)
+        state = _forward_value_and_grad_opt(
+            params, state, clamps, structure, hoist, hoisted, static
+        )
         state = update_latents(state, clamps, structure)
     end
     return state
@@ -527,7 +529,9 @@ function _run_inference_loop(
     )
     state = initial_state
     for _ in 1:inf.infer_steps
-        state, velocity = momentum_inference_step(inf, params, state, velocity, clamps, structure)
+        state, velocity = momentum_inference_step(
+            inf, params, state, velocity, clamps, structure
+        )
     end
     return state
 end

@@ -65,28 +65,41 @@ row_dt(v) = reshape(Float32.(v), 1, :)
 function build_params(FIX)
     GraphParams(
         Dict(
-            "input" => NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()),
+            "input" => NodeParams(
+                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+            ),
             "embed" => NodeParams(
-                Dict("embeddings" => FIX["params0_embed_w__embeddings"]), Dict{String, Matrix{Float32}}()
+                Dict("embeddings" => FIX["params0_embed_w__embeddings"]),
+                Dict{String, Matrix{Float32}}()
             ),
             "transformer_0" => NodeParams(
                 Dict(
-                    "W_q" => FIX["params0_transformer_0_w__W_q"], "W_k" => FIX["params0_transformer_0_w__W_k"],
-                    "W_v" => FIX["params0_transformer_0_w__W_v"], "W_o" => FIX["params0_transformer_0_w__W_o"],
-                    "W_ff1" => FIX["params0_transformer_0_w__W_ff1"], "W_ff2" => FIX["params0_transformer_0_w__W_ff2"],
+                    "W_q" => FIX["params0_transformer_0_w__W_q"],
+                    "W_k" => FIX["params0_transformer_0_w__W_k"],
+                    "W_v" => FIX["params0_transformer_0_w__W_v"],
+                    "W_o" => FIX["params0_transformer_0_w__W_o"],
+                    "W_ff1" => FIX["params0_transformer_0_w__W_ff1"],
+                    "W_ff2" => FIX["params0_transformer_0_w__W_ff2"],
                     "ln1_gamma" => row_dt(FIX["params0_transformer_0_w__ln1_gamma"]),
                     "ln2_gamma" => row_dt(FIX["params0_transformer_0_w__ln2_gamma"])
                 ),
                 Dict(
-                    "b_q" => row_dt(FIX["params0_transformer_0_b__b_q"]), "b_k" => row_dt(FIX["params0_transformer_0_b__b_k"]),
-                    "b_v" => row_dt(FIX["params0_transformer_0_b__b_v"]), "b_o" => row_dt(FIX["params0_transformer_0_b__b_o"]),
-                    "b_ff1" => row_dt(FIX["params0_transformer_0_b__b_ff1"]), "b_ff2" => row_dt(FIX["params0_transformer_0_b__b_ff2"]),
-                    "ln1_beta" => row_dt(FIX["params0_transformer_0_b__ln1_beta"]), "ln2_beta" => row_dt(FIX["params0_transformer_0_b__ln2_beta"])
+                    "b_q" => row_dt(FIX["params0_transformer_0_b__b_q"]),
+                    "b_k" => row_dt(FIX["params0_transformer_0_b__b_k"]),
+                    "b_v" => row_dt(FIX["params0_transformer_0_b__b_v"]),
+                    "b_o" => row_dt(FIX["params0_transformer_0_b__b_o"]),
+                    "b_ff1" => row_dt(FIX["params0_transformer_0_b__b_ff1"]),
+                    "b_ff2" => row_dt(FIX["params0_transformer_0_b__b_ff2"]),
+                    "ln1_beta" => row_dt(FIX["params0_transformer_0_b__ln1_beta"]),
+                    "ln2_beta" => row_dt(FIX["params0_transformer_0_b__ln2_beta"])
                 )
             ),
-            "skip_0" => NodeParams(Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()),
+            "skip_0" => NodeParams(
+                Dict{String, Matrix{Float32}}(), Dict{String, Matrix{Float32}}()
+            ),
             "output" => NodeParams(
-                Dict("W_out" => FIX["params0_output_w__W_out"]), Dict("b_out" => row_dt(FIX["params0_output_b__b_out"]))
+                Dict("W_out" => FIX["params0_output_w__W_out"]),
+                Dict("b_out" => row_dt(FIX["params0_output_b__b_out"]))
             )
         )
     )
@@ -97,17 +110,23 @@ keyword to swap algorithms -- same pattern test_tier_d_transformer_stable.jl use
 InferenceSGDNormClip)."""
 function build_graph(inf)
     input = IdentityNode((S,), "input")
-    embed = EmbeddingNode((S, E), "embed"; vocab_size=V, weight_init=NormalInitializer(; std=1.0))
-    block = TransformerBlock((S, E), "transformer_0"; num_heads=H, ff_dim=nothing, use_rope=true, causal=true)
+    embed = EmbeddingNode(
+        (S, E), "embed"; vocab_size=V, weight_init=NormalInitializer(; std=1.0)
+    )
+    block = TransformerBlock(
+        (S, E), "transformer_0"; num_heads=H, ff_dim=nothing, use_rope=true, causal=true
+    )
     skip = SkipConnection((S, E), "skip_0")
-    output = VocabProjectionNode((S, V), "output"; weight_init=NormalInitializer(; std=sqrt(1.0 / E)))
+    output = VocabProjectionNode(
+        (S, V), "output"; weight_init=NormalInitializer(; std=sqrt(1.0 / E))
+    )
     nodes = FabricPC.AbstractNode[input, embed, block, skip, output]
     edges = Edge[
         Edge(input, slot(embed, "in")),
         Edge(embed, slot(block, "in")),
         Edge(embed, slot(skip, "in")),
         Edge(block, slot(skip, "in")),
-        Edge(skip, slot(output, "in")),
+        Edge(skip, slot(output, "in"))
     ]
     return graph(nodes, edges, TaskMap(; x=input, y=output), inf)
 end
@@ -123,7 +142,9 @@ this topology has in_degree>0 and is unclamped, so FeedforwardStateInit's second
 graph's initial z_latent, but is fixed anyway as cheap insurance)."""
 function fresh_init(structure)
     Random.seed!(20260714)
-    return initialize_graph_state(structure, B, Random.default_rng(); clamps=CLAMPS, params=PARAMS)
+    return initialize_graph_state(
+        structure, B, Random.default_rng(); clamps=CLAMPS, params=PARAMS
+    )
 end
 
 function total_norm(state, node_names, field)
@@ -149,7 +170,9 @@ function momentum_norm_trace(inf::InferenceSGDMomentum, structure)
     )
     norms = Float64[]
     for _ in 1:inf.infer_steps
-        state, velocity = FabricPC.momentum_inference_step(inf, PARAMS, state, velocity, CLAMPS, structure)
+        state, velocity = FabricPC.momentum_inference_step(
+            inf, PARAMS, state, velocity, CLAMPS, structure
+        )
         push!(norms, total_norm(state, NONCLAMPED, :latent_grad))
     end
     return norms
@@ -162,13 +185,19 @@ end
     # ---------------------------------------------------------------------------------------
     @testset "momentum=0 reproduces InferenceSGD bit-for-bit" begin
         ETA, STEPS = 0.01f0, 12
-        structure_sgd = build_graph(InferenceSGD(; eta_infer=ETA, infer_steps=STEPS, latent_decay=0.0))
+        structure_sgd = build_graph(
+            InferenceSGD(; eta_infer=ETA, infer_steps=STEPS, latent_decay=0.0)
+        )
         structure_mom0 = build_graph(
-            InferenceSGDMomentum(; eta_infer=ETA, infer_steps=STEPS, latent_decay=0.0, momentum=0.0)
+            InferenceSGDMomentum(;
+                eta_infer=ETA, infer_steps=STEPS, latent_decay=0.0, momentum=0.0
+            )
         )
 
         state_sgd = run_inference(PARAMS, fresh_init(structure_sgd), CLAMPS, structure_sgd)
-        state_mom0 = run_inference(PARAMS, fresh_init(structure_mom0), CLAMPS, structure_mom0)
+        state_mom0 = run_inference(
+            PARAMS, fresh_init(structure_mom0), CLAMPS, structure_mom0
+        )
 
         for name in ("embed", "transformer_0", "skip_0", "output")
             ns_sgd = state_sgd.nodes[name]
@@ -209,7 +238,8 @@ end
 
         STEPS = 60
         inf_opt = InferenceSGDMomentum(;
-            eta_infer=Float32(eta_star), infer_steps=STEPS, latent_decay=0.0, momentum=Float32(beta_star)
+            eta_infer=Float32(eta_star), infer_steps=STEPS, latent_decay=0.0,
+            momentum=Float32(beta_star)
         )
         structure_opt = build_graph(inf_opt)
         norms = momentum_norm_trace(inf_opt, structure_opt)
@@ -222,8 +252,10 @@ end
         # momentum config from the worst-case (largest) lambda_max anywhere on the trajectory.
         @test all(isfinite, norms)
         @test norms[end] < norms[10] / 1.5   # net decay well past the transient peak
-        println("\ncorrected-optimal momentum eta*=$(eta_star) beta*=$(beta_star): " *
-                "step1=$(norms[1]) step10=$(norms[10]) step$(STEPS)=$(norms[end])")
+        println(
+            "\ncorrected-optimal momentum eta*=$(eta_star) beta*=$(beta_star): " *
+            "step1=$(norms[1]) step10=$(norms[10]) step$(STEPS)=$(norms[end])"
+        )
     end
 
     # ---------------------------------------------------------------------------------------
@@ -232,7 +264,9 @@ end
     @testset "upstream's proposed default (beta=0.9, eta=0.1) diverges -- predicted before measured" begin
         STEPS = 100
         for beta in (0.9f0, 0.99f0)   # upstream's literal guess, and near the beta->1 ceiling
-            inf_bad = InferenceSGDMomentum(; eta_infer=0.1f0, infer_steps=STEPS, latent_decay=0.0, momentum=beta)
+            inf_bad = InferenceSGDMomentum(;
+                eta_infer=0.1f0, infer_steps=STEPS, latent_decay=0.0, momentum=beta
+            )
             structure_bad = build_graph(inf_bad)
             # NOTE: latent_grad is zeros-by-construction on the fresh init state (no step has
             # run yet) -- a step-0 baseline would be trivially zero, making ANY nonzero endpoint
@@ -261,7 +295,8 @@ end
             # difference (net growth vs net decay from the same post-transient baseline) is the
             # robust, saturation-proof falsification signal -- not a specific multiplier, which
             # saturation makes graph-and-config-dependent.
-            @test any(!isfinite, norms) || (maximum(norms) > 2 * norms[1] && norms[end] > norms[1])
+            @test any(!isfinite, norms) ||
+                (maximum(norms) > 2 * norms[1] && norms[end] > norms[1])
         end
     end
 end

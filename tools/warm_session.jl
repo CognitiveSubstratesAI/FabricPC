@@ -14,11 +14,11 @@ catch
 end
 using FabricPC, Random
 try
-    ;
-    using Zygote;
+
+    using Zygote
 catch
-    ;
-    @warn "Zygote unavailable";
+
+    @warn "Zygote unavailable"
 end
 
 

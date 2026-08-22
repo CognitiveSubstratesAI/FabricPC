@@ -454,10 +454,12 @@ function _flat_inference_step_opt(
         end
         ins = [fstate[s].z_latent for s in plan.in_src[i]]
         ns, igrads, self_grad = flat_latent_grads(
-            plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i], plan.infos[i], clamped[i]
+            plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i], plan.infos[i],
+            clamped[i]
         )
         # PRUNE: a clamped position's own self-grad accumulation is dead — skip it.
-        fstate[i] = clamped[i] ? ns : update_state(ns; latent_grad=ns.latent_grad .+ self_grad)
+        fstate[i] =
+            clamped[i] ? ns : update_state(ns; latent_grad=ns.latent_grad .+ self_grad)
         for (k, src) in enumerate(plan.in_src[i])
             clamped[src] && continue                   # PRUNE: back-edge grad into a clamped source is dead
             fstate[src] = update_state(
@@ -480,7 +482,9 @@ end
 
 """Optimized flat loop: compute hoistable positions' loop-invariant forward ONCE, then run
 `infer_steps` of `_flat_inference_step_opt`. See `flat_run_inference`'s `optimize` kwarg."""
-function _flat_run_inference_opt(plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool})
+function _flat_run_inference_opt(
+    plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}
+)
     hoist = _flat_hoistable(plan, clamped)
     # Vector{NodeState} (NOT Vector{Any}) — unfilled (non-hoistable) slots stay #undef and are
     # never indexed (only read where hoist[i]); keeping the eltype concrete avoids boxing.
@@ -488,7 +492,9 @@ function _flat_run_inference_opt(plan, fparams, fstate::Vector{<:NodeState}, cla
     for i in 1:length(fstate)
         hoist[i] || continue
         ins = [fstate[s].z_latent for s in plan.in_src[i]]
-        hoisted[i] = flat_forward(plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i])
+        hoisted[i] = flat_forward(
+            plan.nodes[i], fparams[i], ins, plan.in_slot[i], fstate[i]
+        )
     end
     for _ in 1:plan.inference.infer_steps
         fstate = _flat_inference_step_opt(plan, fparams, fstate, clamped, hoist, hoisted)
@@ -544,7 +550,9 @@ closed-form local weight grad and apply `w -= lr·dW`, `b -= lr·db`. Position-i
 `get_graph_param_gradient` + `sgd_update` (core/learning.jl + training/train.jl) — the same
 per-node local rule, no backprop through inference. Source nodes (`in_degree == 0`) and weightless
 edges pass through unchanged. All arrays ⇒ Reactant-traceable."""
-function flat_sgd_step(plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}, lr)
+function flat_sgd_step(
+    plan, fparams, fstate::Vector{<:NodeState}, clamped::Vector{Bool}, lr
+)
     n = length(fparams)
     out = Vector{FlatNodeParams}(undef, n)
     η = Float32(lr)
@@ -579,7 +587,9 @@ One full PC training step, Dict-free: settle the latents (`flat_run_inference`, 
 apply the local SGD weight update (`flat_sgd_step`, the M-step). Position-indexed twin of eager
 `train_step` (training/train.jl). Eager reference for the compiled `compile_train_step`; also the
 whole thing that gets traced inside `@compile`."""
-function flat_train_step(plan, fparams, fstate_init::Vector{<:NodeState}, clamped::Vector{Bool}, lr)
+function flat_train_step(
+    plan, fparams, fstate_init::Vector{<:NodeState}, clamped::Vector{Bool}, lr
+)
     fstate = flat_run_inference(plan, fparams, fstate_init, clamped)
     return flat_sgd_step(plan, fparams, fstate, clamped, lr)
 end

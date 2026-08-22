@@ -84,7 +84,9 @@ if get(ENV, "FABRICPC_TIER_D_TRANSFORMER", "0") == "1"
         end
     catch e
         e isa Test.TestSetException || rethrow()
-        println("\n[conditioning envelope] eta=0.1 config's known-expansive failures printed above ($(e.fail + e.error)/$(e.pass + e.fail + e.error) -- see docs/AUDIT_REGISTER.md section 6). Not counted against the main suite.")
+        println(
+            "\n[conditioning envelope] eta=0.1 config's known-expansive failures printed above ($(e.fail + e.error)/$(e.pass + e.fail + e.error) -- see docs/AUDIT_REGISTER.md section 6). Not counted against the main suite."
+        )
     end
 end
 
@@ -109,6 +111,8 @@ if get(ENV, "FABRICPC_MOMENTUM_SPECTRUM_DIAGNOSTIC", "0") == "1"
         include("test_inference_momentum_diagnostic.jl")   # defines its own top-level @testset
     catch e
         e isa Test.TestSetException || rethrow()
-        println("\n[momentum spectrum diagnostic] failures printed above -- see docs/decisions.md #26. Not counted against the main suite.")
+        println(
+            "\n[momentum spectrum diagnostic] failures printed above -- see docs/decisions.md #26. Not counted against the main suite."
+        )
     end
 end

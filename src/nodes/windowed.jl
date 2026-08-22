@@ -34,7 +34,7 @@ struct ValidPad <: PadSpec end
 
 """Explicit per-spatial-axis `(low, high)` pads. `R` = spatial rank."""
 struct ExplicitPad{R} <: PadSpec
-    pads::NTuple{R,Tuple{Int,Int}}
+    pads::NTuple{R, Tuple{Int, Int}}
 end
 
 """
@@ -50,15 +50,19 @@ function padspec(padding, spatial_rank::Int)
         p = uppercase(String(padding))
         p == "SAME" && return SamePad()
         p == "VALID" && return ValidPad()
-        throw(ArgumentError(
-            "Unknown padding string $(repr(String(padding))); expected 'SAME' or 'VALID'."
-        ))
+        throw(
+            ArgumentError(
+                "Unknown padding string $(repr(String(padding))); expected 'SAME' or 'VALID'."
+            )
+        )
     end
     padding isa PadSpec && return padding
     pairs = Tuple((Int(lo), Int(hi)) for (lo, hi) in padding)
-    length(pairs) == spatial_rank || throw(ArgumentError(
-        "Explicit padding has $(length(pairs)) spatial pairs but spatial_rank is $spatial_rank."
-    ))
+    length(pairs) == spatial_rank || throw(
+        ArgumentError(
+            "Explicit padding has $(length(pairs)) spatial pairs but spatial_rank is $spatial_rank."
+        )
+    )
     return ExplicitPad{spatial_rank}(pairs)
 end
 
@@ -68,9 +72,10 @@ end
 Per-axis `(low, high)` pad amounts — the port of JAX's `lax.padtype_to_pads`. SAME is
 ASYMMETRIC with the extra on the HIGH side (see the module header, trap 3).
 """
-_pads(in_sp::NTuple{R,Int}, win, stride, ::ValidPad) where {R} = ntuple(_ -> (0, 0), Val(R))
-_pads(in_sp::NTuple{R,Int}, win, stride, p::ExplicitPad{R}) where {R} = p.pads
-function _pads(in_sp::NTuple{R,Int}, win, stride, ::SamePad) where {R}
+_pads(in_sp::NTuple{R, Int}, win, stride, ::ValidPad) where {R} =
+    ntuple(_ -> (0, 0), Val(R))
+_pads(in_sp::NTuple{R, Int}, win, stride, p::ExplicitPad{R}) where {R} = p.pads
+function _pads(in_sp::NTuple{R, Int}, win, stride, ::SamePad) where {R}
     ntuple(Val(R)) do i
         o = cld(in_sp[i], stride[i])                        # == Python -(-n // s)
         t = max((o - 1) * stride[i] + win[i] - in_sp[i], 0)
@@ -86,17 +91,19 @@ Literal port of `nodes/base.py:602-625`. Raises on a non-positive output size, w
 message. Uses `cld`/`fld` — never `÷` (module header, trap 2).
 """
 function compute_windowed_output_shape(
-    in_sp::NTuple{R,Int}, win, stride, p::PadSpec
+    in_sp::NTuple{R, Int}, win, stride, p::PadSpec
 ) where {R}
     pd = _pads(in_sp, win, stride, p)
     return ntuple(Val(R)) do i
         n, k, s = in_sp[i], win[i], stride[i]
         o = p isa SamePad ? cld(n, s) : fld(n + pd[i][1] + pd[i][2] - k, s) + 1   # fld == Python //
-        o <= 0 && throw(ArgumentError(
-            "Windowed op produces a non-positive output size ($o) on spatial axis $(i - 1): " *
-            "input=$n, kernel/window=$k, stride=$s, padding=$(_padrepr(p)). The kernel/window " *
-            "is larger than the (padded) input along this axis."
-        ))
+        o <= 0 && throw(
+            ArgumentError(
+                "Windowed op produces a non-positive output size ($o) on spatial axis $(i - 1): " *
+                "input=$n, kernel/window=$k, stride=$s, padding=$(_padrepr(p)). The kernel/window " *
+                "is larger than the (padded) input along this axis."
+            )
+        )
         o
     end
 end
@@ -125,49 +132,63 @@ function validate_windowed_output(
     op_name::String, channels_preserved::Bool, reject_pad_ge_window::Bool=false
 )
     spatial_rank = length(node_shape) - 1
-    spatial_rank in (1, 2, 3) || throw(ArgumentError(
-        "$op_name shape must have 2-4 elements (spatial_rank 1/2/3). Got shape=$(node_shape)."
-    ))
-    (window === nothing || stride === nothing) && throw(ArgumentError(
-        "$op_name: both window/kernel and stride are required for output shape validation; " *
-        "got window=$(repr(window)), stride=$(repr(stride))."
-    ))
-    length(window) == spatial_rank || throw(ArgumentError(
-        "$op_name: window/kernel length $(length(window)) must equal spatial_rank " *
-        "$spatial_rank inferred from shape=$(node_shape)."
-    ))
-    length(stride) == spatial_rank || throw(ArgumentError(
-        "$op_name: stride length $(length(stride)) must equal spatial_rank $spatial_rank " *
-        "inferred from shape=$(node_shape)."
-    ))
+    spatial_rank in (1, 2, 3) || throw(
+        ArgumentError(
+            "$op_name shape must have 2-4 elements (spatial_rank 1/2/3). Got shape=$(node_shape)."
+        )
+    )
+    (window === nothing || stride === nothing) && throw(
+        ArgumentError(
+            "$op_name: both window/kernel and stride are required for output shape validation; " *
+            "got window=$(repr(window)), stride=$(repr(stride))."
+        )
+    )
+    length(window) == spatial_rank || throw(
+        ArgumentError(
+            "$op_name: window/kernel length $(length(window)) must equal spatial_rank " *
+            "$spatial_rank inferred from shape=$(node_shape)."
+        )
+    )
+    length(stride) == spatial_rank || throw(
+        ArgumentError(
+            "$op_name: stride length $(length(stride)) must equal spatial_rank $spatial_rank " *
+            "inferred from shape=$(node_shape)."
+        )
+    )
     if reject_pad_ge_window && p isa ExplicitPad      # skipped for SAME/VALID, as upstream
         for (axis, ((lo, hi), k)) in enumerate(zip(p.pads, window))
-            (lo >= k || hi >= k) && throw(ArgumentError(
-                "$op_name: explicit padding $((lo, hi)) on spatial axis $(axis - 1) is >= the " *
-                "window size $k. A fully-padded max-pool window would output -inf; reduce the " *
-                "padding below the window size."
-            ))
+            (lo >= k || hi >= k) && throw(
+                ArgumentError(
+                    "$op_name: explicit padding $((lo, hi)) on spatial axis $(axis - 1) is >= the " *
+                    "window size $k. A fully-padded max-pool window would output -inf; reduce the " *
+                    "padding below the window size."
+                )
+            )
         end
     end
 
-    declared_spatial = node_shape[1:end-1]
+    declared_spatial = node_shape[1:(end - 1)]
     declared_channels = node_shape[end]
     for (edge_key, in_shape) in input_shapes                # insertion order (see docstring)
         if channels_preserved && in_shape[end] != declared_channels
-            throw(ArgumentError(
-                "$op_name preserves channels but declares $declared_channels while edge " *
-                "'$edge_key' supplies $(in_shape[end]) (input shape $(Tuple(in_shape))). " *
-                "Pooling cannot change the channel count; set the node's channel dimension " *
-                "to match its input."
-            ))
+            throw(
+                ArgumentError(
+                    "$op_name preserves channels but declares $declared_channels while edge " *
+                    "'$edge_key' supplies $(in_shape[end]) (input shape $(Tuple(in_shape))). " *
+                    "Pooling cannot change the channel count; set the node's channel dimension " *
+                    "to match its input."
+                )
+            )
         end
-        in_sp = Tuple(in_shape[1:end-1])
+        in_sp = Tuple(in_shape[1:(end - 1)])
         expected_spatial = compute_windowed_output_shape(in_sp, window, stride, p)
-        expected_spatial == declared_spatial || throw(ArgumentError(
-            "$op_name declared output spatial shape $declared_spatial but edge '$edge_key' " *
-            "(input spatial $(in_sp), window $(Tuple(window)), stride $(Tuple(stride)), " *
-            "padding $(_padrepr(p))) produces $expected_spatial."
-        ))
+        expected_spatial == declared_spatial || throw(
+            ArgumentError(
+                "$op_name declared output spatial shape $declared_spatial but edge '$edge_key' " *
+                "(input spatial $(in_sp), window $(Tuple(window)), stride $(Tuple(stride)), " *
+                "padding $(_padrepr(p))) produces $expected_spatial."
+            )
+        )
     end
     return nothing
 end
@@ -213,7 +234,7 @@ _edge_keys(inputs) = collect(keys(inputs))
 # =========================================================================================
 
 # Column-major unravel: index -> subscript, first axis fastest.
-@inline function _unravel_col(i::Int, dims::NTuple{R,Int}) where {R}
+@inline function _unravel_col(i::Int, dims::NTuple{R, Int}) where {R}
     r = i - 1
     ntuple(Val(R)) do d
         s = r % dims[d]
@@ -223,7 +244,7 @@ _edge_keys(inputs) = collect(keys(inputs))
 end
 
 # Row-major unravel: index -> subscript, LAST axis fastest (C order / NHWC window order).
-@inline function _unravel_row(i::Int, dims::NTuple{R,Int}) where {R}
+@inline function _unravel_row(i::Int, dims::NTuple{R, Int}) where {R}
     r = i - 1
     sub = ntuple(Val(R)) do d
         rd = R - d + 1                      # walk axes back-to-front
@@ -235,8 +256,8 @@ end
 end
 
 function _window_plan(
-    in_sp::NTuple{R,Int}, out_sp::NTuple{R,Int}, win::NTuple{R,Int},
-    stride::NTuple{R,Int}, pads::NTuple{R,Tuple{Int,Int}}, rowmajor::Bool
+    in_sp::NTuple{R, Int}, out_sp::NTuple{R, Int}, win::NTuple{R, Int},
+    stride::NTuple{R, Int}, pads::NTuple{R, Tuple{Int, Int}}, rowmajor::Bool
 ) where {R}
     K, O = prod(win), prod(out_sp)
     J = zeros(Int, K, O)                      # 0 == padded cell (sentinel; see _gather)
@@ -318,7 +339,7 @@ numerator. Gate both traps on the fixtures the moment the pool kernels exist:
 class of fill/sentinel bug, and cheaper to hit now than after a green VALID-only forward.
 """
 function _gather(
-    x::AbstractArray{Float32,N}, J::Matrix{Int}, C::Int, padfill::Float32=0.0f0
+    x::AbstractArray{Float32, N}, J::Matrix{Int}, C::Int, padfill::Float32=0.0f0
 ) where {N}
     B = size(x, 1)
     S = prod(ntuple(d -> size(x, d + 1), Val(N - 2)))     # flattened spatial extent
@@ -361,8 +382,8 @@ TWO fidelity constraints, both MEASURED against jax 0.10.2, neither obvious from
     gate is `maxpool_ptie`, a PARTIAL tie.
 """
 function _pool_max(
-    x::AbstractArray{Float32,N}, stride::NTuple{R,Int}, pad::PadSpec, win::NTuple{R,Int}
-) where {N,R}
+    x::AbstractArray{Float32, N}, stride::NTuple{R, Int}, pad::PadSpec, win::NTuple{R, Int}
+) where {N, R}
     B, C = size(x, 1), size(x, N)
     in_sp = ntuple(i -> size(x, i + 1), Val(R))
     pads = _pads(in_sp, win, stride, pad)
@@ -396,9 +417,9 @@ it yields 0.0 rather than NaN, and the `safe_counts` divisor keeps the NaN out o
 too (0/0 differentiates to NaN even where `where` masks the forward value).
 """
 function _pool_avg(
-    x::AbstractArray{Float32,N}, stride::NTuple{R,Int}, pad::PadSpec, win::NTuple{R,Int},
+    x::AbstractArray{Float32, N}, stride::NTuple{R, Int}, pad::PadSpec, win::NTuple{R, Int},
     count_include_pad::Bool
-) where {N,R}
+) where {N, R}
     B, C = size(x, 1), size(x, N)
     in_sp = ntuple(i -> size(x, i + 1), Val(R))
     pads = _pads(in_sp, win, stride, pad)
@@ -421,8 +442,10 @@ Global mean over ALL spatial axes (`pooling.py:321-324`). NB the axis set comes 
 rank, not the node's declared `shape` — a global-pool node's shape is `(C,)`, i.e. spatial rank 0,
 so deriving the axes from it would reduce nothing.
 """
-_pool_avg_global(x::AbstractArray{Float32,N}) where {N} =
-    dropdims(sum(x; dims=ntuple(i -> i + 1, Val(N - 2))); dims=ntuple(i -> i + 1, Val(N - 2))) ./
+_pool_avg_global(x::AbstractArray{Float32, N}) where {N} =
+    dropdims(
+        sum(x; dims=ntuple(i -> i + 1, Val(N - 2))); dims=ntuple(i -> i + 1, Val(N - 2))
+    ) ./
     Float32(prod(ntuple(d -> size(x, d + 1), Val(N - 2))))
 
 """
@@ -449,9 +472,9 @@ what lets Zygote/Enzyme differentiate it directly. The only mutation is inside t
 `_im2col_plan`, which is `@nograd` and carries no differentiable value.
 """
 function _conv_im2col(
-    x::AbstractArray{Float32,N}, W::AbstractArray{Float32,M},
-    stride::NTuple{R,Int}, pad::PadSpec
-) where {N,M,R}
+    x::AbstractArray{Float32, N}, W::AbstractArray{Float32, M},
+    stride::NTuple{R, Int}, pad::PadSpec
+) where {N, M, R}
     B = size(x, 1)
     # Ranks come from the ARRAYS (type params), never from `node.shape::Tuple` (abstract).
     in_sp = ntuple(i -> size(x, i + 1), Val(R))

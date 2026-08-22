@@ -20,8 +20,9 @@
 # (params unchanged) is also asserted against.
 
 using FabricPC, Random, Printf
-using FabricPC: Linear, Edge, TaskMap, InferenceSGD, graph, initialize_params, initialize_graph_state,
-                run_inference, compute_local_weight_gradients, sgd_update, TanhActivation
+using FabricPC: Linear, Edge, TaskMap, InferenceSGD, graph, initialize_params,
+    initialize_graph_state,
+    run_inference, compute_local_weight_gradients, sgd_update, TanhActivation
 using Reactant   # triggers FabricPCReactantExt (defines compile_train_step)
 
 # One eager Dict training step from a SHARED init state (the ground truth train_step body).
@@ -46,7 +47,9 @@ function main()
     p = initialize_params(st, MersenneTwister(1))
     B = 64
     lr = 0.01f0
-    clamps = Dict{String, Any}("x" => randn(rng, Float32, B, 784), "y" => randn(rng, Float32, B, 10))
+    clamps = Dict{String, Any}(
+        "x" => randn(rng, Float32, B, 784), "y" => randn(rng, Float32, B, 10)
+    )
     init = initialize_graph_state(st, B, rng; clamps=clamps, params=p)
 
     println("== J-02: compiled full PC train_step vs eager ==")
@@ -60,8 +63,14 @@ function main()
 
     dW = max_w_delta(pC, pE, ["h", "y"])
     moved = max_w_delta(pC, p, ["h", "y"])
-    @printf("compiled vs eager:  max|Δw| = %.3e   (GATE: ~1e-7 reassociation, NOT ~lr*|grad|)\n", dW)
-    @printf("update magnitude:   max|Δ vs initial| = %.4f   (GATE: > 0, a real update -- no DCE)\n", moved)
+    @printf(
+        "compiled vs eager:  max|Δw| = %.3e   (GATE: ~1e-7 reassociation, NOT ~lr*|grad|)\n",
+        dW
+    )
+    @printf(
+        "update magnitude:   max|Δ vs initial| = %.4f   (GATE: > 0, a real update -- no DCE)\n",
+        moved
+    )
 
     # loop=false unrolled runner -- same correctness
     ct2 = compile_train_step(st, p, clamps; batch=B, lr=lr, loop=false)
@@ -69,12 +78,16 @@ function main()
     @printf("loop=false vs eager: max|Δw| = %.3e\n", dWu)
 
     # multi-step composition (feed output back) stays bounded
-    pe = p; pc = p
+    pe = p
+    pc = p
     for _ in 1:3
         pe = eager_train_step(pe, clamps, init, st, lr)
         pc = ct(pc, init)
     end
-    @printf("3-step compiled vs eager: max|Δw| = %.3e   (drift bounded)\n", max_w_delta(pc, pe, ["h", "y"]))
+    @printf(
+        "3-step compiled vs eager: max|Δw| = %.3e   (drift bounded)\n",
+        max_w_delta(pc, pe, ["h", "y"])
+    )
 
     ok = dW < 1e-6 && moved > 1e-3 && dWu < 1e-6
     println(ok ? "PASS" : "FAIL")
