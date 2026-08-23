@@ -1,0 +1,59 @@
+# JETLS configuration for FabricPC.
+#
+# 🔴 WHY THIS FILE EXISTS: FabricPC is the ONLY package of thirteen with PACKAGE EXTENSIONS
+# (`[extensions]` → FabricPCEnzymeExt / FabricPCReactantExt / FabricPCZygoteExt), and JETLS does not
+# model them — reported upstream as "not at all" compatible (JETLS.jl issue #521).
+#
+# MEASURED 2026-08-23, pointing jetls directly at an extension file:
+#     ext/FabricPCZygoteExt.jl:92
+#         gin, gz = Zygote.gradient(
+#                   └────┘ ── `FabricPCZygoteExt.Zygote` is not defined [warn:lowering/undef-global-var]
+# ⚠️ THAT IS A FALSE POSITIVE. `Zygote` IS in scope inside the extension — a package extension is
+# loaded precisely BECAUSE its trigger package is present. JETLS has no notion of the trigger, so
+# every reference to it reads as an undefined global.
+#
+# ⚠️ AND THE FAILURE IS QUIET, WHICH IS THE DANGEROUS PART. `jetls check src/FabricPC.jl` returns
+# cleanly (90 diagnostics, 17 files) and never mentions ext/ at all — the analysis of src/ is fine.
+# The false positives only appear when a file under ext/ is opened or named directly. So this is not
+# a broken package; it is a bounded blind spot that must not be allowed to become permanent noise.
+#
+# ⇒ Scope the undefined-global check OUT of ext/ ONLY. Everything else, including all of src/, keeps
+#   full severity. If JETLS ever becomes a gate (workflows/agent_check.jl), findings that CANNOT be
+#   driven to zero are exactly what turns a gate into something everybody learns to ignore.
+#   Revisit when issue #521 closes — then DELETE this, do not keep it out of habit.
+
+# Blue via .JuliaFormatter.toml, enforced by the CI format job added 2026-08-22.
+# ⚠️ JETLS defaults to "Runic" — leaving this unset means the editor reformats to a style CI rejects.
+formatter = "JuliaFormatter"
+
+[diagnostic]
+enabled = true
+all_files = true
+allow_unused_underscore = true
+
+# ── the ext/ blind spot, scoped by PATH so src/ is untouched ────────────────────────────────────
+# ⚠️ IT SHOWS UP AS **TWO** CODES, not one. The first version of this file suppressed only
+# `undef-global-var` and looked like it worked — until the remaining count was actually READ:
+# 11 ERRORS were still there, all the same false positive wearing a different code.
+#     `Zygote.gradient(...)`  -> `FabricPCZygoteExt.Zygote` is not defined [lowering/undef-global-var]
+#     `Zygote.@nograd _soa_key` -> Macro name `Zygote` not found  [lowering/macro-expansion-error]
+# Value references and MACRO references are lowered differently, so both must be named.
+# ⚠️ AND A THIRD: `using Zygote` on line 17 ITSELF fails, as `toplevel/error` with a `__require`
+# stacktrace — the trigger package is not in the analysis environment, so the extension's own import
+# cannot resolve. Three codes from ONE cause is the signal to stop enumerating codes: upstream says
+# extensions are unsupported *at all*, so NOTHING JETLS reports about ext/ is trustworthy, and
+# listing codes one at a time just guarantees a fourth surprise later.
+# ⇒ Suppress EVERYTHING under ext/ via a regex catch-all, and say plainly that this is a COVERAGE
+#   GAP being recorded, not a set of findings being dismissed. ext/ is 3 files; src/ (34 files) keeps
+#   full analysis and is verified unaffected (90 diagnostics / 17 files, identical before and after).
+[[diagnostic.patterns]]
+match_by   = "code"
+match_type = "regex"
+pattern    = ".*"
+path       = "ext/**"
+severity   = "off"
+
+[full_analysis]
+auto_instantiate = true
+debounce = 1
+concretization_patterns = []
