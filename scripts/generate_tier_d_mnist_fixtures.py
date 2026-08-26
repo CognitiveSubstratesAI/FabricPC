@@ -113,7 +113,7 @@ phase-by-phase dump like Tier C's 5-phases-per-fixture, since here the interesti
 
 Run with the upstream fabricpc package importable (see generate_tier_a_fixtures.py's
 docstring for the venv activation command -- run from THIS repo as CWD):
-    cd <this repo> && source /home/shivaji1012/JuliaAGI/dev-zone/FabricPC/.venv-fixtures/bin/activate
+    cd <this repo> && source /home/shivaji1012/dev-zone/FabricPC/.venv-fixtures/bin/activate
     python3 scripts/generate_tier_d_mnist_fixtures.py
 """
 

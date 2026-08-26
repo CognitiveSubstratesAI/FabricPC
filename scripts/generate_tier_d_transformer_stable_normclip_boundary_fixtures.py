@@ -86,7 +86,7 @@ tier_d_transformer_stable_sgd.npz / tier_d_transformer_stable_normclip.npz, whic
 exactly as generate_tier_d_transformer_stable_fixtures.py (untouched) left them.
 
 Run with the upstream fabricpc package importable (same venv as every other Tier fixture):
-    cd <this repo> && source /home/shivaji1012/JuliaAGI/dev-zone/FabricPC/.venv-fixtures/bin/activate
+    cd <this repo> && source /home/shivaji1012/dev-zone/FabricPC/.venv-fixtures/bin/activate
     python3 scripts/generate_tier_d_transformer_stable_normclip_boundary_fixtures.py
 """
 

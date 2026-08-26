@@ -18,7 +18,7 @@
 # (see docs/AUDIT_REGISTER.md A-01). Updated 2026-07-15: was 316367c6, now b6f64ad -- every
 # tier_*.npz in test/conformance/fixtures/ was regenerated against b6f64ad and verified
 # BIT-IDENTICAL to the previous arrays apart from the dropped *_pre_activation keys (C-15).
-# NOTE this is an EDITABLE install of the LOCAL checkout (~/JuliaAGI/dev-zone/FabricPC): a
+# NOTE this is an EDITABLE install of the LOCAL checkout (~/dev-zone/FabricPC): a
 # `git pull` there silently re-points the oracle. The SHA here is the record, not a lock.
 absl-py==2.5.0
 aiofiles==25.1.0

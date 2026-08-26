@@ -5,7 +5,7 @@
 transformer differential deep-dive) + VS Code IDE agent coverage audit (5 diff agents, 68 items,
 vs upstream HEAD incl. PRs #19/#28) + a reflective adversarial cross-check (6 skeptical
 verification agents + synthesis) reconciling the two.
-**Upstream reference:** `~/JuliaAGI/dev-zone/FabricPC` — confirmed LIVE-SYNCED to `origin/main`
+**Upstream reference:** `~/dev-zone/FabricPC` — confirmed LIVE-SYNCED to `origin/main`
 HEAD `316367c` (2026-07-09) at cross-check time (see A-01). The original register's "0.3.1
 snapshot" framing was itself the stale baseline — see A-01 resolution.
 **Baseline verdict:** Julia port tracks upstream contract semantics (3-tuple gradients,
@@ -21,7 +21,7 @@ tests. Coverage gaps remain concentrated in conv/pooling, JIT breadth, and Pytho
 
 | ID | Item | Detail | Status |
 |----|------|--------|--------|
-| A-01 | Re-sync Python reference to upstream HEAD | **CLOSED 2026-07-15 — re-synced to `b6f64ad`; fixtures regenerated against it.** The drift A-01 was re-opened for is gone: fixtures and the reference checkout now both sit at upstream HEAD `b6f64ad` (was: fixtures at `5514c91`, HEAD moved ahead by one contract-changing commit). Adaptation in C-15, decision in C-16. **A-01's own lesson held twice over.** (1) *The SHA is the only real marker* — upstream's `pyproject.toml` still says `0.3.1`, unchanged since 2026-05-04 and now several merged PRs stale; only `scripts/requirements-fixtures.txt`'s editable-install line records what actually produced the arrays. It is now updated to `b6f64ad`. (2) *The oracle's source moved under us mid-session*: `~/PRIMUS/dev-zone/FabricPC` symlinks to `~/JuliaAGI/dev-zone/FabricPC`, which is exactly what `.venv-fixtures` imports via its EDITABLE install — so the user's `git pull` silently re-pointed the oracle without touching this repo at all. That is why regeneration is gated on a bit-identity check against the previous fixtures (C-15) rather than on the generator merely running: a moved oracle fails OPEN. |
+| A-01 | Re-sync Python reference to upstream HEAD | **CLOSED 2026-07-15 — re-synced to `b6f64ad`; fixtures regenerated against it.** The drift A-01 was re-opened for is gone: fixtures and the reference checkout now both sit at upstream HEAD `b6f64ad` (was: fixtures at `5514c91`, HEAD moved ahead by one contract-changing commit). Adaptation in C-15, decision in C-16. **A-01's own lesson held twice over.** (1) *The SHA is the only real marker* — upstream's `pyproject.toml` still says `0.3.1`, unchanged since 2026-05-04 and now several merged PRs stale; only `scripts/requirements-fixtures.txt`'s editable-install line records what actually produced the arrays. It is now updated to `b6f64ad`. (2) *The oracle's source moved under us mid-session*: `~/dev-zone/FabricPC` symlinks to `~/dev-zone/FabricPC`, which is exactly what `.venv-fixtures` imports via its EDITABLE install — so the user's `git pull` silently re-pointed the oracle without touching this repo at all. That is why regeneration is gated on a bit-identity check against the previous fixtures (C-15) rather than on the generator merely running: a moved oracle fails OPEN. |
 | A-02 | Write layer map into docs/decisions.md | Layer 0 eager Dict oracle / Layer 1 flat-positional / Layer 2 Reactant+Enzyme compiled / Layer 3 muPC. Rule: each layer gated by the one below; outermost gate = upstream JAX; never two layers in one commit. | OPEN |
 
 ---

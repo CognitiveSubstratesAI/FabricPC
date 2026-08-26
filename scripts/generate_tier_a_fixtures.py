@@ -19,7 +19,7 @@ autodiff check of Julia's hand-derived closed form, not a transcription of an up
 closed form (there isn't one to transcribe).
 
 Run with the upstream fabricpc package importable, e.g.:
-    cd ~/JuliaAGI/dev-zone/FabricPC && source .venv-fixtures/bin/activate  (or: source
+    cd ~/dev-zone/FabricPC && source .venv-fixtures/bin/activate  (or: source
     <this repo>/.venv-fixtures/bin/activate if generated there)
     python3 <this repo>/scripts/generate_tier_a_fixtures.py
 """

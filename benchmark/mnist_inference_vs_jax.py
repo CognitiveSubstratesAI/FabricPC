@@ -20,7 +20,7 @@ concrete arrays, never calling its own initialize_params/RNG. Apples-to-apples n
 not just a timing comparison.
 
 Run (pinned upstream venv, per this repo's CLAUDE.md JIT-lane discipline):
-    /home/shivaji1012/JuliaAGI/dev-zone/FabricPC/.venv-fixtures/bin/python3 \
+    /home/shivaji1012/dev-zone/FabricPC/.venv-fixtures/bin/python3 \
         benchmark/mnist_inference_vs_jax.py [outdir]
 """
 

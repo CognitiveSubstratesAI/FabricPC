@@ -47,7 +47,7 @@ apply IDENTICALLY here -- read that file for the full rationale; only the essent
 per-decision facts are restated inline below at their point of use, not the full rationale.
 
 Run with the upstream fabricpc package importable (same venv as every other Tier fixture):
-    cd <this repo> && source /home/shivaji1012/JuliaAGI/dev-zone/FabricPC/.venv-fixtures/bin/activate
+    cd <this repo> && source /home/shivaji1012/dev-zone/FabricPC/.venv-fixtures/bin/activate
     python3 scripts/generate_tier_d_transformer_stable_fixtures.py
 """
 
